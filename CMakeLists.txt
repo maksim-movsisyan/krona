@@ -219,9 +219,30 @@ endfunction()
 #==================================================================
 set(MPI_CXX_SKIP_MPICXX TRUE)
 find_package(MPI 3.1 REQUIRED COMPONENTS C CXX)
-add_library(krona_mpi INTERFACE)
+
+add_library(
+    krona_mpi 
+    STATIC
+        src/mpi/error.cpp
+        src/mpi/runtime.cpp
+        src/mpi/communicator.cpp
+        src/mpi/collective_status.cpp
+)
 add_library(krona::mpi ALIAS krona_mpi)
-target_link_libraries(krona_mpi INTERFACE MPI::MPI_CXX)
+target_include_directories(
+    krona_mpi 
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(
+    krona_mpi
+    PUBLIC
+        MPI::MPI_CXX
+        krona::build_config
+    PRIVATE
+        krona::warnings
+)
 
 #==================================================================
 #==== LINEAR ALGEBRA & CODESIGN PARALLELISM: TRILINOS / KOKKOS ====
@@ -416,5 +437,28 @@ message(STATUS "  CGNS / partitioning / Trilinos: ${KRONA_ENABLE_CGNS} / ${KRONA
 message(STATUS "  BUILD_TESTING:     ${BUILD_TESTING} (no project tests registered yet)")
 message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hpp")
 
-# Add explicit module targets here when their implementations and public
-# contracts are ready. Do not glob sources or auto-enable arbitrary folders.
+
+
+
+
+
+
+
+#==================================================================
+#==== LIBRARIES  ==================================================
+#==================================================================
+
+#==================================================================
+#==== EXECUTABLES  ================================================
+#==================================================================
+    #========================
+    #=== MESH PARTITIONER ===
+    #========================
+add_executable(krona_mesh_partition apps/mesh_partition.cpp)
+target_link_libraries(
+    krona_mesh_partition
+    PRIVATE
+    krona_build_config
+    krona_warnings
+    krona_mpi
+)
