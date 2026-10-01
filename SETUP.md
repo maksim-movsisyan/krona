@@ -85,7 +85,8 @@ sudo apt install -y \
     zlib1g-dev \
     libaec-dev \
     clangd \
-    clang-format
+    clang-format \
+    libsparsehash-dev
 ```
 
 Package roles:
@@ -109,6 +110,7 @@ Package roles:
 - `libaec-dev` provides the development files for the Adaptive Entropy Coding library, another compression dependency required for static linking with HDF5 and CGNS.
 - `clangd` is a language server that provides IDE features like code completion, go-to-definition, and real-time diagnostics for C/C++ code.
 - `clang-format` is a tool to automatically format C/C++ code according to specified style guidelines, ensuring consistent code formatting across the project.
+- `libsparsehash-dev` provides an extremely memory-efficient hash map implementation for C++, optimized to store large amounts of data with minimal memory overhead.
 
 ## 4. CGNS with Parallel I/O
 
