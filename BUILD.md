@@ -25,7 +25,7 @@ cmake -S . -B build/serial-fp64 -G Ninja \
     -DCMAKE_C_COMPILER=mpicc \
     -DCMAKE_CXX_COMPILER=mpicxx \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_PREFIX_PATH="$PWD/deps/install/trilinos-17.2.1;$PWD/deps/install/cgns-4.5.2-i32;$PWD/deps/install/kaminpar-3.7.3" \
+    -DCMAKE_PREFIX_PATH="$PWD/deps/install/trilinos-17.2.1;$PWD/deps/install/cgns-4.5.2-i64;$PWD/deps/install/kaminpar-3.7.3" \
     -DKRONA_EXECUTION_SPACE=SERIAL \
     -DKRONA_PRECISION_PROFILE=FP64 \
     -DKRONA_LOCAL_INDEX_BITS=32 \

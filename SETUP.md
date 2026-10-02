@@ -132,12 +132,12 @@ git clone --depth 1 --branch v4.5.2 \
     src/cgns-4.5.2
 
 cmake -S src/cgns-4.5.2 \
-    -B src/cgns-4.5.2/build-i32 \
+    -B src/cgns-4.5.2/build-i64 \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=mpicc \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DCMAKE_INSTALL_PREFIX="$PWD/install/cgns-4.5.2-i32" \
+    -DCMAKE_INSTALL_PREFIX="$PWD/install/cgns-4.5.2-i64" \
     -DCGNS_ENABLE_HDF5=ON \
     -DCGNS_ENABLE_PARALLEL=ON \
     -DHDF5_NEED_MPI=ON \
@@ -148,11 +148,11 @@ cmake -S src/cgns-4.5.2 \
     -DCGNS_BUILD_SHARED=OFF \
     -DCGNS_ENABLE_FORTRAN=OFF \
     -DCGNS_ENABLE_TESTS=OFF \
-    -DCGNS_ENABLE_64BIT=OFF
+    -DCGNS_ENABLE_64BIT=ON
 
-cmake --build src/cgns-4.5.2/build-i32 --parallel 2
+cmake --build src/cgns-4.5.2/build-i64 --parallel 2
 
-cmake --install src/cgns-4.5.2/build-i32
+cmake --install src/cgns-4.5.2/build-i64
 ```
 
 The HDF5 prefix above follows the Ubuntu/Debian multiarch layout.
@@ -210,9 +210,19 @@ because a slower reading path exists.
 
 ### 4.4 MIXED sections and the existing partitioner reader
 
-`WARNING-1` : IF YOUR MESH CONTAINS MIXED SECTIONS, THEN -DCGNS_ENABLE_64BIT=OFF/ON - MUST BE CONSISTENT WITH FILE INTEGER PRECSISION, OTHERWISE THE CGNS-READER FALL BACK TO RAM HEAVY READ (IT WILL WORK BUT IT IS SLOWER AND CONTRIBUTE MORE RAM).
+`WARNING-1`: Build CGNS with -DCGNS_ENABLE_64BIT=ON.
+This reader requires a 64-bit cgsize_t. Both I4 and I8 integer
+arrays on disk are supported through explicit CGIO conversion,
+which avoids the PCGNS MIXED-section integer-width bug.
+The file integer width does not need to match the CGNS build.
+Values must fit the configured KRONA index types.
 
-`WARNING-2` : IF YOUR MESH CONTAINS MIXED SECTIONS, THEN YOU FILE VERISION (FILE, NOT CGNS) MUST BE MORE OR EQUAL 4.*, OTHERWISE THE CGNS-READER FALL BACK TO RAM HEAVY READ (IT WILL WORK BUT IT IS SLOWER AND CONTRIBUTE MORE RAM).
+`WARNING-2` : MIXED sections must contain ElementStartOffset on disk.
+Legacy MIXED sections without this array are rejected.
+No memory-heavy full-section fallback is provided.
+Rewrite such meshes using a CGNS writer that generates
+ElementStartOffset. The file version number alone is not
+a sufficient compatibility check.
 
 ### 4.5 Convert and update older files
 

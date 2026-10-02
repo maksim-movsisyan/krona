@@ -1,5 +1,7 @@
-// Distributed mesh preprocessing entry point. Mesh stages will be added separately.
+// Distributed mesh preprocessing entry point.
 
+#include <krona/io/cgns/reader.hpp>
+#include <krona/mesh/extrusion.hpp>
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
 
@@ -36,7 +38,8 @@ struct ParseResult {
     std::string_view argument;
 };
 
-[[nodiscard]] constexpr const char* reorder_name(ReorderMethod method) noexcept {
+[[nodiscard]] constexpr const char* reorder_name(ReorderMethod method) noexcept
+{
     switch (method) {
     case ReorderMethod::none: return "NONE";
     case ReorderMethod::sfc:  return "SFC";
@@ -46,13 +49,14 @@ struct ParseResult {
 }
 
 // Print on rank 0; no arguments and --help are successful help requests.
-void usage(std::FILE* stream) noexcept {
+void usage(std::FILE* stream) noexcept
+{
     std::fputs(
         "KRONA distributed mesh partitioner\n"
         "\n"
         "Usage:\n"
-        "  mpirun -np N mesh_partition <in.cgns> <out.h5> [options]\n"
-        "  mesh_partition --help\n"
+        "  mpirun -np N krona_mesh_partition <in.cgns> <out.h5> [options]\n"
+        "  krona_mesh_partition --help\n"
         "\n"
         "Options:\n"
         "  --bc <bc.txt>       Write a boundary-condition template (optional).\n"
@@ -67,20 +71,22 @@ void usage(std::FILE* stream) noexcept {
         "Named options also accept --option=value.\n"
         "\n"
         "Examples:\n"
-        "  mpirun -np 4 mesh_partition mesh.cgns mesh.h5\n"
-        "  mpirun -np 4 mesh_partition mesh.cgns mesh.h5 --bc mesh.bc\n"
-        "  mpirun -np 4 mesh_partition mesh.cgns mesh.h5 --vtu vtk --reorder RCM -v\n"
+        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5\n"
+        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --bc mesh.bc\n"
+        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --vtu vtk --reorder RCM -v\n"
         "\n"
-        "Development scaffold: the mesh processing pipeline is disabled.\n",
+        "Development stage: CGNS import and automatic 2D extrusion; export is not implemented.\n",
         stream);
 }
 
-[[nodiscard]] bool option_token(std::string_view token) noexcept {
+[[nodiscard]] bool option_token(std::string_view token) noexcept
+{
     return token.size() > 1 && token.front() == '-';
 }
 
 // Parse only on rank 0; expected CLI errors are returned, not thrown.
-[[nodiscard]] ParseResult parse_arguments(int argc, char* const* argv) {
+[[nodiscard]] ParseResult parse_arguments(int argc, char* const* argv)
+{
     ParseResult result;
     auto fail = [&](std::string_view error, std::string_view argument = {}) {
         result.action = CliAction::error;
@@ -181,7 +187,8 @@ void usage(std::FILE* stream) noexcept {
 }
 
 // Replicate root's settings; absence of optional paths is encoded by length zero.
-void broadcast_options(Options& options, krona::mpi::CommView comm) {
+void broadcast_options(Options& options, krona::mpi::CommView comm)
+{
     std::array<int, 6> header{};
     const auto prepared = krona::mpi::LocalStatus::capture([&]() -> krona::mpi::LocalStatus {
         if (comm.rank() != 0) return {};
@@ -226,8 +233,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     options.verbosity = static_cast<Verbosity>(header[5]);
 }
 
-// Future stages receive an explicit communicator; mesh storage belongs outside the CLI.
-[[nodiscard]] int run_partitioner(const Options& options, krona::mpi::CommView comm) {
+// Import the mesh and extrude 2D input to one 3D layer.
+[[nodiscard]] int run_partitioner(const Options& options, krona::mpi::CommView comm)
+{
     if (comm.rank() == 0) {
         if (options.verbosity != Verbosity::quiet) {
             std::fprintf(stderr,
@@ -238,14 +246,33 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
                 options.boundary_output ? options.boundary_output->c_str() : "<disabled>",
                 options.vtu_directory ? options.vtu_directory->c_str() : "<disabled>");
         }
-        std::fputs("KRONA mesh_partition: mesh processing pipeline is disabled.\n", stderr);
     }
 
-    // TODO: CGNS import, topology, partitioning, migration, geometry and export.
+    auto imported = krona::io::cgns::read_parallel(options.input, comm);
+    auto &mesh = imported.mesh;
+    if (mesh.cell_dimension == 2) {
+        const auto extrusion = krona::mesh::extrude_one_layer(mesh, comm);
+        if (comm.rank() == 0 && options.verbosity != Verbosity::quiet) {
+            std::fprintf(stderr, "  extrusion: thickness=%.17g normal=%c%s\n",
+                static_cast<double>(extrusion.thickness), extrusion.normal_sign > 0 ? '+' : '-',
+                extrusion.normal_axis == 0 ? "X" : extrusion.normal_axis == 1 ? "Y" : "Z");
+        }
+    }
+    if (comm.rank() == 0) {
+        if (options.verbosity != Verbosity::quiet) {
+            std::fprintf(stderr, "  imported: cells=%lld nodes=%lld boundary=%lld\n",
+                static_cast<long long>(mesh.distribution.cells.global_size()),
+                static_cast<long long>(mesh.distribution.nodes.global_size()),
+                static_cast<long long>(mesh.distribution.boundary_ordinals.global_size()));
+        }
+        std::fputs("KRONA mesh_partition: import completed; partitioning/export are not implemented.\n", stderr);
+    }
+    // TODO: topology, partitioning, migration, geometry and export.
     return EXIT_SUCCESS;
 }
 
-[[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm) {
+[[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm)
+{
     ParseResult parsed;
     const auto prepared = krona::mpi::LocalStatus::capture([&] {
         if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
@@ -280,7 +307,8 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     krona::mpi::Runtime runtime{argc, argv, krona::mpi::ThreadLevel::funneled};
     auto communicator = krona::mpi::Communicator::duplicate(krona::mpi::CommView::world());
     const auto comm = communicator.view();

@@ -422,6 +422,17 @@ int main(int argc, char** argv) {
 endif()
 
 #==================================================================
+#==== ADD BUILDING TESTING ========================================
+#==================================================================
+if(BUILD_TESTING)
+    add_subdirectory(tests/mesh)
+
+    if(KRONA_ENABLE_CGNS)
+        add_subdirectory(tests/cgns)
+    endif()
+endif()
+
+#==================================================================
 #==== CONFIGURATION REPORT & APPLICATION ENTRYS ===================
 #==================================================================
 message(STATUS "")
@@ -434,7 +445,7 @@ foreach(_role IN LISTS _krona_real_roles)
 endforeach()
 message(STATUS "  Parallel HDF5:     ${HDF5_VERSION} (static baseline)")
 message(STATUS "  CGNS / partitioning / Trilinos: ${KRONA_ENABLE_CGNS} / ${KRONA_ENABLE_PARTITIONING} / ${KRONA_ENABLE_TRILINOS}")
-message(STATUS "  BUILD_TESTING:     ${BUILD_TESTING} (no project tests registered yet)")
+message(STATUS "  BUILD_TESTING:     ${BUILD_TESTING}")
 message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hpp")
 
 
@@ -458,6 +469,7 @@ if(KRONA_ENABLE_CGNS)
             src/mesh_generator/topology.cpp
             src/mesh_generator/writer.cpp
     )
+    add_library(krona::mesh_generator ALIAS krona_mesh_generator)
     target_include_directories(
         krona_mesh_generator
         PUBLIC
@@ -472,11 +484,82 @@ if(KRONA_ENABLE_CGNS)
     target_link_libraries(
         krona_mesh_generator
         PUBLIC
-            krona_build_config
-            krona_mpi
-            krona_cgns
+            krona::build_config
+            krona::mpi
+            krona::cgns
         PRIVATE
-            krona_warnings
+            krona::warnings
+    )
+endif()
+
+    #============
+    #=== MESH ===
+    #============
+add_library(
+    krona_mesh_core 
+    INTERFACE
+)
+add_library(krona::mesh_core ALIAS krona_mesh_core)
+target_include_directories(
+    krona_mesh_core 
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(
+    krona_mesh_core 
+    INTERFACE 
+        krona::build_config
+)
+
+    #=======================
+    #=== MESH OPERATIONS ===
+    #=======================
+add_library(
+    krona_mesh_operations 
+    STATIC
+        src/mesh/extrusion.cpp
+)
+add_library(krona::mesh_operations ALIAS krona_mesh_operations)
+target_include_directories(
+    krona_mesh_operations 
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(
+    krona_mesh_operations
+    PUBLIC
+        krona::mesh_core
+        krona::mpi
+    PRIVATE
+        krona::warnings
+)
+
+    #===============
+    #=== CGNS IO ===
+    #===============
+if(KRONA_ENABLE_CGNS)
+    add_library(
+        krona_cgns_io
+        STATIC
+            src/io/cgns/reader.cpp
+    )
+    add_library(krona::cgns_io ALIAS krona_cgns_io)
+    target_include_directories(
+        krona_cgns_io 
+        INTERFACE
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
+    target_link_libraries(
+        krona_cgns_io
+        PUBLIC 
+            krona::mesh_core 
+            krona::mpi
+        PRIVATE 
+            krona::cgns 
+            krona::warnings
     )
 endif()
 
@@ -491,22 +574,27 @@ if(KRONA_ENABLE_CGNS)
     target_link_libraries(
         krona_mesh_generation
         PRIVATE
-            krona_build_config
-            krona_warnings
-            krona_mpi
+            krona::build_config
+            krona::warnings
+            krona::mpi
 
-            krona_mesh_generator  
+            krona::mesh_generator  
     )
 endif()
 
     #========================
     #=== MESH PARTITIONER ===
     #========================
-add_executable(krona_mesh_partition apps/mesh_partition.cpp)
-target_link_libraries(
-    krona_mesh_partition
-    PRIVATE
-        krona_build_config
-        krona_warnings
-        krona_mpi
-)
+if(KRONA_ENABLE_CGNS)
+    add_executable(krona_mesh_partition apps/mesh_partition.cpp)
+
+    target_link_libraries(
+        krona_mesh_partition
+        PRIVATE
+            krona::build_config
+            krona::warnings
+            krona::mpi
+            krona::cgns_io
+            krona::mesh_operations
+    )
+endif()
