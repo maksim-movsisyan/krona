@@ -858,6 +858,27 @@ Run from the repository root:
 )
 ```
 
+Some failures are possible with TOML++, if they are change lines 8121 - 8138 to : 
+```bash
+								// func(key, val)
+								if constexpr (std::is_invocable_v<Func&&, const key&, value_ref>)
+								{
+									using return_type = std::invoke_result_t<Func&&, const key&, value_ref>;
+
+									if constexpr (std::is_convertible_v<return_type, bool> || std::is_constructible_v<bool, return_type>)
+									{
+										return static_cast<bool>(static_cast<Func&&>(
+											visitor)(static_cast<const key&>(kvp.first), static_cast<value_ref>(v)));
+									}
+									else
+									{
+										static_cast<Func&&>(visitor)(static_cast<const key&>(kvp.first),
+																	 static_cast<value_ref>(v));
+										return true;
+									}
+								}
+```
+
 The temporary download avoids replacing an existing header with a
 partial download if the transfer fails.
 

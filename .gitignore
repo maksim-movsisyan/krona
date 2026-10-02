@@ -4,6 +4,9 @@ build/
 # Mesh inputfiles
 /mesh/
 
+# Output directorie
+/out/
+
 # Editors / OS
 .cache/
 .vscode/

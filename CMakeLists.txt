@@ -445,12 +445,60 @@ message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hp
 
 
 #==================================================================
-#==== LIBRARIES  ==================================================
+#==== ADDIITONAL LIBRARIES  ======================================= 
 #==================================================================
+    #======================
+    #=== MESH GENERATOR ===
+    #======================
+if(KRONA_ENABLE_CGNS)
+    add_library(
+        krona_mesh_generator
+        STATIC
+            src/mesh_generator/config.cpp   
+            src/mesh_generator/topology.cpp
+            src/mesh_generator/writer.cpp
+    )
+    target_include_directories(
+        krona_mesh_generator
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+    )
+    target_include_directories(
+        krona_mesh_generator
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/external/tomlplusplus/include
+    )
+    target_link_libraries(
+        krona_mesh_generator
+        PUBLIC
+            krona_build_config
+            krona_mpi
+            krona_cgns
+        PRIVATE
+            krona_warnings
+    )
+endif()
 
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
+    #======================
+    #=== MESH GENERATOR ===
+    #======================
+if(KRONA_ENABLE_CGNS)
+    add_executable(krona_mesh_generation apps/mesh_generation.cpp)
+    target_link_libraries(
+        krona_mesh_generation
+        PRIVATE
+            krona_build_config
+            krona_warnings
+            krona_mpi
+
+            krona_mesh_generator  
+    )
+endif()
+
     #========================
     #=== MESH PARTITIONER ===
     #========================
@@ -458,7 +506,7 @@ add_executable(krona_mesh_partition apps/mesh_partition.cpp)
 target_link_libraries(
     krona_mesh_partition
     PRIVATE
-    krona_build_config
-    krona_warnings
-    krona_mpi
+        krona_build_config
+        krona_warnings
+        krona_mpi
 )

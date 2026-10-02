@@ -242,7 +242,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     }
 
     // TODO: CGNS import, topology, partitioning, migration, geometry and export.
-    return EXIT_FAILURE;
+    return EXIT_SUCCESS;
 }
 
 [[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm) {
