@@ -1,16 +1,15 @@
-// Distributed mesh preprocessing entry point.
-
-#include <krona/io/cgns/reader.hpp>
-#include <krona/mesh/extrusion.hpp>
+#include "krona/mpi/collective_status.hpp"
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
+#include <krona/mpi/error.hpp>
+#include <krona/io/cgns/reader.hpp>
+#include <krona/mesh/extrusion.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
-#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -189,45 +188,42 @@ void usage(std::FILE* stream) noexcept
 // Replicate root's settings; absence of optional paths is encoded by length zero.
 void broadcast_options(Options& options, krona::mpi::CommView comm)
 {
+    // echange sizes
     std::array<int, 6> header{};
-    const auto prepared = krona::mpi::LocalStatus::capture([&]() -> krona::mpi::LocalStatus {
-        if (comm.rank() != 0) return {};
-        const std::array<std::size_t, 4> sizes{
-            options.input.size(), options.output.size(),
-            options.boundary_output ? options.boundary_output->size() : 0,
-            options.vtu_directory ? options.vtu_directory->size() : 0
-        };
-        for (std::size_t i = 0; i < sizes.size(); ++i) {
-            if (sizes[i] > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                return krona::mpi::LocalStatus::failure("Command-line path exceeds MPI 3.1 count limit");
-            }
-            header[i] = static_cast<int>(sizes[i]);
-        }
+    if (comm.rank() == 0) {
+        header[0] = static_cast<int>(options.input.size());
+        header[1] = static_cast<int>(options.output.size());
+        header[2] = options.boundary_output ? static_cast<int>(options.boundary_output->size()) : 0;
+        header[3] = options.vtu_directory ? static_cast<int>(options.vtu_directory->size()) : 0;
         header[4] = static_cast<int>(options.reorder);
         header[5] = static_cast<int>(options.verbosity);
-        return {};
-    });
-    krona::mpi::require_collective_success(comm, prepared, "Command-line serialization");
+    }
     krona::mpi::broadcast(comm, std::span{header});
 
-    const auto allocated = krona::mpi::LocalStatus::capture([&] {
-        if (comm.rank() == 0) return;
+    if (comm.rank() != 0) {
         options.input.resize(static_cast<std::size_t>(header[0]));
         options.output.resize(static_cast<std::size_t>(header[1]));
-        if (header[2] != 0) options.boundary_output.emplace(static_cast<std::size_t>(header[2]), '\0');
-        else options.boundary_output.reset();
-        if (header[3] != 0) options.vtu_directory.emplace(static_cast<std::size_t>(header[3]), '\0');
-        else options.vtu_directory.reset();
-    });
-    krona::mpi::require_collective_success(comm, allocated, "Command-line receive allocation");
+        
+        if (header[2] > 0) {
+            options.boundary_output.emplace(static_cast<std::size_t>(header[2]), '\0');
+        } else {
+            options.boundary_output = std::nullopt;
+        }
 
-    krona::mpi::broadcast(comm, std::span{options.input.data(), options.input.size()});
-    krona::mpi::broadcast(comm, std::span{options.output.data(), options.output.size()});
-    if (options.boundary_output) {
-        krona::mpi::broadcast(comm, std::span{options.boundary_output->data(), options.boundary_output->size()});
+        if (header[3] > 0) {
+            options.vtu_directory.emplace(static_cast<std::size_t>(header[3]), '\0');
+        } else {
+            options.vtu_directory = std::nullopt;
+        }
     }
-    if (options.vtu_directory) {
-        krona::mpi::broadcast(comm, std::span{options.vtu_directory->data(), options.vtu_directory->size()});
+
+    krona::mpi::broadcast(comm, std::span{options.input});
+    krona::mpi::broadcast(comm, std::span{options.output});
+    if (header[2] > 0) {
+        krona::mpi::broadcast(comm, std::span{*options.boundary_output});
+    }
+    if (header[3] > 0) {
+        krona::mpi::broadcast(comm, std::span{*options.vtu_directory});
     }
     options.reorder = static_cast<ReorderMethod>(header[4]);
     options.verbosity = static_cast<Verbosity>(header[5]);
@@ -250,14 +246,6 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
     auto imported = krona::io::cgns::read_parallel(options.input, comm);
     auto &mesh = imported.mesh;
-    if (mesh.cell_dimension == 2) {
-        const auto extrusion = krona::mesh::extrude_one_layer(mesh, comm);
-        if (comm.rank() == 0 && options.verbosity != Verbosity::quiet) {
-            std::fprintf(stderr, "  extrusion: thickness=%.17g normal=%c%s\n",
-                static_cast<double>(extrusion.thickness), extrusion.normal_sign > 0 ? '+' : '-',
-                extrusion.normal_axis == 0 ? "X" : extrusion.normal_axis == 1 ? "Y" : "Z");
-        }
-    }
     if (comm.rank() == 0) {
         if (options.verbosity != Verbosity::quiet) {
             std::fprintf(stderr, "  Imported: cells=%lld nodes=%lld boundary=%lld\n",
@@ -284,12 +272,20 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
 [[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm)
 {
+    // parsing input arguments on master-rank
     ParseResult parsed;
-    const auto prepared = krona::mpi::LocalStatus::capture([&] {
-        if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
-    });
-    krona::mpi::require_collective_success(comm, prepared, "Command-line parsing");
+    krona::mpi::LocalError local_err{};
 
+    try {
+        if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
+    } catch (const std::exception& error) {
+        krona::mpi::set_local_error(local_err, error.what());
+    } catch (...) {
+        krona::mpi::set_local_error(local_err, "Unhandled arguments parsing exception");
+    }
+    krona::mpi::require_collective_success(comm, local_err, "Parsing Command Line Arguments");
+
+    // broadcast data to other ranks
     int action = static_cast<int>(parsed.action);
     krona::mpi::broadcast(comm, action);
     if (action == static_cast<int>(CliAction::help)) {
@@ -321,13 +317,13 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 int main(int argc, char** argv)
 {
     krona::mpi::Runtime runtime{argc, argv, krona::mpi::ThreadLevel::funneled};
-    auto communicator = krona::mpi::Communicator::duplicate(krona::mpi::CommView::world());
-    const auto comm = communicator.view();
+    auto communicator = krona::mpi::Comm::duplicate(krona::mpi::CommView::world());
+    const krona::mpi::CommView comm = communicator.view();
     try {
         return execute(argc, argv, comm);
     } catch (const std::exception& error) {
-        krona::mpi::fatal(comm.abort_scope(), error.what());
+        krona::mpi::fatal(error.what());
     } catch (...) {
-        krona::mpi::fatal(comm.abort_scope(), "Unhandled mesh_partitioner exception");
+        krona::mpi::fatal("Unhandled mesh_partitioner exception");
     }
 }

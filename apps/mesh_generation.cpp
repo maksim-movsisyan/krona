@@ -1,6 +1,7 @@
 #include "krona/mpi/collective_status.hpp"
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
+#include <krona/mpi/error.hpp>
 #include <krona/mesh_generator/config.hpp>
 #include <krona/mesh_generator/topology.hpp>
 #include <krona/mesh_generator/writer.hpp>
@@ -210,28 +211,26 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
 }
 
 [[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm) {
+    // parsing input arguments on master-rank
     ParseResult parsed;
     krona::mpi::LocalError local_err{};
 
     try {
         if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
-    } 
-    catch (const std::exception& error) {
+    } catch (const std::exception& error) {
         krona::mpi::set_local_error(local_err, error.what());
-    } 
-    catch (...) {
+    } catch (...) {
         krona::mpi::set_local_error(local_err, "Unhandled arguments parsing exception");
     }
-
     krona::mpi::require_collective_success(comm, local_err, "Parsing Command Line Arguments");
 
+    // broadcast data to other ranks
     int action = static_cast<int>(parsed.action);
     krona::mpi::broadcast(comm, action);
     if (action == static_cast<int>(CliAction::help)) {
         if (comm.rank() == 0) usage(stdout);
         return EXIT_SUCCESS;
     }
-
     if (action == static_cast<int>(CliAction::error)) {
         if (comm.rank() == 0) {
             constexpr std::size_t limit = 512;
@@ -260,7 +259,7 @@ int main(int argc, char** argv) {
 
     // Create MPI_COMM_WORLD communicator duplicate
     krona::mpi::Comm communicator = krona::mpi::Comm::duplicate(krona::mpi::CommView::world());
-    const auto comm = communicator.view();
+    const krona::mpi::CommView comm = communicator.view();
 
     // Execution try-catch
     try {

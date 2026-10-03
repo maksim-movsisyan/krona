@@ -30,13 +30,16 @@ struct ElementTable
     std::vector<std::size_t> offsets{0};
     std::vector<GlobalIndex> node_ids;
 
+    /// @brief Returns the number of elements in this CSR table.
     [[nodiscard]] std::size_t size() const noexcept
     {
         return types.size();
     }
+    /// @brief Borrows an element's oriented global-node connectivity.
     [[nodiscard]] std::span<const GlobalIndex> nodes(std::size_t element) const noexcept
     {
         assert(element < size() && offsets.size() == size() + 1);
+        // Connectivity stays in global IDs independently of coordinate ownership.
         return std::span<const GlobalIndex>{node_ids}.subspan(
             offsets[element], offsets[element + 1] - offsets[element]);
     }
@@ -45,6 +48,7 @@ struct ElementTable
 struct Coordinates
 {
     std::vector<GeometryReal> x, y, z;
+    /// @brief Returns the number of locally owned coordinate triples.
     [[nodiscard]] std::size_t size() const noexcept
     {
         return x.size();
@@ -56,6 +60,7 @@ struct BoundaryTable
     ElementTable elements;
     std::vector<GlobalIndex> global_ids; // Sparse source element IDs, zero-based.
     std::vector<PatchId> patch_ids;      // May contain invalid_patch_id.
+    /// @brief Returns the number of locally owned boundary elements.
     [[nodiscard]] std::size_t size() const noexcept
     {
         return elements.size();
@@ -82,12 +87,14 @@ struct RawMesh
     BoundaryTable boundary;
     std::vector<Patch> patches; // Small replicated metadata; never BC point lists.
 
-    [[nodiscard]] GlobalIndex global_cell_id(LocalIndex local) const
+    /// @brief Resolves a cell ID while this import's block ownership is unchanged.
+    [[nodiscard]] GlobalIndex global_cell_id(LocalIndex local) const noexcept
     {
         assert(local >= 0 && static_cast<std::size_t>(local) < cells.size());
         return distribution.cells.begin(distribution.rank) + static_cast<GlobalIndex>(local);
     }
-    [[nodiscard]] GlobalIndex global_node_id(LocalIndex local) const
+    /// @brief Resolves a node ID while this import's block ownership is unchanged.
+    [[nodiscard]] GlobalIndex global_node_id(LocalIndex local) const noexcept
     {
         assert(local >= 0 && static_cast<std::size_t>(local) < coordinates.size());
         return distribution.nodes.begin(distribution.rank) + static_cast<GlobalIndex>(local);

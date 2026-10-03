@@ -4,10 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 
 namespace krona::mesh
@@ -31,14 +31,17 @@ inline constexpr std::array<int, 8> faces_per_type{4, 5, 5, 6, 3, 4, 2, 0};
 inline constexpr std::array<std::string_view, 8> type_names{"TET", "PYRA", "PRISM", "HEXA",
                                                             "TRI", "QUAD", "BAR",   "NODE"};
 
+/// @brief Returns the fixed node count of a supported linear element.
 [[nodiscard]] constexpr int nodes_per_element(CellType type) noexcept
 {
     return nodes_per_type[static_cast<std::size_t>(type)];
 }
+/// @brief Returns an element's topological dimension.
 [[nodiscard]] constexpr int dimension(CellType type) noexcept
 {
     return dimension_per_type[static_cast<std::size_t>(type)];
 }
+/// @brief Returns the short internal name of an element type.
 [[nodiscard]] constexpr std::string_view cell_type_name(CellType type) noexcept
 {
     return type_names[static_cast<std::size_t>(type)];
@@ -91,14 +94,14 @@ inline constexpr int orientation_flip[8][8] = {
 struct FaceKey
 {
     std::array<GlobalIndex, 4> nodes{-1, -1, -1, -1};
+    /// @brief Compares sorted node IDs for facet matching.
     auto operator<=>(const FaceKey &) const = default;
 };
-[[nodiscard]] inline FaceKey make_face_key(std::span<const GlobalIndex> nodes)
+/// @brief Builds an orientation-independent key for a facet with one to four nodes.
+[[nodiscard]] inline FaceKey make_face_key(std::span<const GlobalIndex> nodes) noexcept
 {
-    if (nodes.empty() || nodes.size() > 4)
-    {
-        throw std::invalid_argument("Invalid facet arity");
-    }
+    assert(!nodes.empty() && nodes.size() <= 4);
+    // Sort only populated slots; unused slots retain their sentinel.
     FaceKey key;
     std::copy(nodes.begin(), nodes.end(), key.nodes.begin());
     std::sort(key.nodes.begin(), key.nodes.begin() + static_cast<std::ptrdiff_t>(nodes.size()));

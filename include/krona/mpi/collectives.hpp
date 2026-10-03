@@ -46,8 +46,7 @@ inline void collective_comm(CommView comm, std::source_location where) noexcept
 }
 
 /// @brief Checks the communicator and asserts the root locally in debug builds.
-inline void collective_root(
-    CommView comm, [[maybe_unused]] int root, std::source_location where) noexcept
+inline void collective_root(CommView comm, [[maybe_unused]] int root, std::source_location where) noexcept
 {
     collective_comm(comm, where);
     // Root agreement across ranks is the caller's responsibility.
@@ -55,8 +54,7 @@ inline void collective_root(
 }
 
 /// @brief Converts an element count to int without silent truncation.
-[[nodiscard]] inline int collective_count(
-    std::size_t count, std::source_location where) noexcept
+[[nodiscard]] inline int collective_count(std::size_t count, std::source_location where) noexcept
 {
     // MPI 3.1 cannot represent larger per-call counts.
     if (count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -66,11 +64,10 @@ inline void collective_root(
 }
 
 /// @brief Computes an expected buffer size for debug assertions without overflow.
-[[nodiscard]] inline std::size_t collective_product(
-    CommView comm, std::size_t count, std::source_location where) noexcept
+[[nodiscard]] inline std::size_t collective_product(CommView comm, std::size_t count, std::source_location where) noexcept
 {
     // collective_comm() has already ensured a nonempty communicator.
-    const auto peers = static_cast<std::size_t>(comm.size());
+    const std::size_t peers = static_cast<std::size_t>(comm.size());
     if (count > std::numeric_limits<std::size_t>::max() / peers) {
         fatal("Collective buffer size overflows size_t", where);
     }
@@ -97,7 +94,7 @@ inline void collective_layout(
 {
     // No peer scan or assertions remain when NDEBUG is defined.
 #ifndef NDEBUG
-    const auto peers = static_cast<std::size_t>(comm.size());
+    const std::size_t peers = static_cast<std::size_t>(comm.size());
     assert(counts.size() == peers && displacements.size() == peers);
     for (std::size_t i = 0; i < peers; ++i) {
         assert(counts[i] >= 0 && displacements[i] >= 0);
@@ -110,9 +107,7 @@ inline void collective_layout(
 }
 
 template<class T> inline constexpr bool reduction_integer =
-    std::is_integral_v<T> && !std::same_as<T, bool> &&
-    !std::same_as<T, char> && !std::same_as<T, wchar_t>;
-
+    std::is_integral_v<T> && !std::same_as<T, bool> && !std::same_as<T, char> && !std::same_as<T, wchar_t>;
 template<class T> inline constexpr bool reduction_complex = false;
 template<class T> inline constexpr bool reduction_complex<std::complex<T>> = true;
 
@@ -384,7 +379,8 @@ concept RawRecord = std::is_class_v<T> && std::is_trivially_copyable_v<T> &&
 /// @brief Owns a reusable byte datatype for a raw record; creation and freeing are local.
 /// The datatype must be destroyed before MPI_Finalize.
 template<RawRecord T>
-class RecordDatatype final {
+class RecordDatatype final 
+{
 public:
     /// @brief Creates a committed datatype covering exactly sizeof(T) bytes.
     explicit RecordDatatype(
@@ -447,8 +443,7 @@ private:
 };
 
 /// @brief Exchanges raw records with a previously committed record datatype.
-template<class T, std::size_t NS, std::size_t NR>
-    requires RawRecord<std::remove_const_t<T>>
+template<class T, std::size_t NS, std::size_t NR> requires RawRecord<std::remove_const_t<T>>
 void alltoallv(
     CommView comm, std::span<T, NS> send,
     std::span<const int> send_counts, std::span<const int> send_displacements,
@@ -523,7 +518,7 @@ void packed_exchange(
     MPI_Datatype type, std::source_location where) noexcept
 {
     collective_comm(comm, where);
-    const auto peers = static_cast<std::size_t>(comm.size());
+    const std::size_t peers = static_cast<std::size_t>(comm.size());
     assert(counts.size() == peers);
     assert(!buffers_overlap(send, std::span{recv}));
     assert(!buffers_overlap(send, std::span{workspace.send_counts}));
@@ -537,7 +532,7 @@ void packed_exchange(
         workspace.recv_counts.resize(peers);
         workspace.send_displacements.resize(peers);
         workspace.recv_displacements.resize(peers);
-        [[maybe_unused]] const auto send_total =
+        [[maybe_unused]] const std::size_t send_total =
             packed_offsets(workspace.send_counts, workspace.send_displacements, where);
         assert(send_total == send.size());
 
@@ -546,7 +541,7 @@ void packed_exchange(
                            workspace.recv_counts.data(), 1, MPI_INT, comm.native()),
               "MPI_Alltoall(packed counts)", where);
 
-        const auto recv_total =
+        const std::size_t recv_total =
             packed_offsets(workspace.recv_counts, workspace.recv_displacements, where);
         recv.resize(recv_total);
 
@@ -567,8 +562,7 @@ void packed_exchange(
 
 /// @brief Exchanges packed blocks, resizes recv and retains receive metadata.
 /// Performs one counts Alltoall and one data Alltoallv; no status collectives.
-template<MpiDatatype T, class Allocator, std::size_t N>
-    requires (!std::same_as<std::remove_const_t<T>, bool>)
+template<MpiDatatype T, class Allocator, std::size_t N> requires (!std::same_as<std::remove_const_t<T>, bool>)
 void alltoallv_packed(
     CommView comm, std::span<const int> counts, std::span<T, N> send,
     std::vector<std::remove_const_t<T>, Allocator>& recv, AlltoallvWorkspace& workspace,
@@ -579,8 +573,7 @@ void alltoallv_packed(
 }
 
 /// @brief Exchanges packed raw records using reusable datatype and metadata storage.
-template<class T, class Allocator, std::size_t N>
-    requires RawRecord<std::remove_const_t<T>>
+template<class T, class Allocator, std::size_t N> requires RawRecord<std::remove_const_t<T>>
 void alltoallv_packed(
     CommView comm, std::span<const int> counts, std::span<T, N> send,
     std::vector<std::remove_const_t<T>, Allocator>& recv, AlltoallvWorkspace& workspace,
