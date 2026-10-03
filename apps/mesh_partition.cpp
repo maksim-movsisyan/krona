@@ -4,6 +4,7 @@
 #include <krona/mpi/error.hpp>
 #include <krona/io/cgns/reader.hpp>
 #include <krona/mesh/extrusion.hpp>
+#include <krona/mesh/faces.hpp>
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <chrono>
 
 namespace {
 
@@ -244,29 +246,207 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         }
     }
 
+    const bool report = comm.rank() == 0 && options.verbosity != Verbosity::quiet;
+    const bool detailed = report && options.verbosity > Verbosity::summary;
+
+    // Parallel CGNS import with automatic conversion of planar 2D meshes to 3D.
+    //
+    // Collective contract:
+    //  - Every rank in comm participates, including ranks with empty owned slices.
+    //  - All ranks use the same path and ReaderOptions, and call on the MPI main thread.
+    //  - The default reader uses collective I/O; do not overlap other CGNS calls.
+    //  - This call reads base 1 / zone 1 unless explicit ReaderOptions are supplied.
+    //    Other bases or zones may exist; they are not imported by this call.
+    //
+    // Input contract:
+    //  - The selected zone is a nonempty HDF5-backed Unstructured zone.
+    //  - Supported linear cells are TRI/QUAD in 2D and TET/PYRA/PRISM/HEXA in 3D.
+    //  - Uniform and MIXED sections are supported. An imported section cannot cross
+    //    the cell/boundary ID boundary; MIXED record dimensions are checked on reading.
+    //  - Cartesian coordinate arrays are required for the source physical dimension.
+    //  - Element-based BCs use FaceCenter in 3D or EdgeCenter in 2D; legacy element
+    //    lists/ranges are also supported. Unsupported BC representations are rejected
+    //    by default, or recorded as ignored when explicitly requested in ReaderOptions.
+    //  - Missing BC definitions are allowed; unassigned elements retain invalid_patch_id.
+    //
+    // Import algorithm:
+    //  1. Read small replicated metadata and establish balanced block distributions
+    //     for cells, nodes and dense boundary ordinals.
+    //  2. Read each rank's coordinate and connectivity slices directly into owned
+    //     storage. Boundary ownership is independent of cell/node ownership and uses
+    //     one dense distribution across imported boundary sections, not one per section.
+    //  3. Read MIXED offsets using their own stored integer type: I4 connectivity may
+    //     have I8 offsets. Use offset endpoints to plan final connectivity storage.
+    //  4. Apply BC ranges locally and route distributed BC lists to boundary owners.
+    //     Global BC point lists are never replicated on every rank.
+    //  5. Close the file. If the source is 2D, extrude the planar TRI/QUAD mesh into
+    //     one PRISM/HEXA layer, convert BAR boundaries to QUAD faces, and add end caps.
+    //     Preserve cell ownership; rebalance output nodes and boundary ordinals.
+    //
+    // After import:
+    //  - imported.mesh is always 3D; imported.source retains source dimensions/names.
+    //  - imported.extrusion contains displacement information only for a 2D source.
+    //  - Each rank owns only its cell, coordinate and boundary slices. Connectivity
+    //    references zero-based global node IDs, which may belong to other ranks.
+    //  - Counts, block-distribution parameters and patch labels are small replicated
+    //    metadata. Boundary element IDs may be sparse and are not dense ordinals.
+    //  - This is initial block ownership, not a graph partition or a halo mesh.
+    //    Migration/adaptation must establish the next ownership and ID mapping.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: importing mesh...\n", stderr);
+
+    const auto import_started = std::chrono::steady_clock::now();
+
     auto imported = krona::io::cgns::read_parallel(options.input, comm);
-    auto &mesh = imported.mesh;
-    if (comm.rank() == 0) {
-        if (options.verbosity != Verbosity::quiet) {
-            std::fprintf(stderr, "  Imported: cells=%lld nodes=%lld boundary=%lld\n",
-                static_cast<long long>(mesh.distribution.cells.global_size()),
-                static_cast<long long>(mesh.distribution.nodes.global_size()),
-                static_cast<long long>(mesh.distribution.boundary_ordinals.global_size()));
+    auto& mesh = imported.mesh;
 
-            if (options.verbosity > Verbosity::summary) {
-                std::fprintf(stderr, "  Boundary zones: \n");
+    if (report) {
+        // Measure rank 0's elapsed time without adding a barrier or a timing reduction.
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - import_started).count();
 
-                for (std::size_t i = 0; i < mesh.patches.size(); ++i) {
-                    std::fprintf(stderr, "  boundary: name=%s family=%s source=%s\n",
-                        mesh.patches[i].name.c_str(),
-                        mesh.patches[i].family.c_str(),
-                        mesh.patches[i].source_type.c_str());
-                }
-            }
+        std::fprintf(stderr,
+            "  Mesh: cells=%lld nodes=%lld boundary_elements=%lld patches=%zu ranks=%d\n",
+            static_cast<long long>(mesh.distribution.cells.global_size()),
+            static_cast<long long>(mesh.distribution.nodes.global_size()),
+            static_cast<long long>(mesh.distribution.boundary_ordinals.global_size()),
+            mesh.patches.size(), comm.size());
+
+        if (imported.extrusion) {
+            const auto& extrusion = *imported.extrusion;
+            std::fprintf(stderr,
+                "  Extrusion: 2D -> 3D, one layer, thickness=%.6g normal=(%.6g, %.6g, %.6g)\n",
+                static_cast<double>(extrusion.thickness), extrusion.normal[0],
+                extrusion.normal[1], extrusion.normal[2]);
         }
-        std::fputs("KRONA mesh_partition: import completed; partitioning/export are not implemented.\n", stderr);
+
+        if (detailed) {
+            std::fprintf(stderr,
+                "  Source: CGNS=%.2f base=\"%s\" zone=\"%s\" cell_dim=%d physical_dim=%d\n",
+                static_cast<double>(imported.source.version),
+                imported.source.base_name.c_str(),
+                imported.source.zone_name.c_str(),
+                imported.source.cell_dimension,
+                imported.source.physical_dimension);
+
+            std::fprintf(stderr,
+                "  Rank 0 owns: cells=%zu nodes=%zu boundary_elements=%zu\n",
+                mesh.cells.size(), mesh.coordinates.size(), mesh.boundary.size());
+
+            if (!mesh.patches.empty())
+                std::fputs("  Patches:\n", stderr);
+
+            for (std::size_t i = 0; i < mesh.patches.size(); ++i) {
+                const auto& patch = mesh.patches[i];
+                std::fprintf(stderr,
+                    "    [%zu] name=\"%s\" family=\"%s\" source=\"%s\"\n",
+                    i, patch.name.c_str(),
+                    patch.family.empty() ? "-" : patch.family.c_str(),
+                    patch.source_type.empty() ? "-" : patch.source_type.c_str());
+            }
+
+            for (const auto& name : imported.source.ignored_boundary_conditions)
+                std::fprintf(stderr, "  Ignored BC: \"%s\"\n", name.c_str());
+        }
+
+        std::fprintf(stderr,
+            "KRONA mesh_partition: import completed in %.3f s.\n", seconds);
     }
-    // TODO: topology, partitioning, migration, geometry and export.
+
+    // Distributed construction of unique faces and a symmetric cell dual graph.
+    //
+    // Collective contract and preconditions:
+    //  - Every rank in comm participates with identical BuildFacesOptions.
+    //  - mesh is a conforming 3D snapshot with owned cells in its current block order;
+    //    ghosts are not included in mesh.cells. Node IDs are globally consistent.
+    //  - Supported cells: TET/PYRA/PRISM/HEXA in canonical CGNS node order.
+    //    Optional boundary elements are TRI/QUAD with corresponding patch IDs.
+    //  - Coordinates and input-file metadata are not used. A generated or moved mesh
+    //    works under the same ownership/connectivity contract as an imported mesh.
+    //  - More than two cells per face, duplicate faces of one cell, duplicate boundary
+    //    records, orphan boundary elements and boundary labels on interior faces abort.
+    //    Nonconforming AMR interfaces need a different matching scheme and are not supported.
+    //
+    // Algorithm:
+    //  1. Count local half-faces and boundary labels. One maximum Allreduce determines
+    //     a common round count. Store compact source references instead of retaining
+    //     a full message for every local face.
+    //  2. Build orientation-independent keys from sorted global node IDs. Hash each
+    //     key into a bucket selecting both a round and a rendezvous rank. Equal keys
+    //     always meet in the same round, so unmatched records need not persist.
+    //  3. Materialize the current round and exchange it using packed Alltoallv.
+    //     Sort received records and match equal keys: two cells form an interior face;
+    //     one cell forms an exterior face, with a boundary patch when available.
+    //     Missing labels leave invalid_patch_id; a boundary-only group is an error.
+    //  4. Send each unique face to the owner of its smaller cell ID, cell_a.
+    //     For cross-rank interior faces, send cell_b -> cell_a to cell_b's owner.
+    //     Add both directed adjacencies immediately to reserved local CSR rows;
+    //     reverse-edge receive buffers are not accumulated between rounds.
+    //  5. Sort and deduplicate each CSR row, compact adjacency in place, consolidate
+    //     face chunks, and obtain all global totals with one final sum Allreduce.
+    //
+    // Communication and memory:
+    //  - Each round uses three packed exchanges: half-faces, unique faces and reverse
+    //    edges. Each exchange needs one counts Alltoall and one payload Alltoallv.
+    //    The stage has two Allreduces total; there are no status/diagnostic collectives.
+    //  - Default batch_bytes is 64 MiB: an average per-rank half-face payload target,
+    //    not a strict receive-buffer or total-memory cap under hash imbalance.
+    //  - CSR initially reserves at most one neighbour slot per local cell face;
+    //    unused capacity may remain after compaction. Temporary buffers are released
+    //    after their last use. Faces and graph remain distributed; mesh is read-only.
+    //
+    // After construction:
+    //  - topology.faces stores one globally unique record per face on cell_a's owner.
+    //    cell_b == invalid_cell_id identifies an exterior face, regardless of its patch.
+    //  - Face keys are sorted matching keys, not oriented connectivity. Recover node
+    //    order from cell_a and local_face_a using the canonical cell face tables.
+    //  - topology.graph has one row per owned cell, offsets of type size_t, and sorted
+    //    unique neighbouring global cell IDs. Boundary faces do not create graph arcs.
+    //  - topology.stats contains replicated global counts; graph_arcs counts directed
+    //    adjacencies, not unique faces or undirected graph edges.
+    //  - Face-vector order is unspecified and is not a persistent global face numbering.
+    //    Pure coordinate motion preserves this topology; connectivity changes require
+    //    rebuilding after restoring the ownership contract and boundary connectivity.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: building faces and dual graph...\n", stderr);
+
+    const auto topology_started = std::chrono::steady_clock::now();
+
+    auto topology = krona::mesh::build_faces(mesh, comm);
+    auto& faces = topology.faces;
+    auto& graph = topology.graph;
+
+    if (report) {
+        // Global statistics already exist; logging requires no additional MPI calls.
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - topology_started).count();
+        const auto& stats = topology.stats;
+
+        std::fprintf(stderr, "  Faces: total=%llu interior=%llu boundary=%llu\n",
+            static_cast<unsigned long long>(stats.faces),
+            static_cast<unsigned long long>(stats.interior_faces),
+            static_cast<unsigned long long>(stats.boundary_faces));
+
+        std::fprintf(stderr, "  Dual graph: vertices=%lld directed_arcs=%llu\n",
+            static_cast<long long>(mesh.distribution.cells.global_size()),
+            static_cast<unsigned long long>(stats.graph_arcs));
+
+        if (detailed) {
+            std::fprintf(stderr,
+                "  Rank 0 owns: faces=%zu graph_rows=%zu graph_arcs=%zu\n",
+                faces.size(), mesh.cells.size(), graph.adjacency.size());
+            std::fputs(
+                "  Face ownership: rank owning cell_a (smaller cell ID).\n", stderr);
+            std::fputs(
+                "  CSR neighbours: sorted, unique global cell IDs.\n", stderr);
+        }
+
+        std::fprintf(stderr,
+            "KRONA mesh_partition: topology completed in %.3f s.\n", seconds);
+    }
+    
     return EXIT_SUCCESS;
 }
 

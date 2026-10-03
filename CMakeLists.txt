@@ -486,7 +486,9 @@ endif()
     #============
 add_library(
     krona_mesh_core 
-    INTERFACE
+    STATIC
+        src/mesh/extrusion.cpp
+        src/mesh/faces.cpp
 )
 add_library(krona::mesh_core ALIAS krona_mesh_core)
 target_include_directories(
@@ -497,29 +499,8 @@ target_include_directories(
 )
 target_link_libraries(
     krona_mesh_core 
-    INTERFACE 
+    PUBLIC 
         krona::build_config
-)
-
-    #=======================
-    #=== MESH OPERATIONS ===
-    #=======================
-add_library(
-    krona_mesh_operations 
-    STATIC
-        src/mesh/extrusion.cpp
-)
-add_library(krona::mesh_operations ALIAS krona_mesh_operations)
-target_include_directories(
-    krona_mesh_operations 
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(
-    krona_mesh_operations
-    PUBLIC
-        krona::mesh_core
         krona::mpi
     PRIVATE
         krona::warnings
@@ -576,7 +557,6 @@ endif()
     #========================
 if(KRONA_ENABLE_CGNS)
     add_executable(krona_mesh_partition apps/mesh_partition.cpp)
-
     target_link_libraries(
         krona_mesh_partition
         PRIVATE
@@ -584,7 +564,7 @@ if(KRONA_ENABLE_CGNS)
             krona::warnings
             krona::mpi
             krona::cgns_io
-            krona::mesh_operations
+            krona::mesh_core
     )
 endif()
 
