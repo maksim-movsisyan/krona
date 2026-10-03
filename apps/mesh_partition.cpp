@@ -260,10 +260,21 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     }
     if (comm.rank() == 0) {
         if (options.verbosity != Verbosity::quiet) {
-            std::fprintf(stderr, "  imported: cells=%lld nodes=%lld boundary=%lld\n",
+            std::fprintf(stderr, "  Imported: cells=%lld nodes=%lld boundary=%lld\n",
                 static_cast<long long>(mesh.distribution.cells.global_size()),
                 static_cast<long long>(mesh.distribution.nodes.global_size()),
                 static_cast<long long>(mesh.distribution.boundary_ordinals.global_size()));
+
+            if (options.verbosity > Verbosity::summary) {
+                std::fprintf(stderr, "  Boundary zones: \n");
+
+                for (std::size_t i = 0; i < mesh.patches.size(); ++i) {
+                    std::fprintf(stderr, "  boundary: name=%s family=%s source=%s\n",
+                        mesh.patches[i].name.c_str(),
+                        mesh.patches[i].family.c_str(),
+                        mesh.patches[i].source_type.c_str());
+                }
+            }
         }
         std::fputs("KRONA mesh_partition: import completed; partitioning/export are not implemented.\n", stderr);
     }

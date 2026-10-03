@@ -71,13 +71,13 @@ enum class GradingType : std::uint8_t {
     return "unknown";
 }
 
-[[nodiscard]] inline GradingType parse_grading_type(std::string_view str, MPI_Comm comm) {
+[[nodiscard]] inline GradingType parse_grading_type(std::string_view str) {
     if (str == "uniform")    return GradingType::UNIFORM;
     if (str == "geometric")  return GradingType::GEOMETRIC;
     if (str == "tanh_start") return GradingType::TANH_START;
     if (str == "tanh_end")   return GradingType::TANH_END;
     if (str == "tanh_both")  return GradingType::TANH_BOTH;
-    mpi::fatal(comm, "Unknown grading type: " + std::string(str));
+    mpi::fatal("Unknown grading type: " + std::string(str));
     return static_cast<GradingType>(0);
 }
 

@@ -13,8 +13,8 @@ namespace krona::mesh_generator {
 
 namespace {
 
-[[noreturn]] void fail(MPI_Comm comm, const std::string& what) {
-    mpi::fatal(comm, "topology: " + what);
+[[noreturn]] void fail(const std::string& what) {
+    mpi::fatal("topology: " + what);
     std::abort();
 }
 
@@ -69,7 +69,7 @@ void MacroTopology::build(const GeneratorConfig& config, MPI_Comm comm) {
             const std::size_t v = blk.vertices[hex_edge_pairs[e].second];
             const std::size_t cells = (e < 4) ? blk.cells[0] : ((e < 8) ? blk.cells[1] : blk.cells[2]);
 
-            const std::size_t edge_idx = find_or_add_edge(u, v, cells, comm);
+            const std::size_t edge_idx = find_or_add_edge(u, v, cells);
             bt.edges[e] = {edge_idx, (u > v)};
         }
 
@@ -197,14 +197,14 @@ void MacroTopology::build(const GeneratorConfig& config, MPI_Comm comm) {
               [](const NodeRange& a, const NodeRange& b) { return a.first < b.first; });
 }
 
-std::size_t MacroTopology::find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells, MPI_Comm comm) {
+std::size_t MacroTopology::find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells) {
     const std::size_t v_min = std::min(u, v);
     const std::size_t v_max = std::max(u, v);
 
     for (std::size_t i = 0; i < edges_.size(); ++i) {
         if (edges_[i].v0 == v_min && edges_[i].v1 == v_max) {
             if (edges_[i].num_cells != cells) {
-                fail(comm, std::format("Shared edge ({},{}) cell count mismatch: {} vs {}",
+                fail(std::format("Shared edge ({},{}) cell count mismatch: {} vs {}",
                                        v_min, v_max, edges_[i].num_cells, cells));
             }
             return i;

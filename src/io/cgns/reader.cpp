@@ -1,5 +1,6 @@
 #include "krona/io/cgns/reader.hpp"
 
+#include "krona/config.hpp"
 #include "krona/mpi/collective_status.hpp"
 #include "krona/mpi/collectives.hpp"
 #include "krona/mpi/error.hpp"
@@ -22,10 +23,9 @@
 #include <type_traits>
 #include <utility>
 
-namespace krona::io::cgns
-{
-namespace
-{
+namespace krona::io::cgns {
+
+namespace {
 
 using ElementType = CGNS_ENUMT(ElementType_t);
 using PointSetType = CGNS_ENUMT(PointSetType_t);
@@ -289,24 +289,39 @@ struct Metadata
 void read_metadata(const File &file, const ReaderOptions &options, ReadResult &result,
                    Metadata &metadata)
 {
+    // get file id, reading zone base and index
     const int f = file.id(), b = options.base_index, z = options.zone_index;
+
+    // get resulting mesh ref
     auto &mesh = result.mesh;
+
+    // read file version
     char name[33]{};
     check_cgns(cg_version(f, &result.source.version), "cg_version", file.comm());
+
+    // read base metadata
     check_cgns(cg_base_read(f, b, name, &mesh.cell_dimension, &mesh.physical_dimension),
                "cg_base_read", file.comm());
+
+    // save base name and check based dims corectness
     prepare(file.comm(), "Store base name", [&] { result.source.base_name = name; });
     ensure((mesh.cell_dimension == 2 || mesh.cell_dimension == 3) &&
                mesh.physical_dimension >= mesh.cell_dimension && mesh.physical_dimension <= 3,
            "Expected a 2D/3D CGNS base");
+
+    // read zone metadata
     CGNS_ENUMT(ZoneType_t) zone_type{};
     check_cgns(cg_zone_type(f, b, z, &zone_type), "cg_zone_type", file.comm());
     ensure(zone_type == CGNS_ENUMV(Unstructured), "Only unstructured zones are implemented");
     std::array<cgsize_t, 9> zone_size{};
     check_cgns(cg_zone_read(f, b, z, name, zone_size.data()), "cg_zone_read", file.comm());
     prepare(file.comm(), "Store zone name", [&] { result.source.zone_name = name; });
-    const auto nodes = global_index(zone_size[0]), cells = global_index(zone_size[1]);
+
+    // get numer of nodes and cells
+    const GlobalIndex nodes = global_index(zone_size[0]), cells = global_index(zone_size[1]);
     ensure(nodes > 0 && cells > 0, "Empty CGNS zones are not supported");
+
+    // distribute contiguous node & cell blocks among ranks
     mesh.distribution = {
         Block{cells, file.comm().size()}, Block{nodes, file.comm().size()}, {}, file.comm().rank()};
     prepare(file.comm(), "Validate local sizes",
@@ -316,11 +331,15 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
                 check_local_size(mesh.distribution.nodes.local_size(file.comm().rank()));
             });
 
+    // read number of coordinate axis
     int coordinates = 0;
     check_cgns(cg_ncoords(f, b, z, &coordinates), "cg_ncoords", file.comm());
     constexpr std::array<std::string_view, 3> names{"CoordinateX", "CoordinateY", "CoordinateZ"};
+
+    // loop over all cooridnate axis
     for (int c = 1; c <= coordinates; ++c)
     {
+        // read coordinate axis metadata
         DataType type{};
         check_cgns(cg_coord_info(f, b, z, c, &type, name), "cg_coord_info", file.comm());
         for (std::size_t axis = 0; axis < names.size(); ++axis)
@@ -341,12 +360,17 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
                "Missing named Cartesian coordinate array");
     }
 
+    // read zone id
     double zone_id = 0;
     check_cgns(cg_zone_id(f, b, z, &zone_id), "cg_zone_id", file.comm());
+
+    // read number of sections
     int sections = 0;
     check_cgns(cg_nsections(f, b, z, &sections), "cg_nsections", file.comm());
     prepare(file.comm(), "Allocate section metadata",
             [&] { metadata.sections.reserve(static_cast<std::size_t>(sections) * 2); });
+
+    // loop over all sections
     for (int s = 1; s <= sections; ++s)
     {
         Section section;
@@ -913,18 +937,23 @@ void read_boundaries(const File &file, const ReaderOptions &options, const Metad
 
 ReadResult read_parallel(const std::string &path, mpi::CommView comm, const ReaderOptions &options)
 {
+    // Check communicator
     if (comm.is_null() || comm.is_intercommunicator())
     {
         mpi::fatal(comm.abort_scope(), "CGNS import requires a live intracommunicator");
     }
+
+    // Check calling thread status (only main thread is avaliable)
     int main_thread = 0;
     mpi::check(MPI_Is_thread_main(&main_thread), comm.abort_scope(), "MPI_Is_thread_main");
     if (!main_thread)
     {
         mpi::fatal(comm.abort_scope(), "CGNS import must run on the MPI main thread");
     }
+
+    // Check input data corectness (local status catch all throws)
     std::unique_lock lock(cgns_mutex, std::defer_lock);
-    const auto status = mpi::LocalStatus::capture(
+    const mpi::LocalStatus status = mpi::LocalStatus::capture(
         [&]
         {
             ensure(lock.try_lock(), "Concurrent CGNS imports are not supported in one process");
@@ -932,16 +961,23 @@ ReadResult read_parallel(const std::string &path, mpi::CommView comm, const Read
             ensure(options.base_index > 0 && options.zone_index > 0,
                    "CGNS base/zone indices are one-based");
             ensure(options.batch_elements > 0 &&
-                       options.batch_elements <=
-                           static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
+                       options.batch_elements <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
                    "Invalid CGNS batch size");
             ensure(options.unsupported_boundary == UnsupportedBoundary::reject ||
                        options.unsupported_boundary == UnsupportedBoundary::ignore,
                    "Invalid unsupported BC policy");
         });
+
+    // Exchange local status among all ranks
     mpi::require_collective_success(comm, status, "Prepare CGNS import");
+
+    // Open file (MODE - READ + INDEPENDENT swap to COLLECTIVE if the reading is bottle neck)
     File file(path, comm);
+
+    // Prepare results
     ReadResult result;
+
+    // Parse file metadata
     Metadata metadata;
     metadata_phase(comm, "Read CGNS metadata",
                    [&] { read_metadata(file, options, result, metadata); });

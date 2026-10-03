@@ -8,14 +8,19 @@
 
 namespace krona::mpi {
 
-enum class ThreadLevel : int {
+/// @brief Available MPI thread support levels.
+enum class ThreadLevel : int
+{
     single = MPI_THREAD_SINGLE,
     funneled = MPI_THREAD_FUNNELED,
     serialized = MPI_THREAD_SERIALIZED,
     multiple = MPI_THREAD_MULTIPLE
 };
 
-[[nodiscard]] constexpr std::string_view to_string(ThreadLevel level) noexcept {
+/// @brief Returns the MPI name of a thread support level.
+[[nodiscard]] constexpr std::string_view to_string(ThreadLevel level) noexcept
+{
+    // String literals remain valid for the lifetime of the program.
     switch (level) {
     case ThreadLevel::single:     return "MPI_THREAD_SINGLE";
     case ThreadLevel::funneled:   return "MPI_THREAD_FUNNELED";
@@ -25,45 +30,53 @@ enum class ThreadLevel : int {
     return "invalid MPI thread level";
 }
 
-// Lifecycle calls belong to the MPI main thread and must not race.
-// Release MPI resources and complete communication before owned finalization.
-class Runtime final {
+/// @brief Initializes MPI or borrows an existing runtime on the MPI main thread.
+/// Owned MPI is finalized on normal exit; all MPI resources must be released first.
+class Runtime final
+{
 public:
-    // Initialize MPI if needed; otherwise borrow the existing runtime.
+    /// @brief Initializes or borrows MPI, passing command-line arguments if needed.
     Runtime(
         int& argc,
         char**& argv,
         ThreadLevel required = ThreadLevel::funneled,
         std::source_location where = std::source_location::current()) noexcept;
 
-    // Same lifecycle, with no command-line arguments passed to MPI.
+    /// @brief Initializes or borrows MPI without passing command-line arguments.
     explicit Runtime(
         ThreadLevel required = ThreadLevel::funneled,
         std::source_location where = std::source_location::current()) noexcept;
 
-    // Finalize owned MPI on normal exit; abort during exception unwinding.
+    /// @brief Finalizes owned MPI on normal exit; aborts during exception unwinding.
     ~Runtime() noexcept;
 
+    /// @brief Runtime ownership cannot be copied.
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
+
+    /// @brief Runtime guards cannot be moved to another object or thread.
     Runtime(Runtime&&) = delete;
     Runtime& operator=(Runtime&&) = delete;
 
+    /// @brief Returns whether this guard owns MPI initialization.
     [[nodiscard]] bool owns_mpi() const noexcept { return owns_mpi_; }
+
+    /// @brief Returns the cached provided thread support level.
     [[nodiscard]] ThreadLevel thread_level() const noexcept { return provided_; }
 
-    // Finalize owned MPI collectively; borrowed guards simply detach.
-    // Repeated calls are harmless. Use on the construction thread.
-    void finalize(
-        std::source_location where = std::source_location::current()) noexcept;
+    /// @brief Finalizes owned MPI collectively; a borrowed guard only detaches.
+    /// Repeated calls are harmless; call from the construction thread.
+    void finalize(std::source_location where = std::source_location::current()) noexcept;
 
 private:
+    /// @brief Implements the shared initialization and borrowing path.
     Runtime(
         int* argc,
         char*** argv,
         ThreadLevel required,
         std::source_location where) noexcept;
 
+    /// @brief Checks the lifecycle thread without making MPI calls.
     void require_construction_thread(std::source_location where) const noexcept;
 
     std::thread::id construction_thread_;

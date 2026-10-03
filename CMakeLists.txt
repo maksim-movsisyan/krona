@@ -422,17 +422,6 @@ int main(int argc, char** argv) {
 endif()
 
 #==================================================================
-#==== ADD BUILDING TESTING ========================================
-#==================================================================
-if(BUILD_TESTING)
-    add_subdirectory(tests/mesh)
-
-    if(KRONA_ENABLE_CGNS)
-        add_subdirectory(tests/cgns)
-    endif()
-endif()
-
-#==================================================================
 #==== CONFIGURATION REPORT & APPLICATION ENTRYS ===================
 #==================================================================
 message(STATUS "")
@@ -515,53 +504,53 @@ target_link_libraries(
     #=======================
     #=== MESH OPERATIONS ===
     #=======================
-add_library(
-    krona_mesh_operations 
-    STATIC
-        src/mesh/extrusion.cpp
-)
-add_library(krona::mesh_operations ALIAS krona_mesh_operations)
-target_include_directories(
-    krona_mesh_operations 
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(
-    krona_mesh_operations
-    PUBLIC
-        krona::mesh_core
-        krona::mpi
-    PRIVATE
-        krona::warnings
-)
+#add_library(
+#    krona_mesh_operations 
+#    STATIC
+#        src/mesh/extrusion.cpp
+#)
+#add_library(krona::mesh_operations ALIAS krona_mesh_operations)
+#target_include_directories(
+#    krona_mesh_operations 
+#    INTERFACE
+#        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+#        $<INSTALL_INTERFACE:include>
+#)
+#target_link_libraries(
+#    krona_mesh_operations
+#    PUBLIC
+#        krona::mesh_core
+#        krona::mpi
+#    PRIVATE
+#        krona::warnings
+#)
 
     #===============
     #=== CGNS IO ===
     #===============
-if(KRONA_ENABLE_CGNS)
-    add_library(
-        krona_cgns_io
-        STATIC
-            src/io/cgns/reader.cpp
-    )
-    add_library(krona::cgns_io ALIAS krona_cgns_io)
-    target_include_directories(
-        krona_cgns_io 
-        INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-    )
-    target_link_libraries(
-        krona_cgns_io
-        PUBLIC 
-            krona::mesh_core 
-            krona::mpi
-        PRIVATE 
-            krona::cgns 
-            krona::warnings
-    )
-endif()
+#if(KRONA_ENABLE_CGNS)
+#    add_library(
+#        krona_cgns_io
+#        STATIC
+#            src/io/cgns/reader.cpp
+#    )
+#    add_library(krona::cgns_io ALIAS krona_cgns_io)
+#    target_include_directories(
+#        krona_cgns_io 
+#        INTERFACE
+#            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+#            $<INSTALL_INTERFACE:include>
+#    )
+#    target_link_libraries(
+#        krona_cgns_io
+#        PUBLIC 
+#            krona::mesh_core 
+#            krona::mpi
+#        PRIVATE 
+#            krona::cgns 
+#            krona::warnings
+#    )
+#endif()
 
 #==================================================================
 #==== EXECUTABLES  ================================================
@@ -585,16 +574,28 @@ endif()
     #========================
     #=== MESH PARTITIONER ===
     #========================
-if(KRONA_ENABLE_CGNS)
-    add_executable(krona_mesh_partition apps/mesh_partition.cpp)
+#if(KRONA_ENABLE_CGNS)
+#    add_executable(krona_mesh_partition apps/mesh_partition.cpp)
+#
+#    target_link_libraries(
+#        krona_mesh_partition
+#        PRIVATE
+#            krona::build_config
+#            krona::warnings
+#            krona::mpi
+#            krona::cgns_io
+#            krona::mesh_operations
+#    )
+#endif()
 
-    target_link_libraries(
-        krona_mesh_partition
-        PRIVATE
-            krona::build_config
-            krona::warnings
-            krona::mpi
-            krona::cgns_io
-            krona::mesh_operations
-    )
-endif()
+
+#==================================================================
+#==== ADD BUILDING TESTING ========================================
+#==================================================================
+#if(BUILD_TESTING)
+#    add_subdirectory(tests/mesh)
+#
+#    if(KRONA_ENABLE_CGNS)
+#        add_subdirectory(tests/cgns)
+#    endif()
+#endif()

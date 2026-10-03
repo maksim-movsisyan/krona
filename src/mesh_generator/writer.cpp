@@ -16,9 +16,9 @@ namespace krona::mesh_generator {
 
 namespace {
 
-inline void check_cgns(int status, const char* msg, MPI_Comm comm) {
+inline void check_cgns(int status, const char* msg) {
     if (status != CG_OK) {
-        mpi::fatal(comm, std::format("CGNS Error [{}]: {}", msg, cg_get_error()));
+        mpi::fatal(std::format("CGNS Error [{}]: {}", msg, cg_get_error()));
         std::abort();
     }
 }
@@ -89,14 +89,14 @@ void write(const std::string& filepath,
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &nprocs);
 
-    check_cgns(cgp_mpi_comm(comm), "cgp_mpi_comm", comm);
-    check_cgns(cgp_pio_mode(CGP_COLLECTIVE), "cgp_pio_mode(CGP_COLLECTIVE)", comm);
+    check_cgns(cgp_mpi_comm(comm), "cgp_mpi_comm");
+    check_cgns(cgp_pio_mode(CGP_COLLECTIVE), "cgp_pio_mode(CGP_COLLECTIVE)");
 
     int fn = 0;
-    check_cgns(cgp_open(filepath.c_str(), CG_MODE_WRITE, &fn), "cgp_open(WRITE)", comm);
+    check_cgns(cgp_open(filepath.c_str(), CG_MODE_WRITE, &fn), "cgp_open(WRITE)");
 
     int base_id = 0;
-    check_cgns(cg_base_write(fn, "Base_3D", 3, 3, &base_id), "cg_base_write", comm);
+    check_cgns(cg_base_write(fn, "Base_3D", 3, 3, &base_id), "cg_base_write");
 
     const std::uint64_t total_nodes = topo.total_nodes();
     const std::uint64_t total_cells = topo.total_cells();
@@ -109,13 +109,13 @@ void write(const std::string& filepath,
     };
 
     check_cgns(cg_zone_write(fn, base_id, "Zone1", zone_sizes, CGNS_ENUMV(Unstructured), &zone_id),
-               "cg_zone_write", comm);
+               "cg_zone_write");
 
     // Coordinates write
     int cx_id = 0, cy_id = 0, cz_id = 0;
-    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateX", &cx_id), "cgp_coord_write(X)", comm);
-    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateY", &cy_id), "cgp_coord_write(Y)", comm);
-    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateZ", &cz_id), "cgp_coord_write(Z)", comm);
+    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateX", &cx_id), "cgp_coord_write(X)");
+    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateY", &cy_id), "cgp_coord_write(Y)");
+    check_cgns(cgp_coord_write(fn, base_id, zone_id, CGNS_ENUMV(RealDouble), "CoordinateZ", &cz_id), "cgp_coord_write(Z)");
 
     const auto [node_start, node_end] = decompose_1d(total_nodes, rank, nprocs);
     const std::uint64_t local_nodes_cnt = node_end - node_start;
@@ -133,11 +133,11 @@ void write(const std::string& filepath,
             const cgsize_t first = has_data ? static_cast<cgsize_t>(node_start + offset + 1) : 1;
             const cgsize_t last = has_data ? static_cast<cgsize_t>(node_start + offset + count) : 0;
             check_cgns(cgp_coord_write_data(fn, base_id, zone_id, cx_id, &first, &last, has_data ? px.data() : nullptr),
-                       "cgp_coord_write_data(X)", comm);
+                       "cgp_coord_write_data(X)");
             check_cgns(cgp_coord_write_data(fn, base_id, zone_id, cy_id, &first, &last, has_data ? py.data() : nullptr),
-                       "cgp_coord_write_data(Y)", comm);
+                       "cgp_coord_write_data(Y)");
             check_cgns(cgp_coord_write_data(fn, base_id, zone_id, cz_id, &first, &last, has_data ? pz.data() : nullptr),
-                       "cgp_coord_write_data(Z)", comm);
+                       "cgp_coord_write_data(Z)");
         });
     } // Release all coordinate buffers before allocating connectivity.
 
@@ -150,7 +150,7 @@ void write(const std::string& filepath,
     int hex_sec_id = 0;
     check_cgns(cgp_section_write(fn, base_id, zone_id, "Volume_HEXA",
                                  CGNS_ENUMV(HEXA_8), hex_start, hex_end, 0, &hex_sec_id),
-               "cgp_section_write(HEXA_8)", comm);
+               "cgp_section_write(HEXA_8)");
 
     const auto [cell_start, cell_end] = decompose_1d(total_cells, rank, nprocs);
     const std::uint64_t local_cells_cnt = cell_end - cell_start;
@@ -179,7 +179,7 @@ void write(const std::string& filepath,
             const cgsize_t last = has_data ? static_cast<cgsize_t>(cell_start + offset + count) : 0;
             check_cgns(cgp_elements_write_data(fn, base_id, zone_id, hex_sec_id, first, last,
                                               has_data ? hex_conn.data() : nullptr),
-                       "cgp_elements_write_data(HEXA_8)", comm);
+                       "cgp_elements_write_data(HEXA_8)");
         });
     } // Release volume connectivity before writing boundary patches.
 
@@ -227,7 +227,7 @@ void write(const std::string& filepath,
             }
 
             if (!matched) {
-                mpi::fatal(comm, std::format("Patch '{}' face [{},{},{},{}] doesn't match any block face",
+                mpi::fatal(std::format("Patch '{}' face [{},{},{},{}] doesn't match any block face",
                                              patch.name, mf.vertices[0], mf.vertices[1], mf.vertices[2], mf.vertices[3]));
             }
         }
@@ -241,7 +241,7 @@ void write(const std::string& filepath,
         int bnd_sec_id = 0;
         check_cgns(cgp_section_write(fn, base_id, zone_id, patch.name.c_str(),
                                      CGNS_ENUMV(QUAD_4), patch_start, patch_end, 0, &bnd_sec_id),
-                   "cgp_section_write(QUAD_4)", comm);
+                   "cgp_section_write(QUAD_4)");
 
         const auto [quad_start, quad_end] = decompose_1d(patch_total_quads, rank, nprocs);
         const std::uint64_t local_quads_cnt = quad_end - quad_start;
@@ -290,7 +290,7 @@ void write(const std::string& filepath,
                     static_cast<std::uint64_t>(patch_start) + quad_start + offset + count - 1) : 0;
                 check_cgns(cgp_elements_write_data(fn, base_id, zone_id, bnd_sec_id, first, last,
                                                   has_data ? quad_conn.data() : nullptr),
-                           "cgp_elements_write_data(QUAD_4)", comm);
+                           "cgp_elements_write_data(QUAD_4)");
             });
         }
 
@@ -299,13 +299,13 @@ void write(const std::string& filepath,
 
         check_cgns(cg_boco_write(fn, base_id, zone_id, patch.name.c_str(), CGNS_ENUMV(BCTypeUserDefined),
                                  CGNS_ENUMV(PointRange), 2, range, &boco_id),
-                   "cg_boco_write", comm);
+                   "cg_boco_write");
 
         check_cgns(cg_boco_gridlocation_write(fn, base_id, zone_id, boco_id, CGNS_ENUMV(FaceCenter)),
-                   "cg_boco_gridlocation_write", comm);
+                   "cg_boco_gridlocation_write");
     }
 
-    check_cgns(cgp_close(fn), "cgp_close", comm);
+    check_cgns(cgp_close(fn), "cgp_close");
 
     if (rank == 0) {
         std::fputs("Parallel CGNS mesh successfully written to '", stdout);

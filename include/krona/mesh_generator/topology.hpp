@@ -100,7 +100,7 @@ private:
 
     [[nodiscard]] const NodeRange& find_node_range(std::uint64_t id) const noexcept;
 
-    std::size_t find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells, MPI_Comm comm);
+    std::size_t find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells);
     std::size_t find_or_add_face(const std::array<std::size_t, 4>& quad_v,
                                  std::size_t cu, std::size_t cv, MPI_Comm comm);
 };

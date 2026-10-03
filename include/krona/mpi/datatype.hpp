@@ -124,5 +124,5 @@ template<MpiDatatype T>
 [[nodiscard]] inline MPI_Datatype datatype() noexcept {
     return detail::datatype_map<std::remove_cvref_t<T>>::get();
 }
-
+ 
 } // namespace krona::mpi
