@@ -494,6 +494,9 @@ add_library(
         src/mesh/reorder.cpp
         src/mesh/bc_config.cpp
         src/mesh/validate.cpp
+        src/mesh/aux_connectivity.cpp
+        src/mesh/aux_geometry.cpp
+        src/mesh/wall_distance.cpp
 )
 add_library(krona::mesh_core ALIAS krona_mesh_core)
 target_include_directories(
