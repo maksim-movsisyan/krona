@@ -6,7 +6,12 @@
 #include <krona/mesh/extrusion.hpp>
 #include <krona/mesh/faces.hpp>
 #include <krona/mesh_partition/partition.hpp>
+#include <krona/mesh/migrate.hpp>
+#include <krona/mesh/geometry.hpp>
+#include <krona/mesh/reorder.hpp>
 
+#include <utility>
+#include <vector>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -566,6 +571,321 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         // This is rank 0's elapsed time, not a reduced maximum across ranks.
         std::fprintf(stderr, "KRONA mesh_partition: partitioning completed in %.3f s.\n",
                     seconds);
+    }
+
+    // Distributed migration to the target ranks, one-layer face-neighbour halo,
+    // local zero-based connectivity and field-exchange maps for the solver.
+    // Every rank in comm participates, including ranks with no source/target cells.
+    // Run on the MPI main thread with matching source ownership metadata on all ranks.
+    //
+    // Input contract:
+    //  - mesh is the 3D import snapshot, with block-owned cells and coordinates.
+    //  - faces contains one globally unique record per physical face, stored on
+    //    the original owner of cell_a. Local facet indices follow CGNS node ordering.
+    //  - pr.cell_target_rank has one destination rank per current local source cell.
+    //  - Only linear TET/PYRA/PRISM/HEXA volume cells are supported. The mesh is
+    //    conforming and manifold; vertex-sharing neighbours do not enter this halo.
+    //  - The general MigrationSource overload also accepts unequal contiguous source
+    //    ranges. It requires unique coordinate ownership and dense global IDs;
+    //    adapted inputs must be renumbered and all references remapped consistently.
+    //
+    // Algorithm:
+    //  1. Deduplicate remote cell_b IDs and query their current source owners for
+    //     destination ranks. Local targets are read directly from the supplied span.
+    //  2. Redistribute volume cells with small (GID,type) headers and exact-length
+    //     node connectivity. Header arities determine connectivity receive counts.
+    //     There is no fixed eight-node padding for tetrahedra, pyramids or prisms.
+    //  3. Redistribute compact faces. A boundary or same-destination interior face
+    //     is sent once; a cut face is sent to both adjacent destination ranks.
+    //     The second copy uses cell_b as owner and its own local facet ordering.
+    //  4. Sort/unique required ghosts by (new owner rank, cell GID). Request their
+    //     complete topology from the new owners. The same requests establish halo
+    //     send_owned_local and receive order; no additional handshake is performed.
+    //     Known inverse layouts deliver replies without another count exchange.
+    //  5. Resolve face references to local cell indices, then release cell-GID
+    //     lookups. Collect unique nodes used by owned cells first and ghost-only
+    //     nodes second; sort each group by GID, or scan compact dense ranges.
+    //  6. Assemble cell CSR with owned cells in [0,n_own) and ghosts after them.
+    //     Convert node GIDs to LocalIndex and release global connectivity/lookups.
+    //     Reconstruct face nodes from oriented owner facets; no geometry is computed.
+    //  7. Copy locally held coordinates and request only missing triples from the
+    //     original coordinate owners. A one-rank full-node import moves coordinates.
+    //  8. Build patch-face CSR and reduce actual face/boundary/cut/halo totals.
+    //     Unique face counts come from source FaceRecords, not partition graph cuts:
+    //     one graph edge can represent several physical faces. Bounds include all
+    //     nodes referenced by owned cells; a completely empty mesh has zero bounds.
+    //
+    // Memory and communication:
+    //  - This call consumes mesh cell/coordinate/boundary payloads and faces.
+    //    The target-rank span is borrowed and must remain valid until return.
+    //  - Reusable storage is moved; dead buffers are released at their last use.
+    //    The source dual graph is released below before migration starts.
+    //  - There is no gather to rank 0 and no collective status preflight.
+    //    MPI 3.1 int counts/displacements limit each packed exchange; migration
+    //    is not batched and offers no fixed bound on peak process memory.
+    //  - One-rank transfers bypass MPI. Multi-rank ranks execute matching calls
+    //    even if their local buffers are empty. Statistics need one SUM reduction
+    //    and one MIN reduction for nonempty global meshes, with no logging barriers.
+    //
+    // Output and subsequent stages:
+    //  - mp contains local cells/nodes/faces, patch labels and halo exchange maps.
+    //    Nodes used by owned cells are not exclusively owned globally; ranks can
+    //    store the same node. Ghosts are exactly one layer of face neighbours.
+    //  - Each face owner is owned locally. An interior neighbour may be owned or
+    //    ghost; a boundary neighbour is invalid_local_index. Cut faces occur on both
+    //    adjacent ranks. Facet orientation assumes positively oriented input cells.
+    //  - Geometry arrays remain empty. RCM/SFC and face grouping are separate stages.
+    //    mp.faces_grouped is false; n_internal_faces/n_inner_faces are not valid range
+    //    boundaries yet. The grouping stage must form owned-owned, owned-ghost and
+    //    boundary sections, update their boundaries and set faces_grouped true.
+    //  - Reordering must remap halo indices and patch-face indices with connectivity;
+    //    topology changes require rebuilding them. Coordinate motion alone does not.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: migrating mesh and building halo...\n", stderr);
+    const auto migration_started = std::chrono::steady_clock::now();
+
+    // The old CSR describes source ownership and is no longer needed here.
+    graph = {};
+    auto mp = krona::mesh::migrate_local_mesh(
+        std::move(mesh), std::move(faces), std::span<const int>{pr.cell_target_rank}, comm);
+    std::vector<int>{}.swap(pr.cell_target_rank);
+
+    if (report) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - migration_started).count();
+        const double halo_percent = mp.n_cells_g > 0
+            ? 100.0 * static_cast<double>(mp.n_ghost_copies_g) / static_cast<double>(mp.n_cells_g) : 0.0;
+        std::fprintf(stderr,
+            "  Migrated: cells=%llu source_nodes=%llu unique_faces=%llu\n",
+            static_cast<unsigned long long>(mp.n_cells_g),
+            static_cast<unsigned long long>(mp.n_nodes_g),
+            static_cast<unsigned long long>(mp.n_faces_g));
+        std::fprintf(stderr, "  Faces: boundary=%llu labeled=%llu partition_cut=%llu\n",
+            static_cast<unsigned long long>(mp.n_bfaces_g),
+            static_cast<unsigned long long>(mp.n_labeled_bfaces_g),
+            static_cast<unsigned long long>(mp.n_cut_faces_g));
+        std::fprintf(stderr, "  Halo: ghost_copies=%llu overhead=%.2f%%\n",
+            static_cast<unsigned long long>(mp.n_ghost_copies_g), halo_percent);
+        std::fprintf(stderr, "  Bounds: x=[%.6g, %.6g] y=[%.6g, %.6g] z=[%.6g, %.6g]\n",
+            static_cast<double>(mp.bbox_lo[0]), static_cast<double>(mp.bbox_hi[0]),
+            static_cast<double>(mp.bbox_lo[1]), static_cast<double>(mp.bbox_hi[1]),
+            static_cast<double>(mp.bbox_lo[2]), static_cast<double>(mp.bbox_hi[2]));
+        if (detailed) {
+            // These are rank 0's local counts, not a global distribution summary.
+            std::fprintf(stderr, "  Rank 0: owned=%lld ghosts=%lld nodes=%lld faces=%lld peers=%d\n",
+                static_cast<long long>(mp.n_own), static_cast<long long>(mp.n_cells - mp.n_own),
+                static_cast<long long>(mp.n_nodes), static_cast<long long>(mp.n_faces), mp.n_neighbors());
+            std::fputs("  Topology and halo maps ready; geometry and face grouping are pending.\n", stderr);
+        }
+        // Root-local elapsed time; diagnostics add no collective operations.
+        std::fprintf(stderr, "KRONA mesh_partition: migration completed in %.3f s.\n", seconds);
+    }
+    
+    // Distributed geometric integration and verification of outward face winding.
+    // All ranks in comm participate, including empty ranks, on the MPI main thread.
+    // The explicit communicator must match the ranks used to migrate mp.
+    //
+    // Input contract:
+    //  - mp has valid local CSR connectivity and complete coordinates for owned and
+    //    ghost cells. Supported linear volume cells are TET/PYRA/PRISM/HEXA; faces
+    //    are TRI/QUAD with owner-relative outward loops from the CGNS face tables.
+    //  - Every face owner belongs to [0,n_own); an interior neighbour may be owned
+    //    or ghost. Boundary neighbours are invalid_local_index.
+    //  - Cells have positive orientation and the usual valid convex CFD geometry.
+    //    Strict centroid-side checks are not a general concave-cell validator or a
+    //    proof that a cell/face has no self-intersections.
+    //  - Coordinates may have changed since migration, but all shared/ghost copies
+    //    must already be synchronized. Geometry computation does not exchange them.
+    //
+    // Algorithm and geometric convention:
+    //  1. Resize existing metric arrays; no per-cell/per-face heap buffers are used.
+    //     Compute every owned/ghost cell in double arithmetic from at most 8 vertices.
+    //  2. Shift coordinates by the first vertex, then integrate around the local
+    //     vertex mean. Outward facet triangles and this anchor define signed
+    //     tetrahedra. Sum their volumes and first moments for the true volume centre
+    //     of the represented piecewise-planar polyhedron, up to floating-point error.
+    //  3. TRI faces are integrated directly. QUAD faces use four triangles joining
+    //     consecutive vertices to their vertex mean. The identical fan defines the
+    //     quad surface in both the cell and face integrations; a different diagonal
+    //     or a bilinear warped-quad mapping would define different geometry.
+    //  4. Compute face centres with actual subtriangle-area weights. Sum oriented
+    //     triangle area vectors into S; store face_area = |S| and normal = S/|S|.
+    //     Thus area*normal reconstructs the flux area vector. For a warped quad,
+    //     |S| generally differs from the sum of its scalar triangle areas.
+    //  5. Check positive finite volumes and flux areas, finite centres/normals and
+    //     representable metric storage. No unit-dependent 1e-15 cutoff is used:
+    //     a small valid cell is accepted while zero, inverted or nonfinite geometry
+    //     aborts with its rank and local entity IDs (also cell GID/type for cells).
+    //  6. Verify n dot (face_centre-owner_centre) > 0 on every face. Also verify
+    //     n dot (neighbour_centre-face_centre) > 0 on interior faces. No face/cell
+    //     is silently flipped. The normal points outward from its local owner;
+    //     the two copies of a partition-cut face consequently have opposite normals.
+    //     Winding checks use local offsets before conversion to world centroids,
+    //     avoiding subtraction of rounded absolute centres on highly shifted meshes.
+    //  7. Accumulate volume totals/extrema over owned cells only: ghosts do not
+    //     duplicate the physical domain volume. Face extrema include local copies,
+    //     whose duplication does not affect MIN/MAX. Bounds use nodes referenced by
+    //     owned cells, excluding ghost-only nodes. Empty ranks use neutral extrema.
+    //  8. Reduce packed extrema/bounds once with MIN and total owned volume once
+    //     with SUM; refresh mp.bbox_lo/hi. No logging barriers or status preflights
+    //     are added. A one-rank communicator skips both MPI reductions; a globally
+    //     empty mesh reports zero total volume, extrema and bounds.
+    //
+    // Output and reuse:
+    //  - mp contains volumes/centres for all local cells, including ghosts, and
+    //    areas/centres/normals for every local face. Storage uses GeometryReal;
+    //    double arithmetic cannot recover coordinate detail already lost on input.
+    //  - Existing array capacity is reused. Cell-centroid arrays temporarily hold
+    //    local offsets during orientation checks, then contain absolute centres.
+    //    Connectivity, halo maps, patch indices and the three face regions are not
+    //    reordered or changed. The function does not set faces_grouped.
+    //  - Coordinate motion alone can reuse this call after coordinate synchronization.
+    //    Topology adaptation also requires rebuilding topology/halo/connectivity first.
+    //  - compute_mesh_geometry(mp) is the local overload: it computes the same metrics
+    //    with no reductions, returns local statistics and leaves global bounds alone.
+    //    Empty local minima/bounds in that overload retain infinity sentinels.
+    //  - Geometry is ready after this stage. The separate RCM/SFC and face-grouping
+    //    stage is still required before serializing the final grouped solver mesh.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: computing geometry...\n", stderr);
+    const auto geometry_started = std::chrono::steady_clock::now();
+
+    const auto geometry_stats = krona::mesh::compute_mesh_geometry(mp, comm);
+
+    if (report) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - geometry_started).count();
+        std::fprintf(stderr, "  Geometry: total_volume=%.12g cell_volume=[%.6g, %.6g]\n",
+            geometry_stats.total_volume, geometry_stats.min_cell_volume, geometry_stats.max_cell_volume);
+        std::fprintf(stderr, "  Face flux area: min=%.6g max=%.6g\n",
+            geometry_stats.min_face_area, geometry_stats.max_face_area);
+        if (detailed) {
+            std::fprintf(stderr, "  Bounds: x=[%.12g, %.12g] y=[%.12g, %.12g] z=[%.12g, %.12g]\n",
+                geometry_stats.bbox_lo[0], geometry_stats.bbox_hi[0],
+                geometry_stats.bbox_lo[1], geometry_stats.bbox_hi[1],
+                geometry_stats.bbox_lo[2], geometry_stats.bbox_hi[2]);
+            std::fprintf(stderr, "  Rank 0: metric_cells=%lld metric_faces=%lld storage=%zu-bit\n",
+                static_cast<long long>(mp.n_cells), static_cast<long long>(mp.n_faces),
+                sizeof(krona::GeometryReal) * 8);
+            if (mp.n_faces_g > 0)
+                std::fputs("  Positive metrics and owner/neighbour face-side checks passed.\n", stderr);
+        }
+        // Root-local elapsed time; diagnostics require no additional reductions.
+        std::fprintf(stderr, "KRONA mesh_partition: geometry completed in %.3f s.\n", seconds);
+    }
+
+    // Local owned-cell ordering and three-region face grouping for solver loops.
+    // Each rank processes its own MeshPart; this stage performs no MPI exchanges,
+    // reductions or barriers. Run on the MPI main thread when MPI is active.
+    // Existing nonblocking requests using mesh buffers must have completed first.
+    //
+    // Input contract:
+    //  - mp contains valid local cell/face CSR, owner-relative face winding,
+    //    halo maps and patch labels from migration. Node IDs remain local indices.
+    //  - Owned cells occupy [0,n_own); ghosts occupy [n_own,n_cells). Face owners
+    //    are owned; neighbours are owned, ghost, or invalid_local_index at a boundary.
+    //  - Geometry arrays may be empty or populated with one value per local entity.
+    //    HILBERT_SFC requires populated finite cell centroids when n_own > 1.
+    //    RCM and NONE can be used before geometry computation.
+    //  - Labelled faces are boundary faces with a valid patch index. Unlabelled
+    //    boundaries retain invalid_patch_id and remain outside the patch-face CSR.
+    //  - This stage updates every entity-indexed array currently defined in MeshPart.
+    //    External solution fields would also need the corresponding permutations;
+    //    in this preprocessing pipeline those fields have not been allocated yet.
+    //
+    // Owned-cell ordering:
+    //  1. NONE preserves the current cell order, but still groups and sorts faces.
+    //     Empty ranks and ranks with one owned cell follow the same grouping path.
+    //  2. HILBERT_SFC quantizes local owned centroids to 21 bits per axis and sorts
+    //     their 63-bit 3D Hilbert keys. All axes use the same largest bounding-box
+    //     extent, preserving the physical aspect ratio rather than stretching each
+    //     axis independently. Equal keys are ordered by cell GID; coincident
+    //     centroids and zero extents are supported. Quantization can merge nearby
+    //     points, and locality improvement depends on the mesh and solver kernel.
+    //  3. RCM builds symmetric adjacency from owned-owned faces only. For each
+    //     connected component, at most three BFS passes choose a pseudo-peripheral
+    //     start. Cuthill-McKee traversal visits new neighbours in increasing degree
+    //     order, breaks degree ties by current local index, and reverses that
+    //     component's order. This is a bandwidth/profile heuristic, not an optimal
+    //     ordering guarantee. Cross-rank matrix structure is not reordered here.
+    //     Flat work queues are reused; temporary visitation marks are cleared only
+    //     for touched components, avoiding full-mesh clearing per isolated component.
+    //  4. Apply the owned permutation to types, GIDs, donors, connectivity and any
+    //     populated metrics. Rebuild the owned CSR prefix with size_t offsets;
+    //     ghost connectivity, offsets, metadata and metrics keep their old positions.
+    //  5. Remap owned references in face_owner/face_neigh and send_owned_local.
+    //     Preserve peer groups and the order of send entries inside every group:
+    //     independently sorting those entries would break the remote receive order.
+    //     recv_ghost_local and all halo offsets remain valid because ghosts keep
+    //     their original local indices. Node numbering and coordinates are unchanged.
+    //
+    // Face grouping and orientation:
+    //  6. Separate faces in a linear pass, then sort each region independently:
+    //       [0,n_internal_faces): owned-owned, sorted by (owner,neighbour);
+    //       [n_internal_faces,n_inner_faces): owned-ghost, sorted by (owner,neighbour);
+    //       [n_inner_faces,n_faces): boundary, grouped by patch and sorted by owner.
+    //     Unlabelled boundary faces follow all labelled patches. Previous face
+    //     indices break otherwise equal keys, making repeated NONE grouping stable.
+    //  7. Move owner/neighbour, type, patch, local facet index, node loops and all
+    //     populated face metrics through the same face permutation. Each face keeps
+    //     its physical owner and owner-relative winding; normals need no sign change
+    //     when that owner's numeric local index becomes larger than its neighbour's.
+    //  8. Rebuild patch_face_offsets/patch_faces from the patch-sorted boundary region.
+    //     Empty patches have empty CSR rows. Set the two region boundaries and mark
+    //     faces_grouped true only after all face and patch arrays are ready.
+    //
+    // Memory and extension:
+    //  - Scalar SoA fields are permuted in place by cycles with one reused byte per
+    //    row, rather than retaining replacement copies of all metric arrays.
+    //  - Variable-length CSR rows use temporary offsets and connectivity for the
+    //    reordered prefix. Cell-order planning storage is released before face
+    //    sorting starts; there is no fixed peak-memory bound or per-entity allocation.
+    //  - The overload taking span<const LocalIndex> accepts a custom owned new-to-old
+    //    permutation. It checks the bijection and uses the same topology/halo/metric
+    //    update path; the span must remain valid and must not alias mesh storage.
+    //  - Local indices and face-vector positions change. Any external lookup/cache
+    //    keyed by those positions must be remapped or rebuilt. Global IDs, global
+    //    mesh statistics, bounds, patch metadata and ghost donor ordering persist.
+    //
+    // Solver use of the resulting regions:
+    //  - Start halo exchange, evaluate owned-owned faces, complete the exchange,
+    //    then evaluate owned-ghost faces. Boundary faces form a separate BC loop.
+    //  - This layout enables overlap; the solver must implement communication,
+    //    MPI progress and synchronization. Local SIMD loops still need safe handling
+    //    of scatter updates to cells shared by several faces.
+    //    Owned-owned describes face adjacency, not an entire reconstruction stencil:
+    //    higher-order/viscous kernels must have their required gradient/halo inputs ready.
+    //  - Moving coordinates alone preserve this layout. Topology adaptation requires
+    //    updating connectivity/halo first and rerunning geometry/grouping as needed.
+
+    if (report)
+        std::fprintf(stderr, "KRONA mesh_partition: reordering mesh (%s)...\n",
+            krona::mesh::reorder_method_to_string(static_cast<krona::mesh::ReorderMethod>(options.reorder)));
+    const auto reorder_started = std::chrono::steady_clock::now();
+
+    krona::mesh::reorder_local_mesh(mp, static_cast<krona::mesh::ReorderMethod>(options.reorder));
+
+    if (report) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - reorder_started).count();
+        // Counts describe rank 0's local storage; logging adds no global reductions.
+        std::fprintf(stderr, "  Rank 0 face regions: owned-owned=%lld owned-ghost=%lld boundary=%lld\n",
+            static_cast<long long>(mp.n_internal_faces),
+            static_cast<long long>(mp.n_inner_faces - mp.n_internal_faces),
+            static_cast<long long>(mp.n_faces - mp.n_inner_faces));
+        if (detailed) {
+            std::fprintf(stderr, "  Rank 0 cells: owned=%lld ghosts=%lld\n",
+                static_cast<long long>(mp.n_own), static_cast<long long>(mp.n_cells - mp.n_own));
+            std::fprintf(stderr, "  Rank 0 boundary faces: labelled=%zu unlabelled=%zu\n",
+                mp.patch_faces.size(), static_cast<std::size_t>(mp.n_faces - mp.n_inner_faces) - mp.patch_faces.size());
+            for (std::size_t p = 0; p < mp.patches.size(); ++p)
+                std::fprintf(stderr, "  Patch %zu: name=%s local_faces=%zu\n", p,
+                    mp.patches[p].name.c_str(), mp.patch_face_offsets[p + 1] - mp.patch_face_offsets[p]);
+            std::fputs("  Three face regions, halo indices and patch-face tables ready.\n", stderr);
+        }
+        std::fprintf(stderr, "KRONA mesh_partition: reordering completed in %.3f s.\n", seconds);
     }
 
     return EXIT_SUCCESS;

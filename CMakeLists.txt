@@ -489,6 +489,9 @@ add_library(
     STATIC
         src/mesh/extrusion.cpp
         src/mesh/faces.cpp
+        src/mesh/localmesh.cpp
+        src/mesh/geometry.cpp
+        src/mesh/reorder.cpp
 )
 add_library(krona::mesh_core ALIAS krona_mesh_core)
 target_include_directories(
@@ -551,14 +554,12 @@ if(KRONA_ENABLE_PARTITIONING)
     )
 
     add_library(krona::mesh_partition ALIAS krona_mesh_partition)
-
     target_include_directories(
         krona_mesh_partition
         INTERFACE
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
     )
-
     target_link_libraries(
         krona_mesh_partition
         PUBLIC
