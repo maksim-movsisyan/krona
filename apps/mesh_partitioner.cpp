@@ -9,6 +9,10 @@
 #include <krona/mesh/migrate.hpp>
 #include <krona/mesh/geometry.hpp>
 #include <krona/mesh/reorder.hpp>
+#include <krona/mesh/validate.hpp>
+#include <krona/mesh/bc_config.hpp>
+#include <krona/io/solver_mesh/hdf5_writer.hpp>
+#include <krona/io/vtu/vtu.hpp>
 
 #include <utility>
 #include <vector>
@@ -886,6 +890,231 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
             std::fputs("  Three face regions, halo indices and patch-face tables ready.\n", stderr);
         }
         std::fprintf(stderr, "KRONA mesh_partition: reordering completed in %.3f s.\n", seconds);
+    }
+
+    // Final local structural validation, collective conservation/statistics,
+    // and optional generation of the editable boundary-condition template.
+    // This stage follows migration, geometry and face grouping/reordering.
+    //
+    // Validation contract and scope:
+    //  - mp must have complete geometry and faces_grouped == true. All ranks use
+    //    the same replicated patch metadata and the communicator used for migration.
+    //  - validate_meshpart(mp) is local: it checks array sizes before indexing,
+    //    monotone size_t CSR offsets, supported cell/face arities, local/global ID
+    //    ranges, owned-node references, donor ranks and finite stored coordinates.
+    //  - Checks positive finite volumes/areas, finite centroids and unit normals
+    //    with a tolerance derived from GeometryReal precision, without an absolute
+    //    1e-15 measure cutoff. It checks oriented face loops against the owner's
+    //    canonical local facet and verifies all three face regions and sort keys.
+    //  - Equal (owner,neighbour) keys are permitted: sorting is nondecreasing.
+    //    Boundary patch IDs may be invalid_patch_id; these faces sort after labelled
+    //    patches and are deliberately absent from patch_face_offsets/patch_faces.
+    //  - Patch CSR must list every labelled boundary face exactly once in sorted
+    //    order. Halo offsets/peers are checked, sends reference owned cells, and
+    //    receives cover every ghost exactly once in its donor's peer group.
+    //    The only mesh-sized scratch array is one byte per ghost for receive coverage.
+    //  - This is a structural check, not a second mesh reconstruction. Geometric
+    //    outward winding was checked by compute_mesh_geometry() using local offsets.
+    //    Repeating the old dot product on rounded absolute centroids could reject
+    //    valid thin cells on a strongly shifted mesh, so it is not repeated here.
+    //  - Remote halo GID/order matching comes from migration's request/reply protocol.
+    //    No neighbour Sendrecv handshake, global-ID uniqueness search or geometric
+    //    self-intersection scan is added. Local malformed data aborts WORLD immediately;
+    //    there is no collective status reduction before the actual statistics.
+    //
+    // Collective statistics and conservation:
+    //  - Every rank calls collect_mesh_statistics(mp,comm), including empty ranks
+    //    and quiet runs. It requires the local validation above to have succeeded.
+    //  - One uint64 SUM reduces cell/ghost/face-region totals and all patch counts.
+    //    One double SUM reduces owned-cell volume and all labelled-patch flux areas.
+    //    One uint64 MIN reduces load extrema; complemented maxima share that call
+    //    without converting integer counts to floating point. One-rank runs skip MPI.
+    //  - Ghost volumes do not contribute to domain volume. Boundary faces occur
+    //    once globally; cut faces occur twice. Conservation checks require:
+    //      summed owned cells == mp.n_cells_g;
+    //      summed ghost copies == mp.n_ghost_copies_g;
+    //      owned-owned faces + cut copies/2 + boundary faces == mp.n_faces_g;
+    //      boundary/labelled/cut totals agree with the migration snapshot metadata.
+    //    Cut-copy count must be even. Unique-node count is retained source metadata;
+    //    shared coordinate copies are not summed as globally unique nodes.
+    //  - Patch areas sum face_area = |S|: for warped faces this is effective flux
+    //    area, not a reconstructed scalar area of the triangulated surface. Units
+    //    follow the input coordinates; diagnostics do not assume metres.
+    //  - Statistics are returned on all ranks. Logging is only on rank 0 and adds
+    //    no collectives or barriers. Quiet mode changes output, not validation.
+    //
+    // Optional BC template:
+    //  - A nonempty options.boundary_config requests the TOML output. Rank 0 writes
+    //    small replicated patch metadata with the already reduced patch counts;
+    //    there is no extra reduction, gather or mesh payload written in this step.
+    //  - The writer also accepts an empty path as a no-op. The requested file is
+    //    replaced; its parent directory must exist. Open/write/close errors abort
+    //    with a diagnostic, so a requested export cannot silently fail.
+    //  - Entries retain patch_id, name, family, source_type and global_face_count.
+    //    source_type is an import label, replacing the old CGNS-specific cgns_type
+    //    field. TOML strings escape quotes, backslashes and ASCII controls; source
+    //    metadata must already be valid UTF-8. Empty patches are included.
+    //  - Solver types are suggestions from explicit import labels, not inferred
+    //    from patch names. Supersonic inlet/outlet use their own template types;
+    //    ambiguous labels become USER_DEFINED. Review the suggestions and uncomment
+    //    the required parameter examples before using the configuration in a solver.
+    //    Unlabelled boundary faces have no patch entry; their count appears in the header.
+    //
+    // After this stage:
+    //  - mp remains unchanged; grouped topology, geometry and halo maps are ready
+    //    for the separate distributed mesh writer. This stage does not serialize it.
+    //  - mesh_stats contains replicated final diagnostics that later stages may reuse.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: validating final mesh...\n", stderr);
+    const auto validation_started = std::chrono::steady_clock::now();
+
+    krona::mesh::validate_meshpart(mp);
+    const auto mesh_stats = krona::mesh::collect_mesh_statistics(mp, comm);
+
+    if (report) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - validation_started).count();
+        const double average = static_cast<double>(mesh_stats.owned_cells) / static_cast<double>(comm.size());
+        const double imbalance = average > 0 ? (static_cast<double>(mesh_stats.max_owned) / average - 1) * 100 : 0;
+        std::fprintf(stderr, "  Verified: cells=%llu faces=%llu boundary=%llu labelled=%llu\n",
+            static_cast<unsigned long long>(mesh_stats.owned_cells),
+            static_cast<unsigned long long>(mp.n_faces_g),
+            static_cast<unsigned long long>(mesh_stats.boundary_faces),
+            static_cast<unsigned long long>(mesh_stats.labelled_faces));
+        std::fprintf(stderr, "  Owned cells/rank: min=%llu avg=%.1f max=%llu imbalance=%.2f%%\n",
+            static_cast<unsigned long long>(mesh_stats.min_owned), average,
+            static_cast<unsigned long long>(mesh_stats.max_owned), imbalance);
+        if (detailed) {
+            std::fprintf(stderr, "  Faces: owned-owned=%llu partition-cut=%llu unlabelled-boundary=%llu\n",
+                static_cast<unsigned long long>(mesh_stats.interior_faces),
+                static_cast<unsigned long long>(mesh_stats.cut_faces),
+                static_cast<unsigned long long>(mesh_stats.boundary_faces - mesh_stats.labelled_faces));
+            std::fprintf(stderr, "  Ghost copies: total=%llu min/rank=%llu max/rank=%llu\n",
+                static_cast<unsigned long long>(mesh_stats.ghost_copies),
+                static_cast<unsigned long long>(mesh_stats.min_ghosts),
+                static_cast<unsigned long long>(mesh_stats.max_ghosts));
+            std::fprintf(stderr, "  Total owned-cell volume: %.12g\n", mesh_stats.total_volume);
+            for (std::size_t p = 0; p < mp.patches.size(); ++p)
+                std::fprintf(stderr, "  Patch %zu: name=%s source=%s faces=%llu flux_area=%.8g\n", p,
+                    mp.patches[p].name.c_str(), mp.patches[p].source_type.c_str(),
+                    static_cast<unsigned long long>(mesh_stats.patch_face_counts[p]), mesh_stats.patch_flux_areas[p]);
+        }
+        std::fprintf(stderr, "KRONA mesh_partition: validation completed in %.3f s.\n", seconds);
+    }
+
+    // File creation is independent of verbosity; it is controlled only by the optional path.
+    if (options.boundary_output.has_value() && comm.rank() == 0) {
+        krona::mesh::generate_bc_template_config(mp, options.boundary_output.value_or(""), mesh_stats.patch_face_counts);
+        if (report)
+            std::fputs("KRONA mesh_partition: boundary-condition template written.\n", stderr);
+    }
+
+    // Distributed serialization of the final solver snapshot and optional VTK export.
+    // This stage follows migration, geometry, reordering and final mesh validation.
+    // All ranks in comm must call export_mesh_hdf5(), including ranks without cells.
+    // All ranks must use identical paths, optional VTU enablement and partition mapping.
+    // The communicator is passed explicitly; MPI_COMM_WORLD is not hardcoded into I/O.
+    //
+    // Solver-file contract:
+    //  - Writes one shared HDF5 file with schema version 2. Requires parallel HDF5
+    //    >= 1.10 and an existing parent directory. The requested file is replaced.
+    //  - Mesh payloads remain distributed. One small Allgather collects each rank's
+    //    payload lengths; prefixes are constructed in partition order using
+    //    pr.part2rank. No rank receives another rank's mesh connectivity or metrics.
+    //  - Each rank writes a non-overlapping hyperslab into every SoA dataset.
+    //    Empty ranks select none but still participate in every collective call.
+    //    Shared mapping, labels and global metadata are written once by rank 0,
+    //    with the other ranks participating through empty selections.
+    //  - All dataset transfers request H5FD_MPIO_COLLECTIVE. HDF5 may choose a
+    //    different underlying MPI-IO path when datatype conversion is necessary;
+    //    file ordering alone does not guarantee filesystem locality or throughput.
+    //  - Portable file types are little-endian integers/floats with explicit widths.
+    //    CSR offsets are always UInt64; local/global indices and geometry retain
+    //    the current build's widths. File layout does not depend on struct padding.
+    //  - Stores owned/ghost cell data, required nodes, all local faces, full local
+    //    CSR offsets including their terminal entries, metrics, patch strings,
+    //    patch-face lists, local facet indices, halo maps and snapshot statistics.
+    //  - The three face-region counts and faces_grouped are stored explicitly.
+    //    Existing cell/face ordering is preserved; this step does not reorder mesh data.
+    //  - Patch names, families and import labels have no fixed-length truncation.
+    //    No variable-length HDF5 datatype or cell-sized conversion buffer is used.
+    //  - The partition directory stores every payload length in partition order.
+    //    The reader derives all prefixes from this directory, including halo and
+    //    patch-face arrays: using an MPI rank-order Exscan here would be incorrect.
+    //  - Open/write/close errors abort the job. Export relies on the validation
+    //    already performed by the preceding stage instead of repeating its full scan.
+    //
+    // Solver restart contract:
+    //  - import_mesh_hdf5(path,comm) returns a fully populated MeshPart and performs
+    //    one local structural validation before returning it to solver kernels.
+    //  - The reader requires the saved communicator size and rank numbering because
+    //    donor/peer ranks are persisted. Physical host placement may change, but a
+    //    different MPI size or reassignment of saved subdomains needs migration.
+    //  - The saved permutation identifies this rank's partition; every mesh-sized
+    //    read selects only that partition's payload. Small file metadata is replicated.
+    //  - Wider index builds can read narrower files. Geometry precision must match:
+    //    converting stored FP32 normals to FP64 does not make their original errors
+    //    satisfy FP64 validation tolerances. Recompute geometry for precision changes.
+    //    Unsafe index narrowing is rejected before loading payloads.
+    //  - Legacy files written by the previous implementation are not schema-compatible;
+    //    regenerate them rather than inferring the missing counts and dataset layouts.
+    //
+    // Optional visualization:
+    //  - A nonempty vtudir requests two datasets: part.pvtu for owned volume cells
+    //    and part_bnd.pvtu for physical boundary faces, each referencing one VTU per rank.
+    //  - Pieces use appended raw binary with UInt64 block headers. Volume ghosts and
+    //    partition-cut faces are omitted; shared points may occur in multiple pieces.
+    //    Only nodes referenced by owned cells are exported, including boundary nodes.
+    //  - Default arrays include rank, global cell/node IDs, volume, cell centroid,
+    //    boundary patch ID, effective flux area and the owner's outward unit normal.
+    //    Unlabelled boundary faces retain patch_id == -1.
+    //  - Numeric point/cell/boundary fields can be passed through MeshFields.
+    //    Scalars and interleaved vectors/tensors write directly; SoA vectors use a
+    //    fixed 64-KiB packing buffer. Field spans and names are borrowed for the call.
+    //  - MeshFields accepts full local arrays or arrays trimmed to the exported
+    //    association. Field names, types and component counts must match across ranks.
+    //  - The reusable GridView API also exports other linear unstructured grids
+    //    with CGNS vertex ordering, independently of MeshPart and precomputed geometry.
+    //  - Two barriers coordinate directory creation and completed piece files.
+    //    Rank 0 writes only the small PVTU indexes; no mesh payload is gathered there.
+    //
+    // After this stage mp remains unchanged. The solver file contains the complete
+    // current topology/geometry snapshot; optional VTU files serve visualization only.
+
+    if (report)
+        std::fputs("KRONA mesh_partition: writing solver mesh...\n", stderr);
+    const auto mesh_write_started = std::chrono::steady_clock::now();
+
+    krona::io::solver_mesh::export_mesh_hdf5(mp, options.output, comm, pr.part2rank);
+
+    if (report) {
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - mesh_write_started).count();
+        std::fprintf(stderr, "  Solver mesh: %s\n", options.output.c_str());
+        std::fprintf(stderr, "  Snapshot: cells=%llu nodes=%llu faces=%llu partitions=%d\n",
+            static_cast<unsigned long long>(mp.n_cells_g),
+            static_cast<unsigned long long>(mp.n_nodes_g),
+            static_cast<unsigned long long>(mp.n_faces_g), comm.size());
+        if (detailed)
+            std::fprintf(stderr, "  Format: KRONA HDF5 v2, indices=%zu/%zu bits, geometry=%zu bits\n",
+                sizeof(krona::LocalIndex) * 8, sizeof(krona::GlobalIndex) * 8,
+                sizeof(krona::GeometryReal) * 8);
+        std::fprintf(stderr, "KRONA mesh_partition: solver mesh written in %.3f s (rank 0).\n", seconds);
+    }
+
+    if (options.vtu_directory.has_value()) {
+        if (report)
+            std::fputs("KRONA mesh_partition: writing visualization...\n", stderr);
+        const auto vtk_write_started = std::chrono::steady_clock::now();
+        krona::io::vtk::write_vtu(mp, options.vtu_directory.value_or(""), "part", comm);
+        if (report) {
+            const double seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - vtk_write_started).count();
+            std::fprintf(stderr, "  VTK datasets: %s/part.pvtu and %s/part_bnd.pvtu\n",
+                        options.vtu_directory.value_or("").c_str(), options.vtu_directory.value_or("").c_str());
+            std::fprintf(stderr, "KRONA mesh_partition: visualization written in %.3f s (rank 0).\n", seconds);
+        }
     }
 
     return EXIT_SUCCESS;

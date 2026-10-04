@@ -447,9 +447,9 @@ message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hp
 #==================================================================
 #==== ADDIITONAL LIBRARIES  ======================================= 
 #==================================================================
-    #======================
+    #=======================
     #=== MESH GENERATION ===
-    #======================
+    #=======================
 if(KRONA_ENABLE_CGNS)
     add_library(
         krona_mesh_generation
@@ -492,6 +492,8 @@ add_library(
         src/mesh/localmesh.cpp
         src/mesh/geometry.cpp
         src/mesh/reorder.cpp
+        src/mesh/bc_config.cpp
+        src/mesh/validate.cpp
 )
 add_library(krona::mesh_core ALIAS krona_mesh_core)
 target_include_directories(
@@ -507,6 +509,33 @@ target_link_libraries(
         krona::mpi
     PRIVATE
         krona::warnings
+)
+
+    #===================
+    #=== MESH OUTPUT ===
+    #===================
+add_library(
+    krona_mesh_output 
+    STATIC
+        src/io/solver_mesh/hdf5_reader.cpp
+        src/io/solver_mesh/hdf5_writer.cpp
+        src/io/vtu/vtu.cpp
+)
+add_library(krona::mesh_output ALIAS krona_mesh_output)
+target_include_directories(
+    krona_mesh_output 
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(
+    krona_mesh_output 
+    PUBLIC 
+        krona::build_config
+        krona::mpi
+    PRIVATE
+        krona::warnings
+        krona::hdf5
 )
 
     #===============
@@ -604,6 +633,7 @@ if(KRONA_ENABLE_CGNS)
             krona::cgns_io
             krona::mesh_core
             krona::mesh_partition
+            krona::mesh_output
     )
 endif()
 
