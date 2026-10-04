@@ -1,4 +1,4 @@
-#include "krona/mesh_generator/config.hpp"
+#include "krona/mesh_generation/config.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -10,7 +10,7 @@
 #include <vector>
 #include <toml++/toml.hpp>
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 namespace {
 
@@ -338,4 +338,4 @@ GeneratorConfig parse_generator_config(const std::string& path, const MPI_Comm c
     return cfg;
 }
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

@@ -7,9 +7,9 @@
 #include <utility>
 
 #include <mpi.h>
-#include "krona/mesh_generator/config.hpp"
+#include "krona/mesh_generation/config.hpp"
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 struct NodeSource {
     std::size_t block_idx{0};
@@ -105,4 +105,4 @@ private:
                                  std::size_t cu, std::size_t cv, MPI_Comm comm);
 };
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

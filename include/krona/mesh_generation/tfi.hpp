@@ -2,9 +2,9 @@
 
 #include <array>
 
-#include "krona/mesh_generator/config.hpp"
+#include "krona/mesh_generation/config.hpp"
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 class TFI {
 public:
@@ -55,4 +55,4 @@ public:
     }
 };
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <vector>
 
-#include "krona/mesh_generator/config.hpp"
+#include "krona/mesh_generation/config.hpp"
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 class Grading {
 public:
@@ -90,4 +90,4 @@ public:
     }
 };
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

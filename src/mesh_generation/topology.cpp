@@ -1,15 +1,15 @@
-#include "krona/mesh_generator/topology.hpp"
+#include "krona/mesh_generation/topology.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <format>
 #include <string>
 
-#include "krona/mesh_generator/grading.hpp"
-#include "krona/mesh_generator/tfi.hpp"
+#include "krona/mesh_generation/grading.hpp"
+#include "krona/mesh_generation/tfi.hpp"
 #include "krona/mpi/error.hpp"
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 namespace {
 
@@ -429,4 +429,4 @@ std::array<std::uint64_t, 8> MacroTopology::get_cell_nodes(std::uint64_t global_
     return get_block_cell_nodes(b, i, j, k);
 }
 
-} // namespace cfd::mesh_generator
+} // namespace krona::mesh_generation

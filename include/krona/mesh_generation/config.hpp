@@ -12,7 +12,7 @@
 #include "krona/mpi/error.hpp"
 
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 struct Vec3 {
     double x{0.0};
@@ -108,4 +108,4 @@ struct GeneratorConfig {
 
 GeneratorConfig parse_generator_config(const std::string& path, const MPI_Comm comm);
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

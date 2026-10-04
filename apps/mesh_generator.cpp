@@ -2,9 +2,9 @@
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/mpi/error.hpp>
-#include <krona/mesh_generator/config.hpp>
-#include <krona/mesh_generator/topology.hpp>
-#include <krona/mesh_generator/writer.hpp>
+#include <krona/mesh_generation/config.hpp>
+#include <krona/mesh_generation/topology.hpp>
+#include <krona/mesh_generation/writer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -141,8 +141,8 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
 
 
     // Parse configuration and validate all design contracts collectively
-    const krona::mesh_generator::GeneratorConfig cfg 
-        = krona::mesh_generator::parse_generator_config(options.input, comm.native());
+    const krona::mesh_generation::GeneratorConfig cfg 
+        = krona::mesh_generation::parse_generator_config(options.input, comm.native());
 
     if (options.verbosity >= Verbosity::summary) {
         // Compute mesh volume statistics
@@ -181,9 +181,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
                                             static_cast<unsigned long long>(b.cells[2]), 
                          static_cast<unsigned long long>(b_cells));
 
-                    std::string type0{ krona::mesh_generator::to_string(b.grading_type[0]) };
-                    std::string type1{ krona::mesh_generator::to_string(b.grading_type[1]) };
-                    std::string type2{ krona::mesh_generator::to_string(b.grading_type[2]) };
+                    std::string type0{ krona::mesh_generation::to_string(b.grading_type[0]) };
+                    std::string type1{ krona::mesh_generation::to_string(b.grading_type[1]) };
+                    std::string type2{ krona::mesh_generation::to_string(b.grading_type[2]) };
 
                     std::fprintf(stdout, "      Grading Types: [%s, %s, %s]\n",
                                  type0.c_str(), type1.c_str(), type2.c_str());
@@ -201,11 +201,11 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     }
 
     // Building mesh macro topology
-    krona::mesh_generator::MacroTopology topo;
+    krona::mesh_generation::MacroTopology topo;
     topo.build(cfg, MPI_COMM_WORLD);
 
     // Output mesh
-    krona::mesh_generator::write(options.output, cfg, topo, MPI_COMM_WORLD);
+    krona::mesh_generation::write(options.output, cfg, topo, MPI_COMM_WORLD);
 
     return EXIT_SUCCESS;
 }

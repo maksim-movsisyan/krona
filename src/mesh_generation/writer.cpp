@@ -1,4 +1,4 @@
-#include "krona/mesh_generator/writer.hpp"
+#include "krona/mesh_generation/writer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include <pcgnslib.h>
 #include "krona/mpi/error.hpp"
 
-namespace krona::mesh_generator {
+namespace krona::mesh_generation {
 
 namespace {
 
@@ -314,4 +314,4 @@ void write(const std::string& filepath,
     }
 }
 
-} // namespace krona::mesh_generator
+} // namespace krona::mesh_generation

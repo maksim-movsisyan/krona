@@ -5,6 +5,7 @@
 #include <krona/io/cgns/reader.hpp>
 #include <krona/mesh/extrusion.hpp>
 #include <krona/mesh/faces.hpp>
+#include <krona/mesh_partition/partition.hpp>
 
 #include <algorithm>
 #include <array>
@@ -447,6 +448,126 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
             "KRONA mesh_partition: topology completed in %.3f s.\n", seconds);
     }
     
+    // Distributed partitioning of the cell dual graph with dKaMinPar.
+    // This stage computes migration destinations; it does not move mesh data.
+    //
+    // Collective contract:
+    //  - Every rank in comm participates, including ranks with no owned cells.
+    //  - Ownership metadata and DKaMinParOptions are identical on all ranks.
+    //  - Call on the MPI main thread; do not overlap other dKaMinPar calls in a process.
+    //  - Multiple worker threads need MPI_THREAD_FUNNELED or stronger support.
+    //
+    // Input and balancing contract:
+    //  - graph is the symmetric CSR produced by build_faces(), with one row per
+    //    currently owned cell and zero-based global neighbour IDs.
+    //  - Cells still follow mesh.distribution.cells. No ghost rows are passed.
+    //  - The explicit-endpoint overload also accepts unequal contiguous rank ranges;
+    //    after migration/adaptation, renumber vertices and remap adjacency consistently.
+    //  - The partitioner creates exactly comm.size() blocks, one per destination rank.
+    //    All cells and graph edges have unit weight: balance means cell-count balance.
+    //  - imbalance_tolerance must be finite and positive; integer block sizes can make
+    //    the measured max/average imbalance exceed epsilon on small graphs.
+    //  - dKaMinPar's configured local ID and weight widths must fit the graph, including
+    //    the ghost vertices created internally during distributed import.
+    //
+    // Algorithm:
+    //  1. Build a bijective block-to-rank placement. With shared-memory grouping,
+    //     use MPI_Comm_split_type to find rank groups, broadcast each group's smallest
+    //     parent rank, and Allgather these small leader IDs. Group destination ranks
+    //     by leader ID, then by parent rank. No leader communicator is needed.
+    //  2. Format distributed CSR for dKaMinPar. Borrow arrays whose integer types match
+    //     the public API and convert the others into temporary storage. copy_graph()
+    //     creates the library-owned representation; release conversion buffers before
+    //     entering the multilevel solver. The original graph remains unchanged.
+    //  3. Partition into P blocks with the default dKaMinPar context and requested
+    //     imbalance tolerance. Obtain the global undirected edge cut from its return
+    //     value; do not perform an additional halo exchange to recompute it.
+    //  4. Map each local block ID through part2rank to obtain cell_target_rank.
+    //     Count planned cells per destination and release solver/raw-partition storage.
+    //  5. Sum the P destination counts with one Allreduce for application diagnostics.
+    //     There are no wrapper status collectives; dKaMinPar has its own internal MPI.
+    //     One rank or an empty global graph bypasses the solver and this reduction.
+    //
+    // Placement semantics:
+    //  - Shared-memory grouping places consecutive block IDs on co-located ranks.
+    //    It is a heuristic, not a topology-aware optimization of the block graph.
+    //  - Local MPI order is not a physical CPU/core ID. This stage changes no affinity.
+    //  - No guarantee is made that communicating blocks share a server, that network
+    //    traffic disappears, or that the placement minimizes the inter-node cut.
+    //  - global_edge_cut is unchanged by the bijective block-to-rank permutation.
+    //    It counts cut graph edges, not necessarily individual physical mesh faces.
+    //    The inter-node cut is not measured and is not represented by a fictitious zero.
+    //
+    // After partitioning:
+    //  - pr.cell_target_rank has one valid destination rank per input CSR row.
+    //  - pr.part2rank maps block IDs to ranks; pr.rank2part is its inverse.
+    //    These tables describe this partition only, not persistent cell/face numbering.
+    //  - pr.cells_per_rank contains replicated global planned ownership counts.
+    //    Actual ownership, cell IDs, mesh arrays and graph arrays are still unchanged.
+    //  - Coordinates and CGNS metadata are irrelevant to this stage. Coordinate motion
+    //    alone does not require repartitioning. Topology changes may require rebuilding
+    //    the graph; a later repartition is full partitioning, not incremental migration
+    //    minimization or a reuse of the previous partition.
+
+    const krona::mesh_partition::DKaMinParOptions partition_options{
+        .imbalance_tolerance = 0.03,
+        .threads_per_rank = 1,
+        .seed = 0,
+        .quiet = true, // Application diagnostics below control verbosity independently.
+        .group_by_shared_memory = true
+    };
+
+    if (report)
+        std::fputs("KRONA mesh_partition: partitioning dual graph...\n", stderr);
+    const auto partition_started = std::chrono::steady_clock::now();
+
+    auto pr = krona::mesh_partition::partition_cells(
+        graph, mesh.distribution.cells, comm, partition_options);
+
+    if (report) {
+        // All counts are already global; logging adds no MPI calls or barriers.
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - partition_started).count();
+        const auto [minimum, maximum] =
+            std::minmax_element(pr.cells_per_rank.begin(), pr.cells_per_rank.end());
+        const double average =
+            static_cast<double>(mesh.distribution.cells.global_size()) / comm.size();
+        const double imbalance = average > 0
+            ? 100.0 * (static_cast<double>(*maximum) / average - 1.0) : 0.0;
+
+        std::fprintf(stderr, "  Partition: blocks=%d edge_cut=%llu\n", comm.size(),
+            static_cast<unsigned long long>(pr.global_edge_cut));
+        std::fprintf(stderr,
+            "  Planned cells/rank: min=%llu avg=%.1f max=%llu imbalance=%.2f%%\n",
+            static_cast<unsigned long long>(*minimum), average,
+            static_cast<unsigned long long>(*maximum), imbalance);
+        if (pr.shared_memory_groups > 0)
+            std::fprintf(stderr, "  Placement: shared-memory grouping, groups=%d\n",
+                        pr.shared_memory_groups);
+        else
+            std::fputs("  Placement: MPI rank order.\n", stderr);
+
+        if (detailed) {
+            // Bound output on large communicators; do not print one line per cell.
+            const auto shown = std::min<std::size_t>(pr.cells_per_rank.size(), 16);
+            std::fprintf(stderr, "  Settings: epsilon=%.4f threads/rank=%d seed=%d\n",
+                partition_options.imbalance_tolerance, partition_options.threads_per_rank,
+                partition_options.seed);
+            std::fprintf(stderr, "  Rank placement and planned load (first %zu ranks):\n", shown);
+            for (std::size_t rank = 0; rank < shown; ++rank)
+                std::fprintf(stderr, "    rank=%zu block=%u cells=%llu\n", rank,
+                    static_cast<unsigned int>(pr.rank2part[rank]),
+                    static_cast<unsigned long long>(pr.cells_per_rank[rank]));
+            if (shown < pr.cells_per_rank.size())
+                std::fprintf(stderr, "    ... %zu further ranks omitted.\n",
+                            pr.cells_per_rank.size() - shown);
+            std::fputs("  Destinations computed; mesh migration has not started.\n", stderr);
+        }
+        // This is rank 0's elapsed time, not a reduced maximum across ranks.
+        std::fprintf(stderr, "KRONA mesh_partition: partitioning completed in %.3f s.\n",
+                    seconds);
+    }
+
     return EXIT_SUCCESS;
 }
 
