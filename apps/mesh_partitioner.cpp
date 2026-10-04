@@ -1,8 +1,12 @@
+// mpi runtime
+#include "krona/mesh/localmesh.hpp"
+#include "krona/mesh/raw_mesh.hpp"
 #include "krona/mpi/collective_status.hpp"
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/mpi/error.hpp>
-#include <krona/io/cgns/reader.hpp>
+
+// mesh partition utils
 #include <krona/mesh/extrusion.hpp>
 #include <krona/mesh/faces.hpp>
 #include <krona/mesh_partition/partition.hpp>
@@ -11,8 +15,11 @@
 #include <krona/mesh/reorder.hpp>
 #include <krona/mesh/validate.hpp>
 #include <krona/mesh/bc_config.hpp>
+
+// input/output
 #include <krona/io/solver_mesh/hdf5_writer.hpp>
 #include <krona/io/vtu/vtu.hpp>
+#include <krona/io/cgns/reader.hpp>
 
 #include <utility>
 #include <vector>
@@ -21,7 +28,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,35 +35,26 @@
 
 namespace {
 
-enum class ReorderMethod : int { none, sfc, rcm };
-enum class Verbosity : int { quiet, summary, detailed };
-enum class CliAction : int { run, help, error };
+enum class Verbosity : int { QUIET, SUMMARY, DETAILED };
+enum class CliAction : int { RUN, HELP, ERROR };
 
+// parsing options
 struct Options {
     std::string input;
     std::string output;
-    std::optional<std::string> boundary_output;
-    std::optional<std::string> vtu_directory;
-    ReorderMethod reorder = ReorderMethod::none;
-    Verbosity verbosity = Verbosity::quiet;
+    std::string boundary_output;
+    std::string vtu_directory;
+    krona::mesh::ReorderMethod reorder = krona::mesh::ReorderMethod::NONE;
+    Verbosity verbosity = Verbosity::QUIET;
 };
 
+// parsing result
 struct ParseResult {
     Options options;
-    CliAction action = CliAction::run;
+    CliAction action = CliAction::RUN;
     std::string_view error;
     std::string_view argument;
 };
-
-[[nodiscard]] constexpr const char* reorder_name(ReorderMethod method) noexcept
-{
-    switch (method) {
-    case ReorderMethod::none: return "NONE";
-    case ReorderMethod::sfc:  return "SFC";
-    case ReorderMethod::rcm:  return "RCM";
-    }
-    return "unknown";
-}
 
 // Print on rank 0; no arguments and --help are successful help requests.
 void usage(std::FILE* stream) noexcept
@@ -83,94 +80,113 @@ void usage(std::FILE* stream) noexcept
         "\n"
         "Examples:\n"
         "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5\n"
-        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --bc mesh.bc\n"
+        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --bc mesh.toml\n"
         "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --vtu vtk --reorder RCM -v\n"
-        "\n"
-        "Development stage: CGNS import and automatic 2D extrusion; export is not implemented.\n",
+        "\n",
         stream);
-}
-
-[[nodiscard]] bool option_token(std::string_view token) noexcept
-{
-    return token.size() > 1 && token.front() == '-';
 }
 
 // Parse only on rank 0; expected CLI errors are returned, not thrown.
 [[nodiscard]] ParseResult parse_arguments(int argc, char* const* argv)
 {
+    // initialize reuslt
     ParseResult result;
+
+    // aux helper (is token is optional)
+    auto is_optional = [](std::string_view token) {
+        return token.size() > 1 && token.front() == '-';
+    };
+
+    // aux helper for parsion errors
     auto fail = [&](std::string_view error, std::string_view argument = {}) {
-        result.action = CliAction::error;
+        result.action = CliAction::ERROR;
         result.error = error;
         result.argument = argument;
     };
-    if (argc <= 1) {
-        result.action = CliAction::help;
-        return result;
-    }
 
+    // if mesh partition called with no arguments => show usage
+    if (argc <= 1) { result.action = CliAction::HELP; return result; }
+
+    // 
     int positional_count = 0;
     bool positional_only = false;
     bool reorder_seen = false;
+    // loop over all additional arguments
     for (int i = 1; i < argc; ++i) {
+        // get argument token
         const std::string_view token{argv[i]};
+
+        // token '--' makrs end of default arugments
         if (!positional_only && token == "--") {
             positional_only = true;
             continue;
         }
+
+        // -h token => show usage only
         if (!positional_only && (token == "-h" || token == "--help")) {
-            result.action = CliAction::help;
+            result.action = CliAction::HELP;
             return result;
         }
+
+        // -v => set vebosity level to SUMMARY
         if (!positional_only && (token == "-v" || token == "--verbose")) {
-            if (result.options.verbosity == Verbosity::quiet) {
-                result.options.verbosity = Verbosity::summary;
-            }
-            continue;
-        }
-        if (!positional_only && token == "-vv") {
-            result.options.verbosity = Verbosity::detailed;
+            result.options.verbosity = Verbosity::SUMMARY;
             continue;
         }
 
-        if (!positional_only && option_token(token)) {
+        // -vv => set verbosity level to DETAILED
+        if (!positional_only && token == "-vv") {
+            result.options.verbosity = Verbosity::DETAILED;
+            continue;
+        }
+
+        // check optional tokens
+        if (!positional_only && is_optional(token)) {
+            // check if optional token has form: -token=key
             const auto equal = token.find('=');
             const auto name = token.substr(0, equal);
+
+            // check if token name if avaliable
             if (name != "--bc" && name != "--vtu" && name != "--reorder") {
                 fail("Unknown option", token);
                 return result;
             }
-            if ((name == "--bc" && result.options.boundary_output.has_value()) ||
-                (name == "--vtu" && result.options.vtu_directory.has_value()) ||
+
+            // check for optional argument duplication
+            if ((name == "--bc" && !result.options.boundary_output.empty()) ||
+                (name == "--vtu" && !result.options.vtu_directory.empty()) ||
                 (name == "--reorder" && reorder_seen)) {
                 fail("Duplicate option", name);
                 return result;
             }
 
+            // parse optional value
             std::string_view value;
             if (equal != std::string_view::npos) {
                 value = token.substr(equal + 1);
             } else {
-                if (i + 1 >= argc || option_token(argv[i + 1])) {
+                if (i + 1 >= argc || is_optional(argv[i + 1])) {
                     fail("Missing value for option", name);
                     return result;
                 }
                 value = argv[++i];
             }
+
+            // corectness check
             if (value.empty()) {
                 fail("Empty value for option", name);
                 return result;
             }
 
             if (name == "--bc") {
-                result.options.boundary_output.emplace(value);
+                result.options.boundary_output = value;
             } else if (name == "--vtu") {
-                result.options.vtu_directory.emplace(value);
+                result.options.vtu_directory = value;
             } else {
                 reorder_seen = true;
-                if (value == "NONE") result.options.reorder = ReorderMethod::none;
-                else if (value == "SFC") result.options.reorder = ReorderMethod::sfc;
-                else if (value == "RCM") result.options.reorder = ReorderMethod::rcm;
+                if (value == "NONE") result.options.reorder = krona::mesh::ReorderMethod::NONE;
+                else if (value == "SFC") result.options.reorder = krona::mesh::ReorderMethod::HILBERT_SFC;
+                else if (value == "RCM") result.options.reorder = krona::mesh::ReorderMethod::RCM;
                 else {
                     fail("Invalid reorder method; expected NONE, SFC or RCM", value);
                     return result;
@@ -205,59 +221,62 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     if (comm.rank() == 0) {
         header[0] = static_cast<int>(options.input.size());
         header[1] = static_cast<int>(options.output.size());
-        header[2] = options.boundary_output ? static_cast<int>(options.boundary_output->size()) : 0;
-        header[3] = options.vtu_directory ? static_cast<int>(options.vtu_directory->size()) : 0;
+        header[2] = !options.boundary_output.empty() ? static_cast<int>(options.boundary_output.size()) : 0;
+        header[3] = !options.vtu_directory.empty() ? static_cast<int>(options.vtu_directory.size()) : 0;
         header[4] = static_cast<int>(options.reorder);
         header[5] = static_cast<int>(options.verbosity);
     }
     krona::mpi::broadcast(comm, std::span{header});
 
+    // allocate memory on child ranks
     if (comm.rank() != 0) {
         options.input.resize(static_cast<std::size_t>(header[0]));
         options.output.resize(static_cast<std::size_t>(header[1]));
         
         if (header[2] > 0) {
-            options.boundary_output.emplace(static_cast<std::size_t>(header[2]), '\0');
-        } else {
-            options.boundary_output = std::nullopt;
+            options.boundary_output.resize(static_cast<std::size_t>(header[2]));
         }
 
         if (header[3] > 0) {
-            options.vtu_directory.emplace(static_cast<std::size_t>(header[3]), '\0');
-        } else {
-            options.vtu_directory = std::nullopt;
+            options.vtu_directory.resize(static_cast<std::size_t>(header[3]));
         }
     }
 
+    // exchange data
     krona::mpi::broadcast(comm, std::span{options.input});
     krona::mpi::broadcast(comm, std::span{options.output});
     if (header[2] > 0) {
-        krona::mpi::broadcast(comm, std::span{*options.boundary_output});
+        krona::mpi::broadcast(comm, std::span{options.boundary_output});
     }
     if (header[3] > 0) {
-        krona::mpi::broadcast(comm, std::span{*options.vtu_directory});
+        krona::mpi::broadcast(comm, std::span{options.vtu_directory});
     }
-    options.reorder = static_cast<ReorderMethod>(header[4]);
+    options.reorder = static_cast<krona::mesh::ReorderMethod>(header[4]);
     options.verbosity = static_cast<Verbosity>(header[5]);
 }
 
 // Import the mesh and extrude 2D input to one 3D layer.
 [[nodiscard]] int run_partitioner(const Options& options, krona::mpi::CommView comm)
-{
-    if (comm.rank() == 0) {
-        if (options.verbosity != Verbosity::quiet) {
-            std::fprintf(stderr,
-                "KRONA mesh_partition: input=%s output=%s ranks=%d reorder=%s verbosity=%d\n"
-                "  bc=%s\n  vtu=%s\n",
-                options.input.c_str(), options.output.c_str(), comm.size(), reorder_name(options.reorder),
-                static_cast<int>(options.verbosity),
-                options.boundary_output ? options.boundary_output->c_str() : "<disabled>",
-                options.vtu_directory ? options.vtu_directory->c_str() : "<disabled>");
-        }
+{   
+    const auto global_start = std::chrono::steady_clock::now();
+    // set verbosity aux flags
+    const bool report = comm.rank() == 0 && options.verbosity != Verbosity::QUIET;
+    const bool detailed = report && options.verbosity > Verbosity::SUMMARY;
+
+    // output general mesh partitioner information
+    if (report) {
+        std::fprintf(stderr,
+            "KRONA mesh_partition: input=%s output=%s ranks=%d reorder=%s verbosity=%d\n"
+            "  bc=%s\n  vtu=%s\n",
+            options.input.c_str(), options.output.c_str(), comm.size(), krona::mesh::reorder_method_to_string(options.reorder),
+            static_cast<int>(options.verbosity),
+            !options.boundary_output.empty() ? options.boundary_output.c_str() : "<disabled>",
+            !options.vtu_directory.empty() ? options.vtu_directory.c_str() : "<disabled>");
     }
 
-    const bool report = comm.rank() == 0 && options.verbosity != Verbosity::quiet;
-    const bool detailed = report && options.verbosity > Verbosity::summary;
+   
+    
+
 
     // Parallel CGNS import with automatic conversion of planar 2D meshes to 3D.
     //
@@ -303,13 +322,12 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //  - This is initial block ownership, not a graph partition or a halo mesh.
     //    Migration/adaptation must establish the next ownership and ID mapping.
 
-    if (report)
-        std::fputs("KRONA mesh_partition: importing mesh...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: importing mesh...\n", stderr);
 
     const auto import_started = std::chrono::steady_clock::now();
 
-    auto imported = krona::io::cgns::read_parallel(options.input, comm);
-    auto& mesh = imported.mesh;
+    krona::io::cgns::ReadResult imported = krona::io::cgns::read_parallel(options.input, comm);
+    krona::mesh::RawMesh& mesh = imported.mesh;
 
     if (report) {
         // Measure rank 0's elapsed time without adding a barrier or a timing reduction.
@@ -340,10 +358,6 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
                 imported.source.cell_dimension,
                 imported.source.physical_dimension);
 
-            std::fprintf(stderr,
-                "  Rank 0 owns: cells=%zu nodes=%zu boundary_elements=%zu\n",
-                mesh.cells.size(), mesh.coordinates.size(), mesh.boundary.size());
-
             if (!mesh.patches.empty())
                 std::fputs("  Patches:\n", stderr);
 
@@ -363,6 +377,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr,
             "KRONA mesh_partition: import completed in %.3f s.\n", seconds);
     }
+
+
+
+
 
     // Distributed construction of unique faces and a symmetric cell dual graph.
     //
@@ -419,14 +437,13 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //    Pure coordinate motion preserves this topology; connectivity changes require
     //    rebuilding after restoring the ownership contract and boundary connectivity.
 
-    if (report)
-        std::fputs("KRONA mesh_partition: building faces and dual graph...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: building faces and dual graph...\n", stderr);
 
     const auto topology_started = std::chrono::steady_clock::now();
 
-    auto topology = krona::mesh::build_faces(mesh, comm);
-    auto& faces = topology.faces;
-    auto& graph = topology.graph;
+    krona::mesh::BuildFacesResult topology = krona::mesh::build_faces(mesh, comm);
+    std::vector<krona::mesh::FaceRecord>& faces = topology.faces;
+    krona::mesh::DualGraph& graph = topology.graph;
 
     if (report) {
         // Global statistics already exist; logging requires no additional MPI calls.
@@ -457,6 +474,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
             "KRONA mesh_partition: topology completed in %.3f s.\n", seconds);
     }
     
+
+
+
+
     // Distributed partitioning of the cell dual graph with dKaMinPar.
     // This stage computes migration destinations; it does not move mesh data.
     //
@@ -526,11 +547,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         .group_by_shared_memory = true
     };
 
-    if (report)
-        std::fputs("KRONA mesh_partition: partitioning dual graph...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: partitioning dual graph...\n", stderr);
     const auto partition_started = std::chrono::steady_clock::now();
 
-    auto pr = krona::mesh_partition::partition_cells(
+    krona::mesh_partition::PartitionResult pr = krona::mesh_partition::partition_cells(
         graph, mesh.distribution.cells, comm, partition_options);
 
     if (report) {
@@ -576,6 +596,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr, "KRONA mesh_partition: partitioning completed in %.3f s.\n",
                     seconds);
     }
+
+
+
+
 
     // Distributed migration to the target ranks, one-layer face-neighbour halo,
     // local zero-based connectivity and field-exchange maps for the solver.
@@ -645,13 +669,12 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //  - Reordering must remap halo indices and patch-face indices with connectivity;
     //    topology changes require rebuilding them. Coordinate motion alone does not.
 
-    if (report)
-        std::fputs("KRONA mesh_partition: migrating mesh and building halo...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: migrating mesh and building halo...\n", stderr);
     const auto migration_started = std::chrono::steady_clock::now();
 
     // The old CSR describes source ownership and is no longer needed here.
     graph = {};
-    auto mp = krona::mesh::migrate_local_mesh(
+    krona::mesh::MeshPart mp = krona::mesh::migrate_local_mesh(
         std::move(mesh), std::move(faces), std::span<const int>{pr.cell_target_rank}, comm);
     std::vector<int>{}.swap(pr.cell_target_rank);
 
@@ -686,6 +709,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr, "KRONA mesh_partition: migration completed in %.3f s.\n", seconds);
     }
     
+
+
+
+
     // Distributed geometric integration and verification of outward face winding.
     // All ranks in comm participate, including empty ranks, on the MPI main thread.
     // The explicit communicator must match the ranks used to migrate mp.
@@ -752,8 +779,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //  - Geometry is ready after this stage. The separate RCM/SFC and face-grouping
     //    stage is still required before serializing the final grouped solver mesh.
 
-    if (report)
-        std::fputs("KRONA mesh_partition: computing geometry...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: computing geometry...\n", stderr);
     const auto geometry_started = std::chrono::steady_clock::now();
 
     const auto geometry_stats = krona::mesh::compute_mesh_geometry(mp, comm);
@@ -892,6 +918,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr, "KRONA mesh_partition: reordering completed in %.3f s.\n", seconds);
     }
 
+
+
+
+
     // Final local structural validation, collective conservation/statistics,
     // and optional generation of the editable boundary-condition template.
     // This stage follows migration, geometry and face grouping/reordering.
@@ -965,8 +995,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //    for the separate distributed mesh writer. This stage does not serialize it.
     //  - mesh_stats contains replicated final diagnostics that later stages may reuse.
 
-    if (report)
-        std::fputs("KRONA mesh_partition: validating final mesh...\n", stderr);
+    if (report) std::fputs("KRONA mesh_partition: validating final mesh...\n", stderr);
     const auto validation_started = std::chrono::steady_clock::now();
 
     krona::mesh::validate_meshpart(mp);
@@ -1004,12 +1033,16 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     }
 
     // File creation is independent of verbosity; it is controlled only by the optional path.
-    if (options.boundary_output.has_value() && comm.rank() == 0) {
-        krona::mesh::generate_bc_template_config(mp, options.boundary_output.value_or(""), mesh_stats.patch_face_counts);
+    if (!options.boundary_output.empty() && comm.rank() == 0) {
+        krona::mesh::generate_bc_template_config(mp, options.boundary_output, mesh_stats.patch_face_counts);
         if (report)
             std::fputs("KRONA mesh_partition: boundary-condition template written.\n", stderr);
     }
 
+
+
+
+    
     // Distributed serialization of the final solver snapshot and optional VTK export.
     // This stage follows migration, geometry, reordering and final mesh validation.
     // All ranks in comm must call export_mesh_hdf5(), including ranks without cells.
@@ -1103,20 +1136,26 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr, "KRONA mesh_partition: solver mesh written in %.3f s (rank 0).\n", seconds);
     }
 
-    if (options.vtu_directory.has_value()) {
+    if (!options.vtu_directory.empty()) {
         if (report)
             std::fputs("KRONA mesh_partition: writing visualization...\n", stderr);
         const auto vtk_write_started = std::chrono::steady_clock::now();
-        krona::io::vtk::write_vtu(mp, options.vtu_directory.value_or(""), "part", comm);
+        krona::io::vtk::write_vtu(mp, options.vtu_directory, "part", comm);
         if (report) {
             const double seconds = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - vtk_write_started).count();
             std::fprintf(stderr, "  VTK datasets: %s/part.pvtu and %s/part_bnd.pvtu\n",
-                        options.vtu_directory.value_or("").c_str(), options.vtu_directory.value_or("").c_str());
+                        options.vtu_directory.c_str(), options.vtu_directory.c_str());
             std::fprintf(stderr, "KRONA mesh_partition: visualization written in %.3f s (rank 0).\n", seconds);
         }
     }
 
+    const double total_time = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - global_start).count();
+
+    if (report) 
+        std::fprintf(stderr, "KRONA mesh_partition: mesh partiton is done successfully, total executional time %.3f s (rank 0).\n", total_time);
+    
     return EXIT_SUCCESS;
 }
 
@@ -1138,11 +1177,11 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     // broadcast data to other ranks
     int action = static_cast<int>(parsed.action);
     krona::mpi::broadcast(comm, action);
-    if (action == static_cast<int>(CliAction::help)) {
+    if (action == static_cast<int>(CliAction::HELP)) {
         if (comm.rank() == 0) usage(stdout);
         return EXIT_SUCCESS;
     }
-    if (action == static_cast<int>(CliAction::error)) {
+    if (action == static_cast<int>(CliAction::ERROR)) {
         if (comm.rank() == 0) {
             constexpr std::size_t limit = 512;
             std::fprintf(stderr, "mesh_partition: %.*s",

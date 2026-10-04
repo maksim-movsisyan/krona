@@ -31,10 +31,8 @@ struct ElementTable
     std::vector<GlobalIndex> node_ids;
 
     /// @brief Returns the number of elements in this CSR table.
-    [[nodiscard]] std::size_t size() const noexcept
-    {
-        return types.size();
-    }
+    [[nodiscard]] std::size_t size() const noexcept { return types.size(); }
+    
     /// @brief Borrows an element's oriented global-node connectivity.
     [[nodiscard]] std::span<const GlobalIndex> nodes(std::size_t element) const noexcept
     {
@@ -48,11 +46,9 @@ struct ElementTable
 struct Coordinates
 {
     std::vector<GeometryReal> x, y, z;
+
     /// @brief Returns the number of locally owned coordinate triples.
-    [[nodiscard]] std::size_t size() const noexcept
-    {
-        return x.size();
-    }
+    [[nodiscard]] std::size_t size() const noexcept { return x.size(); }
 };
 
 struct BoundaryTable
@@ -60,11 +56,9 @@ struct BoundaryTable
     ElementTable elements;
     std::vector<GlobalIndex> global_ids; // Sparse source element IDs, zero-based.
     std::vector<PatchId> patch_ids;      // May contain invalid_patch_id.
+
     /// @brief Returns the number of locally owned boundary elements.
-    [[nodiscard]] std::size_t size() const noexcept
-    {
-        return elements.size();
-    }
+    [[nodiscard]] std::size_t size() const noexcept { return elements.size(); }
 };
 
 struct ImportDistribution

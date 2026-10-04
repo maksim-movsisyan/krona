@@ -76,12 +76,12 @@ void visit_sources(const RawMesh& mesh, Visit&& visit)
 {
     // Eight slots per cell encode all supported local face indices.
     for (std::size_t cell = 0; cell < mesh.cells.size(); ++cell) {
-        const auto type = static_cast<std::size_t>(mesh.cells.types[cell]);
+        const std::size_t type = static_cast<std::size_t>(mesh.cells.types[cell]);
         for (int face = 0; face < faces_per_type[type]; ++face)
             visit(cell_face_key(mesh, cell, static_cast<std::size_t>(face)),
                   cell * 8 + static_cast<std::size_t>(face));
     }
-    const auto boundary_begin = mesh.cells.size() * 8;
+    const std::size_t boundary_begin = mesh.cells.size() * 8;
     for (std::size_t i = 0; i < mesh.boundary.size(); ++i)
         visit(make_face_key(mesh.boundary.elements.nodes(i)), boundary_begin + i);
 }
@@ -210,10 +210,12 @@ private:
 /// @brief Validates stage contracts once and counts local half-faces and labels.
 [[nodiscard]] std::uint64_t count_sources(const RawMesh& mesh, mpi::CommView comm)
 {
+    // get cell distribution
     const auto& ownership = mesh.distribution.cells;
+
+    // corectness check
     if (mesh.cell_dimension != 3 || mesh.distribution.rank != comm.rank() ||
-        ownership.parts() != comm.size() ||
-        !std::in_range<std::size_t>(ownership.local_size(comm.rank())) ||
+        ownership.parts() != comm.size() || !std::in_range<std::size_t>(ownership.local_size(comm.rank())) ||
         mesh.cells.size() != static_cast<std::size_t>(ownership.local_size(comm.rank())))
         mpi::fatal("Face construction requires a 3D mesh in its current block ownership");
     if (!std::in_range<LocalIndex>(mesh.cells.size()))
@@ -224,21 +226,25 @@ private:
     assert(mesh.cells.offsets.size() == mesh.cells.size() + 1);
     assert(mesh.boundary.elements.offsets.size() == mesh.boundary.size() + 1);
     assert(mesh.boundary.patch_ids.size() == mesh.boundary.size());
+
+    // get numberof  local boundary faces
     std::uint64_t count = mesh.boundary.size();
-    // Type checks protect the fixed face tables; connectivity validity is a caller contract.
+
+    // type checks protect the fixed face tables; connectivity validity is a caller contract.
     for (std::size_t cell = 0; cell < mesh.cells.size(); ++cell) {
-        const auto type = static_cast<std::size_t>(mesh.cells.types[cell]);
+        const std::size_t type = static_cast<std::size_t>(mesh.cells.types[cell]);
         if (type > static_cast<std::size_t>(CellType::HEXA))
             mpi::fatal("Unsupported volume cell type in face construction");
         assert(mesh.cells.nodes(cell).size() == static_cast<std::size_t>(nodes_per_type[type]));
         count += static_cast<std::uint64_t>(faces_per_type[type]);
     }
+
+    // 
     for (std::size_t i = 0; i < mesh.boundary.size(); ++i) {
         const auto type = mesh.boundary.elements.types[i];
         if (type != CellType::TRI && type != CellType::QUAD)
             mpi::fatal("Face construction requires TRI or QUAD boundary elements");
-        assert(mesh.boundary.elements.nodes(i).size() ==
-               static_cast<std::size_t>(nodes_per_element(type)));
+        assert(mesh.boundary.elements.nodes(i).size() == static_cast<std::size_t>(nodes_per_element(type)));
     }
     return count;
 }
@@ -247,19 +253,25 @@ private:
 [[nodiscard]] BuildFacesResult build(const RawMesh& mesh, mpi::CommView comm,
                                      const BuildFacesOptions& options)
 {
-    const auto local_sources = count_sources(mesh, comm);
-    const auto peers = static_cast<std::size_t>(comm.size());
+    // get total number of local faces (boundary faces are counted twice: as boundary element and as face of boundary cell)
+    const std::uint64_t local_sources = count_sources(mesh, comm);
+    
+    // get number of ranks
+    const std::size_t peers = static_cast<std::size_t>(comm.size());
     if (options.batch_bytes < sizeof(HalfFace)) mpi::fatal("Face batch size is too small");
-    // All ranks need the same round count; this is algorithm planning, not status checking.
+
+    // all ranks need the same round count; this is algorithm planning, not status checking.
     const auto maximum = mpi::allreduce<mpi::Reduction::max>(comm, local_sources);
+    
     const auto target = std::min(options.batch_bytes / sizeof(HalfFace),
         static_cast<std::size_t>(std::numeric_limits<int>::max()) / peers);
     const auto rounds = std::max<std::uint64_t>(1, maximum / target + (maximum % target != 0));
-    if (rounds > (std::numeric_limits<std::size_t>::max() - 1) / peers)
+    if (rounds > (std::numeric_limits<std::size_t>::max() - 1) / peers) 
         mpi::fatal("Face bucket count exceeds size_t");
-    const auto buckets = static_cast<std::size_t>(rounds) * peers;
+    
+    const std::size_t buckets = static_cast<std::size_t>(rounds) * peers;
 
-    // The same key always selects the same round and rendezvous rank.
+    // the same key always selects the same round and rendezvous rank.
     std::vector<std::size_t> offsets(buckets + 1, 0);
     visit_sources(mesh, [&](const FaceKey& key, std::size_t) {
         ++offsets[static_cast<std::size_t>(face_hash(key) % buckets) + 1];
@@ -370,8 +382,7 @@ private:
 } // namespace
 
 /// @brief Builds unique faces and symmetric adjacency from an owned 3D mesh snapshot.
-BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm,
-                             const BuildFacesOptions& options)
+BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm, const BuildFacesOptions& options)
 {
     if (comm.is_null() || !mpi::is_active()) mpi::fatal("Face construction requires active MPI");
     mpi::require_main_thread();

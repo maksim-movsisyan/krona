@@ -15,33 +15,43 @@ inline constexpr LocalIndex invalid_local_index = -1;
 struct MeshPart {
     int rank = 0;
     int nprocs = 1;
+
+    // Global metadata (replicated on all ranks) 
     std::uint64_t n_cells_g = 0, n_nodes_g = 0, n_faces_g = 0;
-    std::uint64_t n_bfaces_g = 0; // All exterior faces, including unlabelled ones.
+    std::uint64_t n_bfaces_g = 0;                               // All exterior faces, including unlabelled ones.
     std::uint64_t n_labeled_bfaces_g = 0, n_cut_faces_g = 0;
-    std::uint64_t n_ghost_copies_g = 0; // Sum of local ghosts, not unique cells.
+    std::uint64_t n_ghost_copies_g = 0;                         // Sum of local ghosts, not unique cells.
     std::array<GeometryReal, 3> bbox_lo{}, bbox_hi{};
 
-    // Owned cells precede ghosts; GIDs identify this topology snapshot.
+
+    // Cells 
+    // [0, n_own) are owned cells (SFC or RCM ordered for cache locality).
+    // [n_own, n_cells) are ghost cells received from neighbours.
     LocalIndex n_own = 0, n_cells = 0;
     std::vector<CellType> cell_type;
     std::vector<GlobalIndex> cell_gid;
-    std::vector<int> cell_donor; // -1 for owned cells; otherwise the new owner rank.
+    std::vector<int> cell_donor;                                // -1 for owned cells; otherwise the new owner rank.
     std::vector<std::size_t> cell_nodes_offsets{0};
     std::vector<LocalIndex> cell_nodes;
 
-    // Nodes used by owned cells precede ghost-only nodes; ownership is not exclusive.
+
+    // Nodes
+    // [0, n_nodes_own) are nodes used by at least one owned cell.
+    // [n_nodes_own, n_nodes) are nodes used by ghost cells.
     LocalIndex n_nodes_own = 0, n_nodes = 0;
     std::vector<GlobalIndex> node_gid;
     std::vector<GeometryReal> node_x, node_y, node_z;
 
+    
+    // Faces
     // Every face owner is owned; the neighbour is owned, ghost, or -1 at a boundary.
     LocalIndex n_faces = 0;
     std::vector<LocalIndex> face_owner, face_neigh;
     std::vector<CellType> face_type;
     std::vector<PatchId> face_patch;
-    std::vector<std::uint8_t> face_local_index; // Facet of the current owner cell.
+    std::vector<std::uint8_t> face_local_index;             // Facet of the current owner cell.
     std::vector<std::size_t> face_nodes_offsets{0};
-    std::vector<LocalIndex> face_nodes; // Oriented CGNS facet order, relative to owner.
+    std::vector<LocalIndex> face_nodes;                     // Oriented CGNS facet order, relative to owner.
 
     // Valid ranges only after the separate face-grouping/reordering stage.
     // [0,n_internal_faces): owned-owned; [n_internal_faces,n_inner_faces): owned-ghost;

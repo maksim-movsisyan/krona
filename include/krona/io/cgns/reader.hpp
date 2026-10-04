@@ -46,7 +46,7 @@ struct ReadResult {
 /// Linear uniform/MIXED sections are supported; planar TRI/QUAD imports are extruded.
 [[nodiscard]] ReadResult read_parallel(
     const std::string& path, mpi::CommView comm, const ReaderOptions& options = {});
-
+ 
 // All ranks use identical path/options and call on the MPI main thread.
 // Legacy uniform sections are allowed; implicit bulk conversion of variable-arity sections is rejected.
 // Bulk arrays are read as owned slices; only small metadata is replicated.

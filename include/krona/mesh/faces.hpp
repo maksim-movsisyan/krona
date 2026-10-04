@@ -1,7 +1,8 @@
 #pragma once
 
-#include <krona/mesh/raw_mesh.hpp>
 #include <krona/mpi/communicator.hpp>
+#include <krona/mesh/raw_mesh.hpp>
+#include <krona/mesh/element.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -47,7 +48,7 @@ struct BuildFacesResult {
     DualGraph graph;
     FaceStats stats;
 };
-
+ 
 /// @brief Collectively matches cell faces and boundary labels, then builds the dual graph.
 /// Uses connectivity only; coordinates and the mesh source do not affect matching.
 [[nodiscard]] BuildFacesResult build_faces(

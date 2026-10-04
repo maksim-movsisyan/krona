@@ -13,7 +13,7 @@
 #include <span>
 #include <utility>
 #include <vector>
-
+ 
 namespace krona::mesh {
 namespace {
 using Block = distribution::BlockDistribution<GlobalIndex>;

@@ -163,7 +163,8 @@ void check_source_format(const std::string& path)
 }
 
 /// @brief Owns the open file until its explicit collective close.
-struct File final {
+struct File final 
+{
     mpi::CommView comm;
     int id = -1;
     int cgio = -1;
@@ -175,8 +176,7 @@ struct File final {
         // CGIO typed reads below inherit this parallel transfer mode.
         check_cgns(cgp_mpi_comm(comm.native()), "cgp_mpi_comm");
         check_cgns(cgp_mpi_info(options.io_info), "cgp_mpi_info");
-        check_cgns(cgp_pio_mode(options.collective_io ? CGP_COLLECTIVE : CGP_INDEPENDENT),
-                   "cgp_pio_mode");
+        check_cgns(cgp_pio_mode(options.collective_io ? CGP_COLLECTIVE : CGP_INDEPENDENT), "cgp_pio_mode");
         check_cgns(cgp_open(path.c_str(), CG_MODE_READ, &id), "cgp_open");
         check_cgns(cg_get_cgio(id, &cgio), "cg_get_cgio");
         int type = 0;
@@ -193,7 +193,6 @@ struct File final {
 
     /// @brief An open parallel file cannot be copied.
     File(const File&) = delete;
-    /// @brief An open parallel file cannot be copy-assigned.
     File& operator=(const File&) = delete;
 
     /// @brief Closes the file collectively and releases borrowed CGNS configuration.
@@ -216,7 +215,8 @@ struct File final {
     }
 };
 
-struct IntegerArray {
+struct IntegerArray 
+{
     double id = 0;
     int dimensions = 0;
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> shape{};
@@ -282,7 +282,8 @@ void read_integer(const File& file, const IntegerArray& array, std::int64_t firs
     }
 }
 
-struct Section {
+struct Section 
+{
     GlobalIndex begin = 0, end = 0;
     GlobalIndex source_begin = 0, source_end = 0;
     ElementType type{};
@@ -290,13 +291,15 @@ struct Section {
     bool volume = false, boundary = false;
     GlobalIndex boundary_offset = 0;
 };
-struct BoundaryCondition {
+struct BoundaryCondition 
+{
     IntegerArray points;
     PointSetType type{};
     std::int64_t count = 0;
     mesh::PatchId patch = mesh::invalid_patch_id;
 };
-struct Metadata {
+struct Metadata 
+{
     std::vector<Section> sections;
     std::vector<BoundaryCondition> bcs;
     std::array<int, 3> coordinate_indices{};
@@ -305,53 +308,59 @@ struct Metadata {
 void read_sections(const File& file, const ReaderOptions& options, ReadResult& result,
                    Metadata& metadata)
 {
+    // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
+    
     auto& mesh = result.mesh;
     char name[33]{};
     const auto cells = mesh.distribution.cells.global_size();
+    
     // Resolve arrays once; payload reads later select only owned slices.
     double zone_id = 0;
     check_cgns(cg_zone_id(f, b, z, &zone_id), "cg_zone_id");
 
+    // read number of sections
     int sections = 0;
     check_cgns(cg_nsections(f, b, z, &sections), "cg_nsections");
     metadata.sections.reserve(static_cast<std::size_t>(sections) * 2);
 
+    // loop over all sections
     for (int s = 1; s <= sections; ++s)
     {
+        // read section metadata
         Section section;
         cgsize_t first = 0, last = 0;
         int boundary_count = 0, parent_data = 0;
-        check_cgns(cg_section_read(f, b, z, s, name, &section.type, &first, &last, &boundary_count,
-                                   &parent_data),
-                   "cg_section_read");
+        check_cgns(cg_section_read(f, b, z, s, name, 
+                                        &section.type, &first, &last, &boundary_count,
+                                        &parent_data), "cg_section_read");
+
+        // fill section metadata
         ensure(first >= 1 && last >= first, "Invalid CGNS section range");
         section.begin = global_index(first - 1);
         section.end = global_index(last);
         section.source_begin = section.begin;
         section.source_end = section.end;
         section.volume = section.end <= cells;
+
+        // mixed section can contain elements of different dims (volume + boundary) ???
         ensure(section.volume || section.begin >= cells || section.type == CGNS_ENUMV(MIXED),
                "A section crosses the volume/boundary ID boundary");
-        if (section.type == CGNS_ENUMV(MIXED))
-        {
-            section.boundary = !section.volume;
-        }
-        else
-        {
-            const auto dimension = mesh::dimension(cell_type(section.type));
-            ensure(!section.volume || dimension == mesh.cell_dimension,
-                   "Volume section has the wrong dimension");
-            ensure(section.volume || dimension < mesh.cell_dimension,
-                   "A volume section lies outside the zone cell range");
+
+        if (section.type == CGNS_ENUMV(MIXED)) {
+            section.boundary = !section.volume; // pre-flag
+        } else {
+            // get element dimension
+            const int dimension = mesh::dimension(cell_type(section.type));
+            ensure(!section.volume || dimension == mesh.cell_dimension, "Volume section has the wrong dimension");
+            ensure(section.volume || dimension < mesh.cell_dimension, "A volume section lies outside the zone cell range");
             section.boundary = dimension == mesh.cell_dimension - 1;
         }
-        if (section.volume || section.boundary)
-        {
+
+        if (section.volume || section.boundary) {
             const double section_id = file.child(zone_id, name);
             section.connectivity = integer_array(file, section_id, "ElementConnectivity", 1);
-            if (section.type == CGNS_ENUMV(MIXED))
-            {
+            if (section.type == CGNS_ENUMV(MIXED)) {
                 section.offsets = integer_array(file, section_id, "ElementStartOffset", 1);
                 const auto element_count = last - first + 1;
                 ensure(element_count < std::numeric_limits<cgsize_t>::max(),
@@ -359,8 +368,7 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
                 ensure(section.offsets.shape[0] == element_count + 1,
                        "Invalid MIXED offset array extent");
             }
-            else
-            {
+            else {
                 const auto arity =
                     static_cast<cgsize_t>(mesh::nodes_per_element(cell_type(section.type)));
                 ensure(last - first + 1 <= std::numeric_limits<cgsize_t>::max() / arity,
@@ -369,8 +377,7 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
                        "Invalid uniform connectivity extent");
             }
         }
-        if (section.type == CGNS_ENUMV(MIXED) && section.begin < cells && section.end > cells)
-        {
+        if (section.type == CGNS_ENUMV(MIXED) && section.begin < cells && section.end > cells) {
             auto volume = section;
             volume.end = cells;
             volume.volume = true;
@@ -385,91 +392,101 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
               [](const Section &left, const Section &right) { return left.begin < right.begin; });
     GlobalIndex next_cell = 0, previous_end = 0;
     GlobalIndex boundary_total = 0;
-    for (auto &section : metadata.sections)
-    {
+
+    // loop over all sections
+    for (auto &section : metadata.sections) {
         ensure(section.begin >= previous_end, "Overlapping CGNS section ranges");
         previous_end = section.end;
-        if (section.volume)
-        {
-            ensure(section.begin == next_cell,
-                   "Volume sections must cover CGNS cell IDs without gaps");
+
+        // volume section check
+        if (section.volume) {
+            ensure(section.begin == next_cell, "Volume sections must cover CGNS cell IDs without gaps");
             next_cell = section.end;
         }
-        if (section.boundary)
-        {
+
+        // boundary section check
+        if (section.boundary) {
             section.boundary_offset = boundary_total;
-            ensure(section.end - section.begin <=
-                       std::numeric_limits<GlobalIndex>::max() - boundary_total,
+            ensure(section.end - section.begin <= std::numeric_limits<GlobalIndex>::max() - boundary_total,
                    "Global boundary count overflow");
             boundary_total += section.end - section.begin;
         }
     }
+
     ensure(next_cell == cells, "Volume sections do not cover the zone cell range");
+
+    // distribute boundary elements among ranks
     mesh.distribution.boundary_ordinals = Block{boundary_total, file.comm.size()};
-    const auto boundary_local =
-        host_size(mesh.distribution.boundary_ordinals.local_size(file.comm.rank()));
-    ensure(boundary_local <=
-               static_cast<std::uint64_t>(std::numeric_limits<LocalIndex>::max()),
+    const std::size_t boundary_local = host_size(mesh.distribution.boundary_ordinals.local_size(file.comm.rank()));
+
+    ensure(boundary_local <= static_cast<std::uint64_t>(std::numeric_limits<LocalIndex>::max()),
            "Local boundary count exceeds LocalIndex");
     mesh.boundary.global_ids.reserve(boundary_local);
     mesh.boundary.patch_ids.assign(boundary_local, mesh::invalid_patch_id);
-
 }
 
 /// @brief Reads patch labels and resolves supported boundary point-set arrays.
 void read_patch_metadata(const File& file, const ReaderOptions& options, ReadResult& result,
                          Metadata& metadata)
 {
+    // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
+
     auto& mesh = result.mesh;
     char name[33]{};
-    // Patch labels are small metadata; bulk point lists remain distributed.
+    
+    // read number of boundary zones
     int bcs = 0;
     check_cgns(cg_nbocos(f, b, z, &bcs), "cg_nbocos");
     metadata.bcs.reserve(static_cast<std::size_t>(bcs));
     mesh.patches.reserve(static_cast<std::size_t>(bcs));
     result.source.ignored_boundary_conditions.reserve(static_cast<std::size_t>(bcs));
+
+    // loop over all boundary zones
     for (int bc = 1; bc <= bcs; ++bc)
     {
+        // read boundary zone metadata
         BoundaryCondition condition;
         CGNS_ENUMT(BCType_t) type{};
         DataType normal_type{};
         cgsize_t count = 0, normal_size = 0;
         int normal_indices[3]{}, datasets = 0;
-        check_cgns(cg_boco_info(f, b, z, bc, name, &type, &condition.type, &count, normal_indices,
-                                &normal_size, &normal_type, &datasets),
-                   "cg_boco_info");
+        check_cgns(cg_boco_info(f, b, z, bc, name, &type, 
+                   &condition.type, &count, normal_indices,
+                   &normal_size, &normal_type, &datasets), "cg_boco_info");
         GridLocation location{};
         check_cgns(cg_boco_gridlocation_read(f, b, z, bc, &location), "cg_boco_gridlocation_read");
+
+        // check supported boundary zone
         const bool legacy_elements = condition.type == CGNS_ENUMV(ElementList) ||
                                      condition.type == CGNS_ENUMV(ElementRange);
         const bool supported = legacy_elements ||
             ((condition.type == CGNS_ENUMV(PointList) || condition.type == CGNS_ENUMV(PointRange)) &&
              ((mesh.cell_dimension == 3 && location == CGNS_ENUMV(FaceCenter)) ||
               (mesh.cell_dimension == 2 && location == CGNS_ENUMV(EdgeCenter))));
-        if (!supported)
-        {
+        if (!supported) {
             ensure(options.unsupported_boundary == UnsupportedBoundary::ignore,
-                   "Unsupported BC: require PointList/PointRange at FaceCenter (3D) or EdgeCenter "
-                   "(2D); absent GridLocation means Vertex");
+                   "Unsupported BC: require PointList/PointRange at FaceCenter (3D) or EdgeCenter " "(2D); absent GridLocation means Vertex");
             result.source.ignored_boundary_conditions.emplace_back(name);
             continue;
         }
+
         ensure(count >= 0, "Negative BC point count");
         condition.count = count;
-        ensure(mesh.patches.size() <
-                   static_cast<std::size_t>(std::numeric_limits<mesh::PatchId>::max()),
+        ensure(mesh.patches.size() < static_cast<std::size_t>(std::numeric_limits<mesh::PatchId>::max()),
                "Too many boundary patches");
+
+        // set patch id
         condition.patch = static_cast<mesh::PatchId>(mesh.patches.size());
         check_cgns(cg_goto(f, b, "Zone_t", z, "ZoneBC_t", 1, "BC_t", bc, "end"), "cg_goto(BC)");
         char family[33]{};
         const int family_status = cg_famname_read(family);
-        if (family_status != CG_OK && family_status != CG_NODE_NOT_FOUND)
-        {
+        if (family_status != CG_OK && family_status != CG_NODE_NOT_FOUND) {
             check_cgns(family_status, "cg_famname_read");
         }
-        mesh.patches.push_back(
-            {name, family_status == CG_OK ? family : "", cg_BCTypeName(type)});
+        mesh.patches.push_back({name, family_status == CG_OK ? family : "", cg_BCTypeName(type)});
+
+        // get bc id
         double bc_id = 0;
         check_cgns(cg_boco_id(f, b, z, bc, &bc_id), "cg_boco_id");
         const char* point_name = cg_PointSetTypeName(condition.type);
@@ -489,26 +506,30 @@ void read_patch_metadata(const File& file, const ReaderOptions& options, ReadRes
 }
 
 /// @brief Reads small replicated metadata and establishes contiguous import ownership.
-void read_metadata(const File &file, const ReaderOptions &options, ReadResult &result,
-                   Metadata &metadata)
+void read_metadata(const File &file, const ReaderOptions &options, ReadResult &result, Metadata &metadata)
 {
+    // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
 
     auto &mesh = result.mesh;
 
+    // read cgns file version (can be different from library version)
     char name[33]{};
     check_cgns(cg_version(f, &result.source.version), "cg_version");
 
+    // read base metadata
     check_cgns(cg_base_read(f, b, name, &mesh.cell_dimension, &mesh.physical_dimension),
                "cg_base_read");
-
     result.source.base_name = name;
     result.source.cell_dimension = mesh.cell_dimension;
     result.source.physical_dimension = mesh.physical_dimension;
+
+    // check if mesh is 2D/3D
     ensure((mesh.cell_dimension == 2 || mesh.cell_dimension == 3) &&
-               mesh.physical_dimension >= mesh.cell_dimension && mesh.physical_dimension <= 3,
+           mesh.physical_dimension >= mesh.cell_dimension && mesh.physical_dimension <= 3,
            "Expected a 2D/3D CGNS base");
 
+    // read zone metadata
     CGNS_ENUMT(ZoneType_t) zone_type{};
     check_cgns(cg_zone_type(f, b, z, &zone_type), "cg_zone_type");
     ensure(zone_type == CGNS_ENUMV(Unstructured), "Only unstructured zones are implemented");
@@ -519,15 +540,21 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
     const GlobalIndex nodes = global_index(zone_size[0]), cells = global_index(zone_size[1]);
     ensure(nodes > 0 && cells > 0, "Empty CGNS zones are not supported");
 
+    // create contiguous nodes and cells distributions
     mesh.distribution = {
-        Block{cells, file.comm.size()}, Block{nodes, file.comm.size()}, {}, file.comm.rank()};
+        Block{cells, file.comm.size()}, 
+        Block{nodes, file.comm.size()}, 
+        {}, 
+        file.comm.rank()};
     check_local_size(mesh.distribution.cells.local_size(file.comm.rank()));
     check_local_size(mesh.distribution.nodes.local_size(file.comm.rank()));
 
+    // read number of cooridnate axes
     int coordinates = 0;
     check_cgns(cg_ncoords(f, b, z, &coordinates), "cg_ncoords");
     constexpr std::array<std::string_view, 3> names{"CoordinateX", "CoordinateY", "CoordinateZ"};
 
+    // loop over all coordinate axes
     for (int c = 1; c <= coordinates; ++c)
     {
         DataType type{};
@@ -538,16 +565,15 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
             {
                 continue;
             }
-            ensure(type == CGNS_ENUMV(RealSingle) || type == CGNS_ENUMV(RealDouble),
-                   "Expected floating-point Cartesian coordinates");
+            ensure(type == CGNS_ENUMV(RealSingle) || type == CGNS_ENUMV(RealDouble), "Expected floating-point Cartesian coordinates");
             ensure(metadata.coordinate_indices[axis] == 0, "Duplicate Cartesian coordinate array");
             metadata.coordinate_indices[axis] = c;
         }
     }
+
     for (int axis = 0; axis < mesh.physical_dimension; ++axis)
     {
-        ensure(metadata.coordinate_indices[static_cast<std::size_t>(axis)] != 0,
-               "Missing named Cartesian coordinate array");
+        ensure(metadata.coordinate_indices[static_cast<std::size_t>(axis)] != 0, "Missing named Cartesian coordinate array, SEE IMPLEMENTATION");
     }
 
     read_sections(file, options, result, metadata);
@@ -592,14 +618,13 @@ void read_coordinates(const File& file, const ReaderOptions& options,
                       const Metadata& metadata, mesh::RawMesh& mesh)
 {
     const auto first = mesh.distribution.nodes.begin(file.comm.rank());
-    const auto n = host_size(mesh.distribution.nodes.local_size(file.comm.rank()));
+    const std::size_t n = host_size(mesh.distribution.nodes.local_size(file.comm.rank()));
     mesh.coordinates.x.resize(n);
     mesh.coordinates.y.resize(n);
     mesh.coordinates.z.assign(n, GeometryReal{0});
     std::array<std::vector<GeometryReal>*, 3> arrays{
         &mesh.coordinates.x, &mesh.coordinates.y, &mesh.coordinates.z};
-    constexpr auto type = std::is_same_v<GeometryReal, float>
-        ? CGNS_ENUMV(RealSingle) : CGNS_ENUMV(RealDouble);
+    constexpr auto type = std::is_same_v<GeometryReal, float> ? CGNS_ENUMV(RealSingle) : CGNS_ENUMV(RealDouble);
     const cgsize_t start = n == 0 ? 1 : static_cast<cgsize_t>(first) + 1;
     const cgsize_t end = n == 0 ? 1 : start + static_cast<cgsize_t>(n) - 1;
     const cgsize_t one = 1, memory = n == 0 ? 1 : static_cast<cgsize_t>(n);
@@ -881,16 +906,26 @@ void read_boundaries(const File& file, const ReaderOptions& options,
 /// @brief Reads owned source slices and automatically extrudes planar 2D imports.
 ReadResult read_parallel(const std::string& path, mpi::CommView comm, const ReaderOptions& options)
 {
+    // check if MPI context is active and communicator is not MPI_COMM_NULL
     ensure(!comm.is_null() && mpi::is_active(), "CGNS import requires active MPI and a live communicator");
+
+    // only main thread can perform parallel read
     mpi::require_main_thread();
+
+    // check input parameters
     ensure(!path.empty() && options.base_index > 0 && options.zone_index > 0,
            "Invalid CGNS path or one-based base/zone index");
-    ensure(options.batch_elements > 0 &&
-               options.batch_elements <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
+    ensure(options.batch_elements > 0 && options.batch_elements <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
            "Invalid CGNS temporary-buffer batch size");
+
+    // open CGNS file 
     File file(path, comm, options);
+
     try {
+        // prepare output results
         ReadResult result;
+
+        // read metadata (replicated on each rank)
         Metadata metadata;
         read_metadata(file, options, result, metadata);
         read_coordinates(file, options, metadata, result.mesh);

@@ -96,16 +96,6 @@ struct FaceKey
     /// @brief Compares sorted node IDs for facet matching.
     auto operator<=>(const FaceKey &) const = default;
 };
-/// @brief Builds an orientation-independent key for a facet with one to four nodes.
-//[[nodiscard]] inline FaceKey make_face_key(std::span<const GlobalIndex> nodes) noexcept
-//{
-//    assert(!nodes.empty() && nodes.size() <= 4);
-//    // Sort only populated slots; unused slots retain their sentinel.
-//    FaceKey key;
-//    std::copy(nodes.begin(), nodes.end(), key.nodes.begin());
-//   std::sort(key.nodes.begin(), key.nodes.begin() + static_cast<std::ptrdiff_t>(nodes.size()));
-//  return key;
-///}
 
 /// @brief Builds an orientation-independent key for a facet with one to four nodes.
 [[nodiscard]] inline FaceKey make_face_key(

@@ -33,7 +33,7 @@ struct ExtrusionInfo {
 /// Original node IDs remain unchanged; top IDs are shifted by the original node count.
 [[nodiscard]] ExtrusionInfo extrude_one_layer(
     RawMesh& mesh, mpi::CommView comm, const ExtrusionOptions& options = {});
-
+ 
 // Preserves cell ownership; balances output nodes and boundary ordinals again.
 // h = thickness_fraction * max(bbox spans); original coordinates are preserved.
 // Requires valid TRI/QUAD cells, BAR boundaries and the original block ownership.
