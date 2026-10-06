@@ -14,6 +14,7 @@ build/
 # Editors / OS
 .cache/
 .vscode/
+.clangd
 .idea/
 *.swp
 compile_commands.json

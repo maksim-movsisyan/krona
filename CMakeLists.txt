@@ -259,6 +259,12 @@ endif()
 
 add_library(krona_execution INTERFACE)
 add_library(krona::execution ALIAS krona_execution)
+target_include_directories(
+    krona_execution
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>        
+)
 target_link_libraries(krona_execution INTERFACE krona::build_config Kokkos::kokkos)
 
 #==================================================================
@@ -541,6 +547,17 @@ target_link_libraries(
         krona::hdf5
 )
 
+    #======================
+    #=== MESH EXECUTION ===
+    #======================
+add_library(krona_mesh_compute INTERFACE)
+add_library(krona::mesh_compute ALIAS krona_mesh_compute)
+target_include_directories(krona_mesh_compute INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(krona_mesh_compute INTERFACE
+    krona::execution)
+
     #===============
     #=== CGNS IO ===
     #===============
@@ -640,7 +657,18 @@ if(KRONA_ENABLE_CGNS)
     )
 endif()
 
-
+    #============================
+    #=== KOKKOS PLUG (DELETE) ===
+    #============================
+add_executable(krona_plug apps/plug.cpp)
+target_link_libraries(
+    krona_plug
+    PRIVATE
+        krona::mesh_compute
+        krona::build_config 
+        krona::warnings  
+)
+    
 #==================================================================
 #==== ADD BUILDING TESTING ========================================
 #==================================================================
