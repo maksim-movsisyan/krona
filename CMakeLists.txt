@@ -555,9 +555,14 @@ add_library(krona::mesh_compute ALIAS krona_mesh_compute)
 target_include_directories(krona_mesh_compute INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_link_libraries(krona_mesh_compute INTERFACE
-    krona::execution)
+target_link_libraries(
+    krona_mesh_compute 
+    INTERFACE 
+        krona::execution
+        krona::mpi
 
+)
+    
     #===============
     #=== CGNS IO ===
     #===============

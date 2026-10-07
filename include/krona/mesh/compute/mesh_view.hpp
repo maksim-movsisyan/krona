@@ -8,6 +8,18 @@
 #include <type_traits>
 
 namespace krona::mesh::compute {
+/// @brief Groups copied or borrowed from MeshPart; counts are always available.
+enum class MeshData : std::uint32_t {
+    None = 0, Topology = 1U << 0, Geometry = 1U << 1, Halo = 1U << 2,
+    CellConnectivity = 1U << 3, FaceConnectivity = 1U << 4, NodeCoordinates = 1U << 5,
+    Core = 0x07U, Connectivity = 0x38U, All = 0x3FU
+};
+
+[[nodiscard]] constexpr MeshData operator|(MeshData a, MeshData b) noexcept
+{
+    return static_cast<MeshData>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
+}
+
 namespace detail {
 
 // Owning buffers are writable; kernel views are const and do not own memory.
@@ -64,6 +76,14 @@ struct ConnectivityArrays {
 
 template<class Space, bool Owning>
 struct MeshArrays {
+    MeshData active_mask = MeshData::None;
+
+    KOKKOS_INLINE_FUNCTION bool has(MeshData flags) const noexcept
+    {
+        const auto bits = static_cast<std::uint32_t>(flags);
+        return (static_cast<std::uint32_t>(active_mask) & bits) == bits;
+    }
+
     TopologyArrays<Space, Owning> topology;
     GeometryArrays<Space, Owning> geometry;
     HaloArrays<Space, Owning> halo;
