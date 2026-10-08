@@ -563,6 +563,21 @@ target_link_libraries(
         krona::mpi
 )
     
+    #==============
+    #=== FIELDS ===
+    #==============
+add_library(krona_fields INTERFACE)
+add_library(krona::fields ALIAS krona_fields)
+target_include_directories(krona_fields INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(
+    krona_fields 
+    INTERFACE
+        krona::execution
+        krona::mpi
+)
+
     #===============
     #=== CGNS IO ===
     #===============
@@ -673,6 +688,8 @@ target_link_libraries(
         krona::mesh_compute
         krona::build_config 
         krona::warnings  
+
+        krona::fields
 )
     
 #==================================================================
