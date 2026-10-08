@@ -41,7 +41,7 @@ struct AuxConnectivityArrays {
 
     KOKKOS_INLINE_FUNCTION bool has(AuxConnType flags) const noexcept
     {
-        const auto bits = static_cast<std::uint32_t>(flags);
+        const std::uint32_t bits = static_cast<std::uint32_t>(flags);
         return (static_cast<std::uint32_t>(active_mask) & bits) == bits;
     }
 
@@ -110,7 +110,7 @@ struct AuxGeometryArrays {
 
     KOKKOS_INLINE_FUNCTION bool has(AuxGeomType flags) const noexcept
     {
-        const auto bits = static_cast<std::uint32_t>(flags);
+        const std::uint32_t bits = static_cast<std::uint32_t>(flags);
         return (static_cast<std::uint32_t>(active_mask) & bits) == bits;
     }
     KOKKOS_INLINE_FUNCTION bool has_face_cell_dist() const noexcept { return has(AuxGeomType::FaceCellDistance); }

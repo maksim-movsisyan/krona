@@ -520,28 +520,29 @@ target_link_libraries(
         krona::warnings
 )
 
-    #===================
-    #=== MESH OUTPUT ===
-    #===================
+    #===============
+    #=== MESH IO ===
+    #===============
 add_library(
-    krona_mesh_output 
+    krona_mesh_io
     STATIC
         src/io/solver_mesh/hdf5_reader.cpp
         src/io/solver_mesh/hdf5_writer.cpp
         src/io/vtu/vtu.cpp
 )
-add_library(krona::mesh_output ALIAS krona_mesh_output)
+add_library(krona::mesh_io ALIAS krona_mesh_io)
 target_include_directories(
-    krona_mesh_output 
+    krona_mesh_io 
     INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(
-    krona_mesh_output 
+    krona_mesh_io 
     PUBLIC 
         krona::build_config
         krona::mpi
+        krona::mesh_core
     PRIVATE
         krona::warnings
         krona::hdf5
@@ -560,7 +561,6 @@ target_link_libraries(
     INTERFACE 
         krona::execution
         krona::mpi
-
 )
     
     #===============
@@ -658,7 +658,7 @@ if(KRONA_ENABLE_CGNS)
             krona::cgns_io
             krona::mesh_core
             krona::mesh_partition
-            krona::mesh_output
+            krona::mesh_io
     )
 endif()
 
@@ -669,6 +669,7 @@ add_executable(krona_plug apps/plug.cpp)
 target_link_libraries(
     krona_plug
     PRIVATE
+        krona::mesh_io
         krona::mesh_compute
         krona::build_config 
         krona::warnings  

@@ -202,7 +202,7 @@ private:
         const auto bits = static_cast<std::uint32_t>(flags);
         return (static_cast<std::uint32_t>(mask) & bits) == bits;
     }
-
+ 
     static void validate(const MeshPart& mesh, const MeshAuxGeometry& source, AuxGeomType requested)
     {
         detail::require_kokkos();

@@ -41,15 +41,13 @@ inline void require_csr(const std::vector<std::size_t>& offsets,
                         std::source_location where = std::source_location::current()) noexcept
 {
     require_size(offsets, rows + 1, name, where);
-    require(offsets.front() == 0 && offsets.back() == values.size(),
-            "Mesh compute: invalid CSR bounds", where);
+    require(offsets.front() == 0 && offsets.back() == values.size(), "Mesh compute: invalid CSR bounds", where);
 }
 
 inline void require_kokkos(
     std::source_location where = std::source_location::current()) noexcept
 {
-    require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
-            "Mesh compute requires active Kokkos", where);
+    require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Mesh compute requires active Kokkos", where);
 }
 
 // Shared transfer mechanism; no host cache is built or modified here.
@@ -67,8 +65,7 @@ struct ArrayTransfer {
             view = MeshArray<T, memory_space, false>(source.data(), source.size());
         } else {
             if (source.empty()) return;
-            buffer = MeshArray<T, memory_space, true>(
-                Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, std::string(label)), source.size());
+            buffer = MeshArray<T, memory_space, true>(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, std::string(label)), source.size());
             const MeshArray<T, Kokkos::HostSpace, false> host(source.data(), source.size());
             Kokkos::deep_copy(exec, buffer, host);
             view = buffer;
