@@ -579,6 +579,23 @@ target_link_libraries(
         krona::mpi
 )
 
+    #=====================
+    #=== HALO EXHANGER ===
+    #=====================
+add_library(krona_halo INTERFACE)
+add_library(krona::halo ALIAS krona_halo)
+target_include_directories(krona_halo INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(
+    krona_halo 
+    INTERFACE
+        krona::execution 
+        krona::mpi 
+        krona::mesh_compute 
+        krona::fields
+)
+
     #===============
     #=== CGNS IO ===
     #===============
