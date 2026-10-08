@@ -40,6 +40,7 @@ endif()
 #==================================================================
 #==== SYSTEM MODULES & TESTING CAPABILITIES =======================
 #==================================================================
+option(BUILD_TESTING "Build KRONA tests" OFF)
 include(CTest)
 include(CheckCSourceCompiles)
 include(CheckCXXSourceCompiles)
@@ -695,10 +696,6 @@ target_link_libraries(
 #==================================================================
 #==== ADD BUILDING TESTING ========================================
 #==================================================================
-#if(BUILD_TESTING)
-#    add_subdirectory(tests/mesh)
-#
-#    if(KRONA_ENABLE_CGNS)
-#        add_subdirectory(tests/cgns)
-#    endif()
-#endif()
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
