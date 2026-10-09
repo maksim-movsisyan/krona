@@ -1,12 +1,16 @@
 #==================================================================
 #==== REQUIRED CMAKE VERSION ======================================
 #==================================================================
-cmake_minimum_required(
-    VERSION 3.28
-)
+cmake_minimum_required(VERSION 3.28)
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
     message(FATAL_ERROR "Use an out-of-source build: cmake -S . -B build/<configuration>")
+endif()
+
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR AND NOT DEFINED ENV{CMAKE_EXPORT_COMPILE_COMMANDS})
+    if(NOT DEFINED CMAKE_EXPORT_COMPILE_COMMANDS OR "${CMAKE_EXPORT_COMPILE_COMMANDS}" STREQUAL "")
+        set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export compile_commands.json" FORCE)
+    endif()
 endif()
 
 #==================================================================
@@ -30,7 +34,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #==== DEFAULT COMPILATION MODE (RelWithDebInfo) =================== 
 #==================================================================
 if(PROJECT_IS_TOP_LEVEL)
-    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
     get_property(_krona_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(NOT _krona_multi_config AND NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build configuration" FORCE)
@@ -41,9 +44,11 @@ endif()
 #==== SYSTEM MODULES & TESTING CAPABILITIES =======================
 #==================================================================
 option(BUILD_TESTING "Build KRONA tests" OFF)
+option(KRONA_BUILD_APPLICATIONS "Build KRONA applications" ${PROJECT_IS_TOP_LEVEL})
 include(CTest)
 include(CheckCSourceCompiles)
 include(CheckCXXSourceCompiles)
+include(CheckCXXCompilerFlag)
 include(CMakePushCheckState)
 
 #==================================================================
@@ -59,15 +64,15 @@ endfunction()
 
 krona_cache_choice(KRONA_EXECUTION_SPACE SERIAL "KRONA execution space" SERIAL OPENMP CUDA HIP)
 krona_cache_choice(KRONA_GLOBAL_INDEX_BITS 64 "Signed global mesh index width" 32 64)
-krona_cache_choice(KRONA_LOCAL_INDEX_BITS 32 "Signed local mesh index and CSR offset width" 32 64)
+krona_cache_choice(KRONA_LOCAL_INDEX_BITS 32 "Signed local mesh index width" 32 64)
 krona_cache_choice(KRONA_PRECISION_PROFILE FP64 "Numerical precision profile" FP32 FP64 MIXED)
 
 #==================================================================
 #==== THIRD-PARTY COMPONENT & OPTIONAL FEATURE SWITCHES ===========
 #==================================================================
-option(KRONA_ENABLE_CGNS "Discover and validate parallel CGNS support" ON)
-option(KRONA_ENABLE_PARTITIONING "Discover distributed KaMinPar and TBB" ON)
-option(KRONA_ENABLE_TRILINOS "Discover and validate the Trilinos linear algebra stack" ON)
+option(KRONA_ENABLE_CGNS "Build parallel CGNS I/O and mesh generation" ON)
+option(KRONA_ENABLE_PARTITIONING "Build distributed mesh partitioning with KaMinPar/TBB" ON)
+option(KRONA_ENABLE_TRILINOS "Build KRONA linear algebra with Trilinos" ON)
 option(KRONA_WARNINGS_AS_ERRORS "Treat KRONA compiler warnings as errors" OFF)
 
 #==================================================================
@@ -171,11 +176,30 @@ static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
 #==================================================================
 #==== GLOBAL BUILD CONFIGURATION INTERFACE & EXPORT CONTRACT ======
 #==================================================================
+set(_krona_source_include "${CMAKE_CURRENT_SOURCE_DIR}/include")
+file(SHA256 "${_krona_generated_include}/krona/config.hpp" _krona_config_hash)
+
 add_library(krona_build_config INTERFACE)
 add_library(krona::build_config ALIAS krona_build_config)
 target_compile_features(krona_build_config INTERFACE cxx_std_20)
 target_include_directories(krona_build_config INTERFACE
     "$<BUILD_INTERFACE:${_krona_generated_include}>")
+    
+#==================================================================
+#==== USFUL HELPERS ===============================================
+#==================================================================
+function(krona_public_headers target scope)
+    target_include_directories(${target} ${scope}
+        "$<BUILD_INTERFACE:${_krona_source_include}>"
+        "$<INSTALL_INTERFACE:include>")
+endfunction()
+
+function(krona_interface name)
+    add_library(krona_${name} INTERFACE)
+    add_library(krona::${name} ALIAS krona_${name})
+    krona_public_headers(krona_${name} INTERFACE)
+    target_link_libraries(krona_${name} INTERFACE ${ARGN})
+endfunction()
 
 #==================================================================
 #==== COMPILER WARNINGS & CODE QUALITY CONTROLS ===================
@@ -193,26 +217,70 @@ if(KRONA_WARNINGS_AS_ERRORS)
         "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/WX>")
 endif()
 
+function(krona_require_target name)
+    if(NOT TARGET "${name}")
+        message(FATAL_ERROR
+            "Required dependency target '${name}' was not exported by the selected installation.")
+    endif()
+endfunction()
+
 #==================================================================
 #==== ACTIVE DEPENDENCY VERIFICATION & SANITY CHECKS ==============
 #==================================================================
-function(krona_check_cxx label source)
+function(krona_prepare_probe id language source)
+    set(_inputs "${source};${_krona_config_hash};${CMAKE_PREFIX_PATH};${CMAKE_TOOLCHAIN_FILE}")
+    string(APPEND _inputs
+        ";${CMAKE_${language}_COMPILER};${CMAKE_${language}_COMPILER_ID};${CMAKE_${language}_COMPILER_VERSION}"
+        ";${CMAKE_${language}_COMPILER_ARG1};${CMAKE_${language}_COMPILER_LAUNCHER}"
+        ";${CMAKE_${language}_FLAGS};${CMAKE_${language}_FLAGS_DEBUG};${CMAKE_${language}_FLAGS_RELEASE}"
+        ";${CMAKE_${language}_FLAGS_RELWITHDEBINFO};${CMAKE_${language}_FLAGS_MINSIZEREL}"
+        ";${CMAKE_BUILD_TYPE};${CMAKE_TRY_COMPILE_CONFIGURATION};${CMAKE_EXE_LINKER_FLAGS}"
+        ";${CMAKE_EXE_LINKER_FLAGS_DEBUG};${CMAKE_EXE_LINKER_FLAGS_RELEASE}"
+        ";${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO};${CMAKE_EXE_LINKER_FLAGS_MINSIZEREL}"
+        ";${CMAKE_SYSROOT};${CMAKE_SYSROOT_COMPILE};${CMAKE_SYSROOT_LINK}"
+        ";${CMAKE_REQUIRED_FLAGS};${CMAKE_REQUIRED_INCLUDES};${CMAKE_REQUIRED_LIBRARIES}"
+        ";${MPI_C_COMPILER};${MPI_CXX_COMPILER};${MPI_C_LIBRARIES};${MPI_CXX_LIBRARIES}"
+        ";$ENV{OMPI_CXX};$ENV{MPICH_CXX};$ENV{NVCC_WRAPPER_DEFAULT_COMPILER}")
+    if(id STREQUAL "KOKKOS" OR id MATCHES "^TPETRA_")
+        string(APPEND _inputs ";${Kokkos_DIR};${Trilinos_DIR}")
+    elseif(id STREQUAL "HDF5")
+        string(APPEND _inputs ";${HDF5_C_LIBRARIES}")
+    elseif(id STREQUAL "CGNS")
+        string(APPEND _inputs ";${cgns_DIR};${KRONA_CGNS_CMAKE_DIR};${HDF5_C_LIBRARIES}")
+    endif()
+    foreach(_target IN LISTS CMAKE_REQUIRED_LIBRARIES)
+        if(TARGET "${_target}")
+            foreach(_property INTERFACE_INCLUDE_DIRECTORIES INTERFACE_COMPILE_DEFINITIONS
+                    INTERFACE_COMPILE_OPTIONS INTERFACE_LINK_OPTIONS INTERFACE_LINK_LIBRARIES IMPORTED_LOCATION
+                    IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_DEBUG)
+                get_target_property(_value "${_target}" "${_property}")
+                string(APPEND _inputs ";${_target}.${_property}=${_value}")
+            endforeach()
+        endif()
+    endforeach()
+    string(SHA256 _signature "${_inputs}")
+    if(NOT "${_signature}" STREQUAL "${_KRONA_CHECK_${id}_SIGNATURE}")
+        unset(_KRONA_CHECK_${id} CACHE)
+    endif()
+    set(_KRONA_CHECK_${id}_SIGNATURE "${_signature}" CACHE INTERNAL "KRONA probe inputs" FORCE)
+endfunction()
+
+function(krona_check_source id language label source)
     cmake_push_check_state(RESET)
     set(CMAKE_REQUIRED_LIBRARIES ${ARGN})
     set(CMAKE_REQUIRED_INCLUDES "${_krona_generated_include}")
     set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
-    unset(_krona_cxx_check CACHE)
-    check_cxx_source_compiles("${source}" _krona_cxx_check)
-    if(NOT _krona_cxx_check)
-        message(FATAL_ERROR "${label}. See CMakeFiles/CMakeConfigureLog.yaml for compiler/linker output.")
+    krona_prepare_probe("${id}" "${language}" "${source}")
+    if(language STREQUAL "C")
+        check_c_source_compiles("${source}" _KRONA_CHECK_${id})
+    else()
+        check_cxx_source_compiles("${source}" _KRONA_CHECK_${id})
+    endif()
+    if(NOT _KRONA_CHECK_${id})
+        message(FATAL_ERROR
+            "${label}. See ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/CMakeConfigureLog.yaml.")
     endif()
     cmake_pop_check_state()
-endfunction()
-
-function(krona_require_target name)
-    if(NOT TARGET "${name}")
-        message(FATAL_ERROR "Required dependency target '${name}' was not exported by the selected installation.")
-    endif()
 endfunction()
 
 #==================================================================
@@ -220,53 +288,28 @@ endfunction()
 #==================================================================
 set(MPI_CXX_SKIP_MPICXX TRUE)
 find_package(MPI 3.1 REQUIRED COMPONENTS C CXX)
-
-add_library(
-    krona_mpi 
-    STATIC
-        src/mpi/error.cpp
-        src/mpi/runtime.cpp
-        src/mpi/communicator.cpp
-        src/mpi/collective_status.cpp
-)
+add_library(krona_mpi STATIC
+    src/mpi/error.cpp
+    src/mpi/runtime.cpp
+    src/mpi/communicator.cpp
+    src/mpi/collective_status.cpp)
 add_library(krona::mpi ALIAS krona_mpi)
-target_include_directories(
-    krona_mpi 
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(
-    krona_mpi
-    PUBLIC
-        MPI::MPI_CXX
-        krona::build_config
-    PRIVATE
-        krona::warnings
-)
+krona_public_headers(krona_mpi PUBLIC)
+target_link_libraries(krona_mpi
+    PUBLIC MPI::MPI_CXX krona::build_config
+    PRIVATE krona::warnings)
 
 #==================================================================
 #==== LINEAR ALGEBRA & CODESIGN PARALLELISM: TRILINOS / KOKKOS ====
 #==================================================================
 if(KRONA_ENABLE_TRILINOS)
-    find_package(Trilinos 17.2.1 CONFIG REQUIRED
-        COMPONENTS Tpetra Belos Ifpack2 MueLu)
+    find_package(Trilinos 17.2.1 CONFIG REQUIRED COMPONENTS Tpetra Belos Ifpack2 MueLu)
     krona_require_target(Trilinos::all_selected_libs)
-    krona_require_target(Kokkos::kokkos)
 else()
     find_package(Kokkos 5.2 CONFIG REQUIRED)
-    krona_require_target(Kokkos::kokkos)
 endif()
-
-add_library(krona_execution INTERFACE)
-add_library(krona::execution ALIAS krona_execution)
-target_include_directories(
-    krona_execution
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>        
-)
-target_link_libraries(krona_execution INTERFACE krona::build_config Kokkos::kokkos)
+krona_require_target(Kokkos::kokkos)
+krona_interface(execution krona::build_config Kokkos::kokkos)
 
 #==================================================================
 #==== COMPILE-TIME SANITY CHECK: KOKKOS BACKEND VERIFICATION ======
@@ -278,19 +321,16 @@ set(_krona_kokkos_probe "
 #error Requested KRONA execution space is not enabled in the installed Kokkos
 #endif
 int main(int argc, char** argv) {
-    Kokkos::initialize(argc, argv);
-    {
-        using Exec = ${_krona_execution_type};
-        Kokkos::View<krona::StorageReal*, typename Exec::memory_space> values(\"probe\", 1);
-        Kokkos::parallel_for(\"probe\", Kokkos::RangePolicy<Exec>(0, 1),
-            KOKKOS_LAMBDA(const int i) { values(i) = krona::StorageReal{1}; });
-        Exec{}.fence();
-    }
-    Kokkos::finalize();
+    Kokkos::ScopeGuard guard(argc, argv);
+    using Exec = ${_krona_execution_type};
+    Kokkos::View<krona::StorageReal*, typename Exec::memory_space> values(\"probe\", 1);
+    Kokkos::parallel_for(\"probe\", Kokkos::RangePolicy<Exec>(0, 1),
+        KOKKOS_LAMBDA(const int i) { values(i) = krona::StorageReal{1}; });
+    Exec{}.fence();
     return 0;
 }")
-krona_check_cxx(
-    "The selected Kokkos backend cannot compile/link with this compiler. Check backend availability and use the compatible nvcc_wrapper/hipcc toolchain for a GPU-enabled installation"
+krona_check_source(KOKKOS CXX
+    "The selected Kokkos backend cannot compile/link; check backend availability and the nvcc_wrapper/hipcc toolchain for GPU-enabled installations"
     "${_krona_kokkos_probe}" Kokkos::kokkos)
 
 #==================================================================
@@ -301,15 +341,10 @@ set(HDF5_USE_STATIC_LIBRARIES TRUE)
 set(HDF5_NO_FIND_PACKAGE_CONFIG_FILE TRUE)
 find_package(HDF5 1.10 REQUIRED MODULE COMPONENTS C)
 if(NOT HDF5_IS_PARALLEL)
-    message(FATAL_ERROR "Parallel HDF5 is required. Select its prefix/wrapper and configure a fresh build directory.")
+    message(FATAL_ERROR "Parallel HDF5 is required; select its prefix/wrapper in a fresh build directory.")
 endif()
 krona_require_target(HDF5::HDF5)
-
-cmake_push_check_state(RESET)
-set(CMAKE_REQUIRED_LIBRARIES HDF5::HDF5 MPI::MPI_C)
-set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
-unset(_krona_parallel_hdf5_check CACHE)
-check_c_source_compiles([[
+krona_check_source(HDF5 C "Parallel HDF5 cannot compile/link with the selected MPI" [[
 #include <mpi.h>
 #include <hdf5.h>
 #ifndef H5_HAVE_PARALLEL
@@ -318,54 +353,75 @@ check_c_source_compiles([[
 int main(void) {
     return H5Pset_fapl_mpio(H5P_DEFAULT, MPI_COMM_WORLD, MPI_INFO_NULL) < 0;
 }
-]] _krona_parallel_hdf5_check)
-if(NOT _krona_parallel_hdf5_check)
-    message(FATAL_ERROR "Parallel HDF5 headers/libraries cannot link with the selected MPI. See CMakeConfigureLog.yaml.")
-endif()
-cmake_pop_check_state()
-
-add_library(krona_hdf5 INTERFACE)
-add_library(krona::hdf5 ALIAS krona_hdf5)
-target_link_libraries(krona_hdf5 INTERFACE HDF5::HDF5 MPI::MPI_C)
+]] HDF5::HDF5 MPI::MPI_C)
+krona_interface(hdf5 HDF5::HDF5 MPI::MPI_C)
 
 #==================================================================
 #==== CFD MESH I/O: PARALLEL CGNS SEARCH & VALIDATION =============
 #==================================================================
 if(KRONA_ENABLE_CGNS)
-    # CGNS exports can refer to HDF5's native target names even when the
-    # distribution's HDF5 only provides CMake FindHDF5 targets. Supply those
-    # missing names for the selected STATIC HDF5; preserve CGNS link metadata.
+    # Some exports use native HDF5 static target names absent from FindHDF5.
+    # Never present a selected shared HDF5 as a static target.
+    set(_krona_hdf5_static FALSE)
+    foreach(_library IN LISTS HDF5_C_LIBRARIES)
+        if(_library MATCHES "(^|[/\\\\])(lib)?hdf5(-static)?\\.a$")
+            set(_krona_hdf5_static TRUE)
+        endif()
+    endforeach()
     foreach(_hdf5_name hdf5::hdf5-static hdf5-static)
         if(NOT TARGET "${_hdf5_name}")
+            if(NOT _krona_hdf5_static)
+                message(FATAL_ERROR
+                    "CGNS needs native HDF5 static target names, but FindHDF5 did not select a static libhdf5 archive. Select the parallel static HDF5 installation.")
+            endif()
             add_library("${_hdf5_name}" INTERFACE IMPORTED)
             set_property(TARGET "${_hdf5_name}" PROPERTY INTERFACE_LINK_LIBRARIES HDF5::HDF5)
         endif()
     endforeach()
+
     find_package(cgns 4.5.2 CONFIG QUIET)
     if(NOT cgns_FOUND)
-        # Some CGNS distributions install an export and a version file without
-        # a usable package config. Load that upstream export, not guessed libs.
         find_path(KRONA_CGNS_CMAKE_DIR NAMES cgns-targets.cmake
-            HINTS "${cgns_ROOT}" "${CGNS_ROOT}"
+            HINTS "${cgns_DIR}" "${cgns_ROOT}" "${CGNS_ROOT}"
             PATH_SUFFIXES lib/cmake/cgns lib64/cmake/cgns
                 "lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/cgns"
             REQUIRED)
-        if(NOT EXISTS "${KRONA_CGNS_CMAKE_DIR}/cgns-config-version.cmake")
-            message(FATAL_ERROR "The selected CGNS export has no version metadata. Use CGNS 4.5.2 or newer.")
-        endif()
-        include("${KRONA_CGNS_CMAKE_DIR}/cgns-config-version.cmake")
-        if(NOT DEFINED PACKAGE_VERSION OR PACKAGE_VERSION VERSION_LESS 4.5)
-            message(FATAL_ERROR "CGNS 4.5.2 or newer is required; export reports '${PACKAGE_VERSION}'.")
-        endif()
-        include("${KRONA_CGNS_CMAKE_DIR}/cgns-targets.cmake")
+        # Isolate PACKAGE_* variables used by the upstream version file.
+        function(krona_load_cgns_export directory)
+            if(NOT EXISTS "${directory}/cgns-config-version.cmake")
+                message(FATAL_ERROR "The CGNS export has no version metadata; use CGNS >= 4.5.2.")
+            endif()
+            set(PACKAGE_FIND_VERSION 4.5.2)
+            set(PACKAGE_FIND_VERSION_MAJOR 4)
+            set(PACKAGE_FIND_VERSION_MINOR 5)
+            set(PACKAGE_FIND_VERSION_PATCH 2)
+            set(PACKAGE_FIND_VERSION_TWEAK 0)
+            set(PACKAGE_FIND_VERSION_COUNT 3)
+            unset(PACKAGE_VERSION)
+            unset(PACKAGE_VERSION_COMPATIBLE)
+            unset(PACKAGE_VERSION_EXACT)
+            unset(PACKAGE_VERSION_UNSUITABLE)
+            include("${directory}/cgns-config-version.cmake")
+            if(NOT DEFINED PACKAGE_VERSION OR PACKAGE_VERSION VERSION_LESS 4.5
+                    OR PACKAGE_VERSION_UNSUITABLE)
+                message(FATAL_ERROR "CGNS >= 4.5.2 is required; export reports '${PACKAGE_VERSION}'.")
+            endif()
+            include("${directory}/cgns-targets.cmake")
+            set(cgns_VERSION "${PACKAGE_VERSION}" PARENT_SCOPE)
+        endfunction()
+        krona_load_cgns_export("${KRONA_CGNS_CMAKE_DIR}")
     endif()
     krona_require_target(CGNS::cgns_static)
-    krona_check_cxx("The selected CGNS cannot link its parallel API with the selected MPI/HDF5"
-        "#include <pcgnslib.h>\nint main() { int file = 0; return cgp_open(\"configure-probe.cgns\", CG_MODE_READ, &file); }"
-        CGNS::cgns_static HDF5::HDF5 MPI::MPI_CXX)
-    add_library(krona_cgns INTERFACE)
-    add_library(krona::cgns ALIAS krona_cgns)
-    target_link_libraries(krona_cgns INTERFACE CGNS::cgns_static krona::hdf5)
+    krona_check_source(CGNS CXX "CGNS requires 64-bit cgsize_t and a linkable parallel MPI/HDF5 API" [[
+#include <climits>
+#include <pcgnslib.h>
+static_assert(sizeof(cgsize_t) * CHAR_BIT == 64, "KRONA requires 64-bit CGNS indices");
+int main() {
+    int file = 0;
+    return cgp_open("configure-probe.cgns", CG_MODE_READ, &file);
+}
+]] CGNS::cgns_static HDF5::HDF5 MPI::MPI_CXX)
+    krona_interface(cgns CGNS::cgns_static krona::hdf5)
 endif()
 
 #==================================================================
@@ -376,73 +432,72 @@ if(KRONA_ENABLE_PARTITIONING)
     find_package(KaMinPar 3.7.3 CONFIG REQUIRED)
     krona_require_target(KaMinPar::dKaMinPar)
     krona_require_target(TBB::tbb)
-    add_library(krona_partitioning INTERFACE)
-    add_library(krona::partitioning ALIAS krona_partitioning)
-    target_link_libraries(krona_partitioning INTERFACE
-        KaMinPar::dKaMinPar TBB::tbb MPI::MPI_CXX)
+    krona_interface(partitioning KaMinPar::dKaMinPar TBB::tbb MPI::MPI_CXX)
+
+    # --host-only belongs to nvcc_wrapper; plain GCC/Clang must not receive it.
+    function(krona_check_host_only)
+        cmake_push_check_state(RESET)
+        set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
+        krona_prepare_probe(HOST_ONLY CXX "--host-only")
+        check_cxx_compiler_flag("--host-only" _KRONA_CHECK_HOST_ONLY)
+        cmake_pop_check_state()
+    endfunction()
+    krona_check_host_only()
 endif()
 
 #==================================================================
 #==== DISTRIBUTED ALGEBRA: TPETRA EXPLICIT INSTANTIATION CHECK ====
 #==================================================================
 if(KRONA_ENABLE_TRILINOS)
-    # The adapter intentionally uses the installed Tpetra int/long long pair,
-    # independently of mesh index width. Narrowing must be checked by the
-    # future adapter; changing LocalIndex does not rebuild Tpetra's ABI.
-    set(_krona_tpetra_node "Tpetra::KokkosCompat::Kokkos${KRONA_EXECUTION_SPACE}WrapperNode")
-    if(KRONA_EXECUTION_SPACE STREQUAL "SERIAL")
-        set(_krona_tpetra_node "Tpetra::KokkosCompat::KokkosSerialWrapperNode")
-    elseif(KRONA_EXECUTION_SPACE STREQUAL "OPENMP")
-        set(_krona_tpetra_node "Tpetra::KokkosCompat::KokkosOpenMPWrapperNode")
-    elseif(KRONA_EXECUTION_SPACE STREQUAL "CUDA")
-        set(_krona_tpetra_node "Tpetra::KokkosCompat::KokkosCudaWrapperNode")
-    endif()
+    set(_krona_tpetra_node "Tpetra::KokkosCompat::KokkosDeviceWrapperNode<${_krona_execution_type}>")
     set(_krona_linear_types "${_krona_SOLVER_type}" "${_krona_PRECONDITIONER_type}")
     list(REMOVE_DUPLICATES _krona_linear_types)
     foreach(_scalar IN LISTS _krona_linear_types)
+        string(TOUPPER "${_scalar}" _scalar_macro)
         set(_krona_tpetra_probe "
 #include <Tpetra_Core.hpp>
 #include <Tpetra_CrsMatrix.hpp>
 #include <Tpetra_Map.hpp>
 #include <TpetraCore_config.h>
+#include <BelosTpetraAdapter.hpp>
+#include <BelosPseudoBlockGmresSolMgr.hpp>
+#include <Ifpack2_Factory.hpp>
+#ifndef HAVE_TPETRA_MPI
+#error Distributed KRONA algebra requires an MPI-enabled Tpetra
+#endif
 #ifndef HAVE_TPETRA_INST_${KRONA_EXECUTION_SPACE}
-#error The selected Tpetra Node was not instantiated
+#error The selected Tpetra execution space was not instantiated
 #endif
 #ifndef HAVE_TPETRA_INST_INT_LONG_LONG
-#error Tpetra int/long long ordinals are required by the KRONA adapter
+#error KRONA algebra requires int/long long Tpetra ordinals
+#endif
+#ifndef HAVE_TPETRA_INST_${_scalar_macro}
+#error The requested scalar was not instantiated in Tpetra
 #endif
 int main(int argc, char** argv) {
     Tpetra::ScopeGuard guard(&argc, &argv);
     using Node = ${_krona_tpetra_node};
     using Map = Tpetra::Map<int, long long, Node>;
     auto map = Teuchos::rcp(new Map(Tpetra::global_size_t{1}, 0LL, Tpetra::getDefaultComm()));
-    Tpetra::CrsMatrix<${_scalar}, int, long long, Node> matrix(map, std::size_t{1});
+    using Matrix = Tpetra::CrsMatrix<${_scalar}, int, long long, Node>;
+    using RowMatrix = Tpetra::RowMatrix<${_scalar}, int, long long, Node>;
+    using MV = Tpetra::MultiVector<${_scalar}, int, long long, Node>;
+    using OP = Tpetra::Operator<${_scalar}, int, long long, Node>;
+    auto matrix = Teuchos::rcp(new Matrix(map, std::size_t{1}));
+    auto prec = Ifpack2::Factory::create<RowMatrix>(\"RELAXATION\", matrix);
+    Belos::PseudoBlockGmresSolMgr<${_scalar}, MV, OP> solver;
     return 0;
 }")
-        krona_check_cxx("Tpetra cannot compile/link ${_scalar}, int, long long, ${KRONA_EXECUTION_SPACE}; check its ETI options and compiler/MPI compatibility"
+        krona_check_source(TPETRA_${_scalar_macro} CXX
+            "Trilinos cannot compile/link Tpetra/Belos/Ifpack2 for ${_scalar}, int, long long, ${KRONA_EXECUTION_SPACE}; check ETI, memory space and MPI/compiler compatibility"
             "${_krona_tpetra_probe}" Trilinos::all_selected_libs MPI::MPI_CXX)
     endforeach()
-    add_library(krona_linear_algebra INTERFACE)
-    add_library(krona::linear_algebra ALIAS krona_linear_algebra)
-    target_link_libraries(krona_linear_algebra INTERFACE
-        krona::build_config Trilinos::all_selected_libs MPI::MPI_CXX)
+    krona_interface(linear_algebra krona::execution Trilinos::all_selected_libs MPI::MPI_CXX)
+    if(NOT _krona_SOLVER_type STREQUAL _krona_PRECONDITIONER_type)
+        message(STATUS
+            "PreconditionerReal is reserved configuration: the current krona::linalg solver uses SolverReal for Ifpack2 as well")
+    endif()
 endif()
-
-#==================================================================
-#==== CONFIGURATION REPORT & APPLICATION ENTRYS ===================
-#==================================================================
-message(STATUS "")
-message(STATUS "KRONA ${PROJECT_VERSION}: configuration foundation (no application targets yet)")
-message(STATUS "  Backend:           ${KRONA_EXECUTION_SPACE}")
-message(STATUS "  Mesh indices:      local=${KRONA_LOCAL_INDEX_BITS}, global=${KRONA_GLOBAL_INDEX_BITS}")
-message(STATUS "  Precision profile: ${KRONA_PRECISION_PROFILE}")
-foreach(_role IN LISTS _krona_real_roles)
-    message(STATUS "  ${_role}: ${_krona_${_role}_type}")
-endforeach()
-message(STATUS "  Parallel HDF5:     ${HDF5_VERSION} (static baseline)")
-message(STATUS "  CGNS / partitioning / Trilinos: ${KRONA_ENABLE_CGNS} / ${KRONA_ENABLE_PARTITIONING} / ${KRONA_ENABLE_TRILINOS}")
-message(STATUS "  BUILD_TESTING:     ${BUILD_TESTING}")
-message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hpp")
 
 
 
@@ -458,273 +513,152 @@ message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hp
     #=== MESH GENERATION ===
     #=======================
 if(KRONA_ENABLE_CGNS)
-    add_library(
-        krona_mesh_generation
-        STATIC
-            src/mesh_generation/config.cpp   
-            src/mesh_generation/topology.cpp
-            src/mesh_generation/writer.cpp
-    )
+    add_library(krona_mesh_generation STATIC
+        src/mesh_generation/config.cpp
+        src/mesh_generation/topology.cpp
+        src/mesh_generation/writer.cpp)
     add_library(krona::mesh_generation ALIAS krona_mesh_generation)
-    target_include_directories(
-        krona_mesh_generation
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-    )
-    target_include_directories(
-        krona_mesh_generation
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/external/tomlplusplus/include
-    )
-    target_link_libraries(
-        krona_mesh_generation
-        PUBLIC
-            krona::build_config
-            krona::mpi
-            krona::cgns
-        PRIVATE
-            krona::warnings
-    )
+    krona_public_headers(krona_mesh_generation PUBLIC)
+    target_include_directories(krona_mesh_generation PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/tomlplusplus/include")
+    target_link_libraries(krona_mesh_generation
+        PUBLIC krona::build_config krona::mpi krona::cgns
+        PRIVATE krona::warnings)
 endif()
+
 
     #=================
     #=== MESH CORE ===
     #=================
-add_library(
-    krona_mesh_core 
-    STATIC
-        src/mesh/extrusion.cpp
-        src/mesh/faces.cpp
-        src/mesh/localmesh.cpp
-        src/mesh/geometry.cpp
-        src/mesh/reorder.cpp
-        src/mesh/bc_config.cpp
-        src/mesh/validate.cpp
-        src/mesh/aux_connectivity.cpp
-        src/mesh/aux_geometry.cpp
-        src/mesh/wall_distance.cpp
-)
+add_library(krona_mesh_core STATIC
+    src/mesh/extrusion.cpp
+    src/mesh/faces.cpp
+    src/mesh/localmesh.cpp
+    src/mesh/geometry.cpp
+    src/mesh/reorder.cpp
+    src/mesh/bc_config.cpp
+    src/mesh/validate.cpp
+    src/mesh/aux_connectivity.cpp
+    src/mesh/aux_geometry.cpp
+    src/mesh/wall_distance.cpp)
 add_library(krona::mesh_core ALIAS krona_mesh_core)
-target_include_directories(
-    krona_mesh_core 
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(
-    krona_mesh_core 
-    PUBLIC 
-        krona::build_config
-        krona::mpi
-    PRIVATE
-        krona::warnings
-)
+krona_public_headers(krona_mesh_core PUBLIC)
+target_link_libraries(krona_mesh_core
+    PUBLIC krona::build_config krona::mpi
+    PRIVATE krona::warnings)
+
 
     #===============
     #=== MESH IO ===
     #===============
-add_library(
-    krona_mesh_io
-    STATIC
-        src/io/solver_mesh/hdf5_reader.cpp
-        src/io/solver_mesh/hdf5_writer.cpp
-        src/io/vtu/vtu.cpp
-)
+add_library(krona_mesh_io STATIC
+    src/io/solver_mesh/hdf5_reader.cpp
+    src/io/solver_mesh/hdf5_writer.cpp
+    src/io/vtu/vtu.cpp)
 add_library(krona::mesh_io ALIAS krona_mesh_io)
-target_include_directories(
-    krona_mesh_io 
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(
-    krona_mesh_io 
-    PUBLIC 
-        krona::build_config
-        krona::mpi
-        krona::mesh_core
-    PRIVATE
-        krona::warnings
-        krona::hdf5
-)
+krona_public_headers(krona_mesh_io PUBLIC)
+target_link_libraries(krona_mesh_io
+    PUBLIC krona::build_config krona::mpi krona::mesh_core
+    PRIVATE krona::warnings krona::hdf5)
+
 
     #======================
     #=== MESH EXECUTION ===
     #======================
-add_library(krona_mesh_compute INTERFACE)
-add_library(krona::mesh_compute ALIAS krona_mesh_compute)
-target_include_directories(krona_mesh_compute INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
-target_link_libraries(
-    krona_mesh_compute 
-    INTERFACE 
-        krona::execution
-        krona::mpi
-)
-    
+krona_interface(mesh_compute krona::execution krona::mpi)
+
+
     #==============
     #=== FIELDS ===
     #==============
-add_library(krona_fields INTERFACE)
-add_library(krona::fields ALIAS krona_fields)
-target_include_directories(krona_fields INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
-target_link_libraries(
-    krona_fields 
-    INTERFACE
-        krona::execution
-        krona::mpi
-)
+krona_interface(fields krona::execution krona::mpi)
+
 
     #=====================
     #=== HALO EXHANGER ===
     #=====================
-add_library(krona_halo INTERFACE)
-add_library(krona::halo ALIAS krona_halo)
-target_include_directories(krona_halo INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
-target_link_libraries(
-    krona_halo 
-    INTERFACE
-        krona::execution 
-        krona::mpi 
-        krona::mesh_compute 
-        krona::fields
-)
+krona_interface(halo krona::execution krona::mpi krona::mesh_compute krona::fields)
+
 
     #===================================================
     #=== GRADIENT OPERATOR (DIFF OPERATOR IN FUTURE) ===
     #===================================================
-add_library(krona_gradient INTERFACE)
-add_library(krona::gradient ALIAS krona_gradient)
-target_include_directories(krona_gradient INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>)
-target_link_libraries(
-    krona_gradient 
-    INTERFACE
-        krona::mpi 
-        krona::mesh_compute 
-        krona::fields
-)
+krona_interface(gradient krona::mesh_compute krona::fields)
+
+    #======================
+    #=== LINEAR ALGEBRA ===
+    #======================
+if(KRONA_ENABLE_TRILINOS)
+    add_library(krona_linalg STATIC src/linalg/mesh_adapter.cpp)
+    add_library(krona::linalg ALIAS krona_linalg)
+    krona_public_headers(krona_linalg PUBLIC)
+    target_link_libraries(krona_linalg
+        PUBLIC krona::execution krona::mpi krona::linear_algebra
+        PRIVATE krona::warnings)
+endif()
+
 
     #===============
     #=== CGNS IO ===
     #===============
 if(KRONA_ENABLE_CGNS)
-    add_library(
-        krona_cgns_io
-        STATIC
-            src/io/cgns/reader.cpp
-    )
+    add_library(krona_cgns_io STATIC src/io/cgns/reader.cpp)
     add_library(krona::cgns_io ALIAS krona_cgns_io)
-    target_include_directories(
-        krona_cgns_io 
-        INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-    )
-    target_link_libraries(
-        krona_cgns_io
-        PUBLIC 
-            krona::mesh_core 
-            krona::mpi
-        PRIVATE 
-            krona::cgns 
-            krona::warnings
-    )
+    krona_public_headers(krona_cgns_io PUBLIC)
+    target_link_libraries(krona_cgns_io
+        PUBLIC krona::mesh_core krona::mpi
+        PRIVATE krona::cgns krona::warnings)
 endif()
+
 
     #======================
     #=== MESH PARTITION ===
     #======================
 if(KRONA_ENABLE_PARTITIONING)
-    add_library(
-        krona_mesh_partition
-        STATIC
-            src/mesh_partition/partition.cpp
-    )
-
-    # Use nvcc_wrapper's host compiler for this CPU-only library.
-    target_compile_options(
-        krona_mesh_partition
-        PRIVATE
-            --host-only
-    )
-
+    add_library(krona_mesh_partition STATIC src/mesh_partition/partition.cpp)
     add_library(krona::mesh_partition ALIAS krona_mesh_partition)
-    target_include_directories(
-        krona_mesh_partition
-        INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-    )
-    target_link_libraries(
-        krona_mesh_partition
-        PUBLIC
-            krona::mesh_core
-            krona::mpi
-        PRIVATE
-            krona::partitioning
-            krona::warnings
-    )
+    krona_public_headers(krona_mesh_partition PUBLIC)
+    if(_KRONA_CHECK_HOST_ONLY)
+        target_compile_options(krona_mesh_partition PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:--host-only>")
+    endif()
+    target_link_libraries(krona_mesh_partition
+        PUBLIC krona::mesh_core krona::mpi
+        PRIVATE krona::partitioning krona::warnings)
 endif()
+
 
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
+if(KRONA_BUILD_APPLICATIONS)
     #======================
     #=== MESH GENERATOR ===
     #======================
-if(KRONA_ENABLE_CGNS)
-    add_executable(krona_mesh_generator apps/mesh_generator.cpp)
-    target_link_libraries(
-        krona_mesh_generator
-        PRIVATE
-            krona::build_config
-            krona::warnings
-            krona::mpi
-
-            krona::mesh_generation
-    )
-endif()
+    if(KRONA_ENABLE_CGNS)
+        add_executable(krona_mesh_generator apps/mesh_generator.cpp)
+        target_link_libraries(krona_mesh_generator PRIVATE
+            krona::mesh_generation krona::warnings) #krona::build_config krona::mpi
+    endif()
 
     #========================
     #=== MESH PARTITIONER ===
     #========================
-if(KRONA_ENABLE_CGNS)
-    add_executable(krona_mesh_partitioner apps/mesh_partitioner.cpp)
-    target_link_libraries(
-        krona_mesh_partitioner
-        PRIVATE
-            krona::build_config
-            krona::warnings
-            krona::mpi
-            krona::cgns_io
-            krona::mesh_core
-            krona::mesh_partition
-            krona::mesh_io
-    )
-endif()
+    if(KRONA_ENABLE_CGNS AND KRONA_ENABLE_PARTITIONING)
+        add_executable(krona_mesh_partitioner apps/mesh_partitioner.cpp)
+        target_link_libraries(krona_mesh_partitioner PRIVATE
+            krona::cgns_io krona::mesh_partition krona::mesh_io krona::warnings)
+    endif()
 
     #============================
     #=== KOKKOS PLUG (DELETE) ===
     #============================
-add_executable(krona_plug apps/plug.cpp)
-target_link_libraries(
-    krona_plug
-    PRIVATE
-        krona::mesh_io
-        krona::mesh_compute
-        krona::build_config 
-        krona::warnings  
+    add_executable(krona_plug apps/plug.cpp)
+    target_link_libraries(krona_plug PRIVATE
+            krona::mesh_io krona::mesh_compute krona::warnings krona::fields
+    )
 
-        krona::fields
-)
+endif()
     
 #==================================================================
 #==== ADD BUILDING TESTING ========================================
@@ -732,3 +666,21 @@ target_link_libraries(
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+
+#==================================================================
+#==== CONFIGURATION REPORT & APPLICATION ENTRYS ===================
+#==================================================================
+message(STATUS "")
+message(STATUS "KRONA ${PROJECT_VERSION}")
+message(STATUS "  Backend:           ${KRONA_EXECUTION_SPACE}")
+message(STATUS "  Mesh indices:      local=${KRONA_LOCAL_INDEX_BITS}, global=${KRONA_GLOBAL_INDEX_BITS}")
+message(STATUS "  Precision profile: ${KRONA_PRECISION_PROFILE}")
+foreach(_role IN LISTS _krona_real_roles)
+    message(STATUS "  ${_role}: ${_krona_${_role}_type}")
+endforeach()
+message(STATUS "  Parallel HDF5:     ${HDF5_VERSION} (static linkage preferred)")
+message(STATUS "  CGNS / partitioning / Trilinos: ${KRONA_ENABLE_CGNS} / ${KRONA_ENABLE_PARTITIONING} / ${KRONA_ENABLE_TRILINOS}")
+message(STATUS "  Applications: ${KRONA_BUILD_APPLICATIONS}")
+message(STATUS "  BUILD_TESTING:     ${BUILD_TESTING}")
+message(STATUS "  Generated types:   ${_krona_generated_include}/krona/config.hpp")
