@@ -7,3 +7,4 @@ target_link_libraries(krona_test_support INTERFACE krona::execution krona::mpi k
 add_subdirectory(mesh)
 add_subdirectory(fields)
 add_subdirectory(halo)
+add_subdirectory(gradient)

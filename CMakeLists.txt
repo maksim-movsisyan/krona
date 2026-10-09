@@ -596,6 +596,22 @@ target_link_libraries(
         krona::fields
 )
 
+    #===================================================
+    #=== GRADIENT OPERATOR (DIFF OPERATOR IN FUTURE) ===
+    #===================================================
+add_library(krona_gradient INTERFACE)
+add_library(krona::gradient ALIAS krona_gradient)
+target_include_directories(krona_gradient INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(
+    krona_gradient 
+    INTERFACE
+        krona::mpi 
+        krona::mesh_compute 
+        krona::fields
+)
+
     #===============
     #=== CGNS IO ===
     #===============
