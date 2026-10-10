@@ -585,6 +585,7 @@ krona_interface(halo krona::execution krona::mpi krona::mesh_compute krona::fiel
     #===================================================
 krona_interface(gradient krona::mesh_compute krona::fields)
 
+
     #======================
     #=== LINEAR ALGEBRA ===
     #======================
@@ -595,6 +596,33 @@ if(KRONA_ENABLE_TRILINOS)
     target_link_libraries(krona_linalg
         PUBLIC krona::execution krona::mpi krona::linear_algebra
         PRIVATE krona::warnings)
+endif()
+
+
+    #===========================
+    #=== BOUNDARY CONDITIONS ===
+    #===========================
+add_library(krona_boundary_scalar STATIC src/boundary/scalar/config.cpp)
+add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
+target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
+krona_public_headers(krona_boundary_scalar PUBLIC)
+target_link_libraries(krona_boundary_scalar
+    PUBLIC krona::mesh_compute krona::fields krona::mpi
+    PRIVATE krona::warnings)
+
+if(NOT TARGET tomlplusplus::tomlplusplus)
+    find_package(tomlplusplus 3 CONFIG QUIET)
+endif()
+if(TARGET tomlplusplus::tomlplusplus)
+    target_link_libraries(krona_boundary_scalar PRIVATE tomlplusplus::tomlplusplus)
+else()
+    find_path(KRONA_TOMLPLUSPLUS_INCLUDE_DIR
+        NAMES toml++/toml.hpp toml++/toml.h toml.hpp
+        HINTS "${PROJECT_SOURCE_DIR}/external/tomlplusplus/include")
+    if(NOT KRONA_TOMLPLUSPLUS_INCLUDE_DIR)
+        message(FATAL_ERROR "boundary_scalar needs toml++: install it, keep external/tomlplusplus/include, or set KRONA_TOMLPLUSPLUS_INCLUDE_DIR")
+    endif()
+    target_include_directories(krona_boundary_scalar SYSTEM PRIVATE "${KRONA_TOMLPLUSPLUS_INCLUDE_DIR}")
 endif()
 
 

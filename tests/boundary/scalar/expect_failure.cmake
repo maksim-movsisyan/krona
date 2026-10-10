@@ -1,0 +1,23 @@
+execute_process(
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1
+            ${MPIEXEC_PREFLAGS} "${TEST_EXECUTABLE}" ${MPIEXEC_POSTFLAGS} "reject_${CASE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 30)
+if(result MATCHES "timeout|Timeout|terminated|Terminated")
+    message(FATAL_ERROR "Expected an immediate contract failure, got ${result}")
+endif()
+if(result STREQUAL "0")
+    message(FATAL_ERROR "Invalid input was accepted")
+endif()
+set(expected_missing "missing condition on a labelled patch")
+set(expected_wrong_name "patch name does not match")
+set(expected_scattered "patch must be a contiguous")
+set(expected_unlabelled "unlabelled faces need an explicit condition")
+set(expected_zero_diffusivity "FIXED_FLUX requires positive diffusivity")
+set(expected_unknown_type "unsupported scalar type")
+set(expected_typo "unexpected key")
+set(expected_duplicate "duplicate patch_id")
+set(expected_invalid_geometry "invalid owner, unit normal, area")
+string(FIND "${output}\n${error}" "${expected_${CASE}}" found)
+if(found EQUAL -1)
+    message(FATAL_ERROR "Unexpected failure for ${CASE}: ${output}\n${error}")
+endif()
