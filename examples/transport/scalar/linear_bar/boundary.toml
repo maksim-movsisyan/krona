@@ -1,0 +1,21 @@
+# Scalar heat-conduction conditions; names and IDs match mesh.toml.
+# Conductivity=2 W/(m K), source=0, exact solution T=300+100*x K.
+[[boundary_condition]]
+patch_id = 0
+name = "cold"
+[boundary_condition.scalar.temperature]
+type = "FIXED_VALUE"
+value = 300.0
+
+[[boundary_condition]]
+patch_id = 1
+name = "hot"
+[boundary_condition.scalar.temperature]
+type = "FIXED_VALUE"
+value = 400.0
+
+[[boundary_condition]]
+patch_id = 2
+name = "insulated"
+[boundary_condition.scalar.temperature]
+type = "ZERO_GRADIENT"

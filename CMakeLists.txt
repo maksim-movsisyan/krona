@@ -626,6 +626,12 @@ else()
 endif()
 
 
+    #========================
+    #=== SCALAR TRANSPORT ===
+    #========================
+krona_interface(transport_scalar krona::mesh_compute krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+
+
     #===============
     #=== CGNS IO ===
     #===============
@@ -683,8 +689,14 @@ if(KRONA_BUILD_APPLICATIONS)
     #============================
     add_executable(krona_plug apps/plug.cpp)
     target_link_libraries(krona_plug PRIVATE
-            krona::mesh_io krona::mesh_compute krona::warnings krona::fields
-    )
+            krona::mesh_io krona::mesh_compute krona::warnings krona::fields)
+
+    #================================
+    #=== SCALAR TRANSPORT EXAMPLE ===
+    #================================
+    add_executable(krona_scalar_diffusion apps/scalar_diffusion.cpp)
+    target_link_libraries(krona_scalar_diffusion PRIVATE
+        krona::transport_scalar krona::mesh_io krona::warnings)
 
 endif()
     
