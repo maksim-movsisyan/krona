@@ -175,7 +175,7 @@ void build_cell_cells_node_conn(const MeshPart& m, std::vector<std::size_t>& off
 /// @brief Adds requested missing tables without copying already computed CSR arrays.
 void MeshAuxConnectivity::add_connectivity(const MeshPart& m, AuxConnType requested)
 {
-    if ((static_cast<std::uint32_t>(requested) & ~static_cast<std::uint32_t>(AuxConnType::All)) != 0)
+    if ((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxConnType::All)) != 0)
         mpi::fatal("Unknown auxiliary connectivity flag");
     assert(active_mask == AuxConnType::None ||
            (n_cells_own == m.n_own && n_nodes_own == m.n_nodes_own && n_faces == m.n_faces));

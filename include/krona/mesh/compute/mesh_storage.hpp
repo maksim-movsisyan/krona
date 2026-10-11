@@ -92,10 +92,13 @@ public:
     MeshStorage& operator=(MeshStorage&&) = delete;
 
     /// @brief Copies descriptors only; their backing arrays must remain alive.
-    [[nodiscard]] view_type view() const noexcept { return view_; }
+    [[nodiscard]] view_type view() const & noexcept { return view_; }
+    view_type view() const && = delete;
+
 
     /// @brief Host MPI metadata, available when Halo was selected; no device pointers.
-    [[nodiscard]] HaloPlanView halo_plan() const noexcept { return halo_plan_; }
+    [[nodiscard]] HaloPlanView halo_plan() const & noexcept { return halo_plan_; }
+    HaloPlanView halo_plan() const && = delete;
 
 private:
     // Managed views stay empty on CPU: there is no second host mesh allocation.
@@ -128,21 +131,21 @@ private:
 
     [[nodiscard]] static bool has(MeshData mask, MeshData flags) noexcept
     {
-        const auto bits = static_cast<std::uint32_t>(flags);
-        return (static_cast<std::uint32_t>(mask) & bits) == bits;
+        const auto bits = static_cast<std::uint64_t>(flags);
+        return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
 
     // Cheap shape checks; full index/geometry validation belongs to the mesh module.
     static void validate(const MeshPart& m, MeshData selected)
     {
         detail::require_kokkos();
-        detail::require((static_cast<std::uint32_t>(selected) & ~static_cast<std::uint32_t>(MeshData::All)) == 0,
+        mpi::require((static_cast<std::uint64_t>(selected) & ~static_cast<std::uint64_t>(MeshData::All)) == 0,
                         "MeshStorage: unknown data flags");
-        detail::require(m.n_own >= 0 && m.n_cells >= m.n_own && m.n_nodes_own >= 0 &&
+        mpi::require(m.n_own >= 0 && m.n_cells >= m.n_own && m.n_nodes_own >= 0 &&
                         m.n_nodes >= m.n_nodes_own && m.n_faces >= 0,
                         "MeshStorage: invalid cell/node/face counts");
         if (m.faces_grouped)
-            detail::require(m.n_internal_faces >= 0 && m.n_inner_faces >= m.n_internal_faces &&
+            mpi::require(m.n_internal_faces >= 0 && m.n_inner_faces >= m.n_internal_faces &&
                             m.n_faces >= m.n_inner_faces, "MeshStorage: invalid grouped face ranges");
         const std::size_t cells = static_cast<std::size_t>(m.n_cells);
         const std::size_t faces = static_cast<std::size_t>(m.n_faces);
@@ -169,17 +172,17 @@ private:
         if (has(selected, MeshData::Halo)) {
             detail::require_size(m.send_offsets, m.nb_ranks.size() + 1, "send_offsets");
             detail::require_size(m.recv_offsets, m.nb_ranks.size() + 1, "recv_offsets");
-            detail::require(m.send_offsets.front() == 0 && m.send_offsets.back() == m.send_owned_local.size() &&
+            mpi::require(m.send_offsets.front() == 0 && m.send_offsets.back() == m.send_owned_local.size() &&
                     m.recv_offsets.front() == 0 && m.recv_offsets.back() == m.recv_ghost_local.size(),
                     "MeshStorage: invalid halo CSR bounds");
-            detail::require(m.nprocs > 0 && m.rank >= 0 && m.rank < m.nprocs,
+            mpi::require(m.nprocs > 0 && m.rank >= 0 && m.rank < m.nprocs,
                             "MeshStorage: invalid halo rank metadata");
             int previous = -1;
             for (std::size_t peer = 0; peer < m.nb_ranks.size(); ++peer) {
                 const int rank = m.nb_ranks[peer];
-                detail::require(rank > previous && rank < m.nprocs && rank != m.rank,
+                mpi::require(rank > previous && rank < m.nprocs && rank != m.rank,
                                 "MeshStorage: halo peers must be sorted, unique and valid");
-                detail::require(m.send_offsets[peer] <= m.send_offsets[peer + 1] &&
+                mpi::require(m.send_offsets[peer] <= m.send_offsets[peer + 1] &&
                                 m.recv_offsets[peer] <= m.recv_offsets[peer + 1],
                                 "MeshStorage: halo offsets must be nondecreasing");
                 previous = rank;

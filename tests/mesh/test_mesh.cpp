@@ -175,9 +175,10 @@ void auxiliary(const Exec& exec)
     auto host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, sums);
     complete(exec, [&] {
         Kokkos::parallel_for("test/aux_rows", Policy(exec, 0, 2), KOKKOS_LAMBDA(Index cell) {
-            const auto faces = rows.cell_faces_of(cell);
             Index sum = 0;
-            for (std::size_t i = 0; i < faces.size(); ++i) sum += faces(i);
+            std::size_t ptr1 = rows.cell_faces_offsets[cell];
+            std::size_t ptr2 = rows.cell_faces_offsets[cell+1];
+            for (std::size_t i = ptr1; i < ptr2; ++i) sum += rows.cell_faces[i];
             sums(cell) = sum;
         });
         Kokkos::deep_copy(exec, host, sums);

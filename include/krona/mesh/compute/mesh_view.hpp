@@ -18,24 +18,24 @@ struct MeshSizes {
 };
 
 /// @brief Independently selectable array groups; sizes are always present.
-enum class MeshData : std::uint32_t {
-    None = 0,
-    FaceCells = 1U << 0,
-    CellNodes = 1U << 1,
-    FaceNodes = 1U << 2,
-    NodeCoordinates = 1U << 3,
-    CellGeometry = 1U << 4,
-    FaceGeometry = 1U << 5,
-    Halo = 1U << 6,
-    Connectivity = FaceCells | CellNodes | FaceNodes,
-    Geometry = CellGeometry | FaceGeometry,
-    FiniteVolume = FaceCells | Geometry | Halo,
-    All = Connectivity | NodeCoordinates | Geometry | Halo
+enum class MeshData : std::uint64_t {
+    None                = 0,
+    FaceCells           = std::uint64_t{1} << 0,
+    CellNodes           = std::uint64_t{1} << 1,
+    FaceNodes           = std::uint64_t{1} << 2,
+    NodeCoordinates     = std::uint64_t{1} << 3,
+    CellGeometry        = std::uint64_t{1} << 4,
+    FaceGeometry        = std::uint64_t{1} << 5,
+    Halo                = std::uint64_t{1} << 6,
+    Connectivity        = FaceCells | CellNodes | FaceNodes,
+    Geometry            = CellGeometry | FaceGeometry,
+    FiniteVolume        = FaceCells | Geometry | Halo,
+    All                 = Connectivity | NodeCoordinates | Geometry | Halo
 };
 
 [[nodiscard]] constexpr MeshData operator|(MeshData a, MeshData b) noexcept
 {
-    return static_cast<MeshData>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
+    return static_cast<MeshData>(static_cast<std::uint64_t>(a) | static_cast<std::uint64_t>(b));
 }
 
 namespace detail {
@@ -84,8 +84,8 @@ struct MeshArrays {
 
     KOKKOS_INLINE_FUNCTION bool has(MeshData flags) const noexcept
     {
-        const std::uint32_t bits = static_cast<std::uint32_t>(flags);
-        return (static_cast<std::uint32_t>(active_mask) & bits) == bits;
+        const std::uint64_t bits = static_cast<std::uint64_t>(flags);
+        return (static_cast<std::uint64_t>(active_mask) & bits) == bits;
     }
 };
 

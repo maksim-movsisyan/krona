@@ -11,16 +11,6 @@
 
 namespace krona::mesh::compute::detail {
 
-// Host-side validation only. A failed contract terminates the MPI job;
-// successful checks do not perform MPI calls or collective operations.
-inline void require(bool condition, const char* message,
-                    std::source_location where = std::source_location::current()) noexcept
-{
-    if (!condition) [[unlikely]] {
-        krona::mpi::fatal(message, where);
-    }
-}
-
 template<class T>
 void require_size(const std::vector<T>& source, std::size_t expected, const char* name,
                   std::source_location where = std::source_location::current()) noexcept
@@ -41,13 +31,13 @@ inline void require_csr(const std::vector<std::size_t>& offsets,
                         std::source_location where = std::source_location::current()) noexcept
 {
     require_size(offsets, rows + 1, name, where);
-    require(offsets.front() == 0 && offsets.back() == values.size(), "Mesh compute: invalid CSR bounds", where);
+    mpi::require(offsets.front() == 0 && offsets.back() == values.size(), "Mesh compute: invalid CSR bounds", where);
 }
 
 inline void require_kokkos(
     std::source_location where = std::source_location::current()) noexcept
 {
-    require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Mesh compute requires active Kokkos", where);
+    mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Mesh compute requires active Kokkos", where);
 }
 
 // Shared transfer mechanism; no host cache is built or modified here.

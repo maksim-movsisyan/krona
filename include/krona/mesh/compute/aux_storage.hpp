@@ -76,7 +76,8 @@ public:
     AuxConnectivityStorage(AuxConnectivityStorage&&) = delete;
     AuxConnectivityStorage& operator=(AuxConnectivityStorage&&) = delete;
 
-    [[nodiscard]] view_type view() const noexcept { return view_; }
+    [[nodiscard]] view_type view() const & noexcept { return view_; }
+    view_type view() const && = delete;
 
 private:
     // These managed descriptors remain empty on HostSpace.
@@ -85,20 +86,20 @@ private:
 
     [[nodiscard]] static bool has(AuxConnType mask, AuxConnType flags) noexcept
     {
-        const auto bits = static_cast<std::uint32_t>(flags);
-        return (static_cast<std::uint32_t>(mask) & bits) == bits;
+        const auto bits = static_cast<std::uint64_t>(flags);
+        return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
 
     static void validate(const MeshPart& mesh, const MeshAuxConnectivity& source, AuxConnType requested)
     {
         detail::require_kokkos();
-        detail::require((static_cast<std::uint32_t>(requested) & ~static_cast<std::uint32_t>(AuxConnType::All)) == 0,
+        mpi::require((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxConnType::All)) == 0,
                         "AuxConnectivityStorage: unknown flags");
-        detail::require(has(source.active_mask, requested), "AuxConnectivityStorage: requested data is not ready");
+        mpi::require(has(source.active_mask, requested), "AuxConnectivityStorage: requested data is not ready");
         if (requested == AuxConnType::None) return;
-        detail::require(mesh.n_own >= 0 && mesh.n_cells >= mesh.n_own && mesh.n_nodes_own >= 0 &&
+        mpi::require(mesh.n_own >= 0 && mesh.n_cells >= mesh.n_own && mesh.n_nodes_own >= 0 &&
                         mesh.n_nodes >= mesh.n_nodes_own && mesh.n_faces >= 0, "AuxConnectivityStorage: invalid counts");
-        detail::require(source.n_faces == mesh.n_faces && source.n_cells_own == mesh.n_own &&
+        mpi::require(source.n_faces == mesh.n_faces && source.n_cells_own == mesh.n_own &&
                         source.n_nodes_own == mesh.n_nodes_own, "AuxConnectivityStorage: counts mismatch");
         if (has(requested, AuxConnType::CellFaces))
             detail::require_csr(source.cell_faces_offsets, source.cell_faces,
@@ -168,6 +169,18 @@ public:
                 detail::ArrayTransfer<Exec>::attach(view_.face_non_ortho_z, buffers_.face_non_ortho_z, source.face_non_ortho_z,
                     "mesh/aux/face_non_ortho_z", exec);
             }
+            if (has(requested, AuxGeomType::FaceNormalDistance)) {
+                detail::ArrayTransfer<Exec>::attach(view_.face_normal_dist, buffers_.face_normal_dist, source.face_normal_dist,
+                    "mesh/aux/face_normal_dist", exec);
+            }
+            if (has(requested, AuxGeomType::FaceNormalDistanceInv)) {
+                detail::ArrayTransfer<Exec>::attach(view_.face_normal_dist_inv, buffers_.face_normal_dist_inv, source.face_normal_dist_inv,
+                    "mesh/aux/face_normal_dist_inv", exec);
+            }
+            if (has(requested, AuxGeomType::FaceAreaOverNormalDistance)) {
+                detail::ArrayTransfer<Exec>::attach(view_.face_area_over_normal_dist, buffers_.face_area_over_normal_dist, source.face_area_over_normal_dist,
+                    "mesh/aux/face_area_over_normal_dist", exec);
+            }
             if (has(requested, AuxGeomType::WallDistance)) {
                 detail::ArrayTransfer<Exec>::attach(view_.cell_wall_dist, buffers_.cell_wall_dist, source.cell_wall_dist,
                     "mesh/aux/cell_wall_dist", exec);
@@ -189,8 +202,10 @@ public:
     AuxGeometryStorage& operator=(const AuxGeometryStorage&) = delete;
     AuxGeometryStorage(AuxGeometryStorage&&) = delete;
     AuxGeometryStorage& operator=(AuxGeometryStorage&&) = delete;
+    
+    [[nodiscard]] view_type view() const & noexcept { return view_; }
+    view_type view() const && = delete;
 
-    [[nodiscard]] view_type view() const noexcept { return view_; }
 
 private:
     // These managed descriptors remain empty on HostSpace.
@@ -199,20 +214,20 @@ private:
 
     [[nodiscard]] static bool has(AuxGeomType mask, AuxGeomType flags) noexcept
     {
-        const auto bits = static_cast<std::uint32_t>(flags);
-        return (static_cast<std::uint32_t>(mask) & bits) == bits;
+        const auto bits = static_cast<std::uint64_t>(flags);
+        return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
  
     static void validate(const MeshPart& mesh, const MeshAuxGeometry& source, AuxGeomType requested)
     {
         detail::require_kokkos();
-        detail::require((static_cast<std::uint32_t>(requested) & ~static_cast<std::uint32_t>(AuxGeomType::All)) == 0,
+        mpi::require((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxGeomType::All)) == 0,
                         "AuxGeometryStorage: unknown flags");
-        detail::require(has(source.active_mask, requested), "AuxGeometryStorage: requested data is not ready");
+        mpi::require(has(source.active_mask, requested), "AuxGeometryStorage: requested data is not ready");
         if (requested == AuxGeomType::None) return;
-        detail::require(mesh.n_own >= 0 && mesh.n_cells >= mesh.n_own && mesh.n_nodes_own >= 0 &&
+        mpi::require(mesh.n_own >= 0 && mesh.n_cells >= mesh.n_own && mesh.n_nodes_own >= 0 &&
                         mesh.n_nodes >= mesh.n_nodes_own && mesh.n_faces >= 0, "AuxGeometryStorage: invalid counts");
-        detail::require(source.n_faces == mesh.n_faces, "AuxGeometryStorage: face count mismatch");
+        mpi::require(source.n_faces == mesh.n_faces, "AuxGeometryStorage: face count mismatch");
         const auto faces = static_cast<std::size_t>(mesh.n_faces);
         const auto cells = static_cast<std::size_t>(mesh.n_cells);
         if (has(requested, AuxGeomType::FaceCellDistance)) {
@@ -233,6 +248,15 @@ private:
             detail::require_size(source.face_non_ortho_x, faces, "face_non_ortho_x");
             detail::require_size(source.face_non_ortho_y, faces, "face_non_ortho_y");
             detail::require_size(source.face_non_ortho_z, faces, "face_non_ortho_z");
+        }
+        if (has(requested, AuxGeomType::FaceNormalDistance)) {
+            detail::require_size(source.face_normal_dist, faces, "face_normal_dist");
+        }
+        if (has(requested, AuxGeomType::FaceNormalDistanceInv)) {
+            detail::require_size(source.face_normal_dist_inv, faces, "face_normal_dist_inv");
+        }
+        if (has(requested, AuxGeomType::FaceAreaOverNormalDistance)) {
+            detail::require_size(source.face_area_over_normal_dist, faces, "face_area_over_normal_dist");
         }
         if (has(requested, AuxGeomType::WallDistance)) {
             detail::require_size(source.cell_wall_dist, cells, "cell_wall_dist");

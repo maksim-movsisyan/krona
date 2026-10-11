@@ -7,26 +7,26 @@
 
 namespace krona::mesh {
 
-enum class AuxConnType : std::uint32_t {
-    None = 0,
-    CellFaces = 1U << 0,
-    CellCellsByFace = 1U << 1,
-    NodeCells = 1U << 2,
-    NodeFaces = 1U << 3,
-    CellCellsByNode = 1U << 4,
-    All = (1U << 5) - 1
+enum class AuxConnType : std::uint64_t {
+    None                        = 0,
+    CellFaces                   = std::uint64_t{1} << 0,
+    CellCellsByFace             = std::uint64_t{1} << 1,
+    NodeCells                   = std::uint64_t{1} << 2,
+    NodeFaces                   = std::uint64_t{1} << 3,
+    CellCellsByNode             = std::uint64_t{1} << 4,
+    All                         = (std::uint64_t{1} << 5) - 1
 };
 
 /// @brief Combines requested connectivity flags.
 [[nodiscard]] constexpr AuxConnType operator|(AuxConnType a, AuxConnType b) noexcept
 {
-    return static_cast<AuxConnType>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
+    return static_cast<AuxConnType>(static_cast<std::uint64_t>(a) | static_cast<std::uint64_t>(b));
 }
 
 /// @brief Selects flags shared by two connectivity masks.
 [[nodiscard]] constexpr AuxConnType operator&(AuxConnType a, AuxConnType b) noexcept
 {
-    return static_cast<AuxConnType>(static_cast<std::uint32_t>(a) & static_cast<std::uint32_t>(b));
+    return static_cast<AuxConnType>(static_cast<std::uint64_t>(a) & static_cast<std::uint64_t>(b));
 }
 
 /// @brief Returns whether every requested flag is present; None is always present.
@@ -51,65 +51,18 @@ struct MeshAuxConnectivity {
     /// @brief Builds missing requested tables locally, retaining tables already built.
     void add_connectivity(const MeshPart& mesh, AuxConnType requested);
 
-    /// @brief Returns whether all requested tables have been built, including empty tables.
     [[nodiscard]] bool has(AuxConnType flag) const noexcept { return has_flag(active_mask, flag); }
-    /// @brief Returns whether cell-to-face CSR is available.
     [[nodiscard]] bool has_cell_faces() const noexcept { return has(AuxConnType::CellFaces); }
-    /// @brief Returns whether face-neighbour CSR is available.
     [[nodiscard]] bool has_cell_cells_face() const noexcept { return has(AuxConnType::CellCellsByFace); }
-    /// @brief Returns whether locally available vertex-neighbour CSR is available.
     [[nodiscard]] bool has_cell_cells_node() const noexcept { return has(AuxConnType::CellCellsByNode); }
-    /// @brief Returns whether node-to-cell CSR is available.
     [[nodiscard]] bool has_node_cells() const noexcept { return has(AuxConnType::NodeCells); }
-    /// @brief Returns whether node-to-face CSR is available.
     [[nodiscard]] bool has_node_faces() const noexcept { return has(AuxConnType::NodeFaces); }
 
-    /// @brief Borrows incident face IDs for one owned cell in increasing face order.
-    [[nodiscard]] std::span<const LocalIndex> cell_faces_of(LocalIndex cell) const noexcept
-    {
-        assert(has_cell_faces() && cell >= 0 && cell < n_cells_own);
-        return row(cell_faces_offsets, cell_faces, cell);
-    }
-    /// @brief Borrows sorted face neighbours of one owned cell, including ghosts.
-    [[nodiscard]] std::span<const LocalIndex> cell_neighbors_face_of(LocalIndex cell) const noexcept
-    {
-        assert(has_cell_cells_face() && cell >= 0 && cell < n_cells_own);
-        return row(cell_cells_face_offsets, cell_cells_face, cell);
-    }
-    /// @brief Borrows sorted unique vertex neighbours available in the current local halo.
-    [[nodiscard]] std::span<const LocalIndex> cell_neighbors_node_of(LocalIndex cell) const noexcept
-    {
-        assert(has_cell_cells_node() && cell >= 0 && cell < n_cells_own);
-        return row(cell_cells_node_offsets, cell_cells_node, cell);
-    }
-    /// @brief Borrows locally stored cells using a node from the owned-used prefix.
-    [[nodiscard]] std::span<const LocalIndex> node_cells_of(LocalIndex node) const noexcept
-    {
-        assert(has_node_cells() && node >= 0 && node < n_nodes_own);
-        return row(node_cells_offsets, node_cells, node);
-    }
-    /// @brief Borrows local face IDs using a node from the owned-used prefix.
-    [[nodiscard]] std::span<const LocalIndex> node_faces_of(LocalIndex node) const noexcept
-    {
-        assert(has_node_faces() && node >= 0 && node < n_nodes_own);
-        return row(node_faces_offsets, node_faces, node);
-    }
     /// @brief Releases all tables; call before rebuilding after topology or numbering changes.
     void clear() noexcept
     {
         // Move an empty object over the old one to release vector capacities as well.
         *this = MeshAuxConnectivity{};
-    }
-
-private:
-    /// @brief Borrows a CSR row without pointer arithmetic on an empty vector.
-    [[nodiscard]] static std::span<const LocalIndex> row(std::span<const std::size_t> offsets,
-                                                         std::span<const LocalIndex> values,
-                                                         LocalIndex index) noexcept
-    {
-        const auto i = static_cast<std::size_t>(index);
-        // subspan keeps an empty row valid even when the values vector is empty.
-        return values.subspan(offsets[i], offsets[i + 1] - offsets[i]);
     }
 };
 
