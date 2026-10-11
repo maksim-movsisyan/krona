@@ -1,6 +1,7 @@
 #pragma once
 
-#include "krona/mpi/error.hpp"
+#include <krona/mpi/error.hpp>
+#include <krona/mpi/communicator.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/halo/detail/types.hpp>
 #include <krona/mesh/compute/halo_plan.hpp>
@@ -71,7 +72,7 @@ class Exchange {
 
 public:
     Exchange(mesh::compute::MeshView<Memory> mesh, mesh::compute::HaloPlanView plan,
-             MPI_Comm comm, int tag, Exec exec, Transfer transfer = Transfer::HostStaged)
+             mpi::CommView comm, int tag, Exec exec, Transfer transfer = Transfer::HostStaged)
         : exec_(exec), comm_(comm), tag_(tag), transfer_(transfer),
           n_own_(mesh.sizes.n_own), n_cells_(mesh.sizes.n_cells),
           send_map_(mesh.halo.send_owned_local), recv_map_(mesh.halo.recv_ghost_local)
@@ -80,15 +81,12 @@ public:
         mpi::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
         mpi::require(mesh.has(mesh::compute::MeshData::Halo), "Halo maps were not selected");
         mpi::require(n_own_ >= 0 && n_cells_ >= n_own_, "Halo: invalid cell counts");
-        mpi::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect,
-                        "Halo: invalid transfer mode");
+        mpi::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect, "Halo: invalid transfer mode");
 
-        int inter = 0, size = 0, flag = 0;
+        int size = 0, flag = 0;
         int* tag_limit = nullptr;
-        mpi::check(MPI_Comm_test_inter(comm_, &inter), "MPI_Comm_test_inter");
-        mpi::require(inter == 0, "Halo supports intracommunicators only");
-        mpi::check(MPI_Comm_size(comm_, &size), "MPI_Comm_size");
-        mpi::check(MPI_Comm_get_attr(comm_, MPI_TAG_UB, &tag_limit, &flag), "MPI_Comm_get_attr");
+        size = comm_.size();
+        mpi::check(MPI_Comm_get_attr(comm_.native(), MPI_TAG_UB, &tag_limit, &flag), "MPI_Comm_get_attr");
         // In the MPI world model, predefined environmental attributes are guaranteed on WORLD.
         if (flag == 0)
             mpi::check(MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &tag_limit, &flag),
@@ -98,8 +96,8 @@ public:
         const auto count = plan.n_neighbors();
         mpi::require(count <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 2),
                         "Halo: too many MPI requests");
-        validate_offsets(plan.send_offsets, count, send_map_.extent(0));
-        validate_offsets(plan.recv_offsets, count, recv_map_.extent(0));
+        mpi::require_offsets(plan.send_offsets, count, send_map_.extent(0));
+        mpi::require_offsets(plan.recv_offsets, count, recv_map_.extent(0));
         peers_.reserve(count);
         std::vector<int> ranks;
         ranks.reserve(count);
@@ -162,13 +160,13 @@ public:
         mpi::require(!prepared_, "Halo: prepare was already called");
         mpi::require(!registered_.empty(), "Halo: register at least one field");
         const auto width = registered_.size();
-        const auto send_values = detail::product(send_map_.extent(0), width);
-        const auto recv_values = detail::product(recv_map_.extent(0), width);
-        detail::product(send_values, sizeof(T));
-        detail::product(recv_values, sizeof(T));
+        const auto send_values = mpi::checked_product(send_map_.extent(0), width);
+        const auto recv_values = mpi::checked_product(recv_map_.extent(0), width);
+        static_cast<void>(mpi::checked_product(send_values, sizeof(T)));
+        static_cast<void>(mpi::checked_product(recv_values, sizeof(T)));
         for (auto& peer : peers_) {
-            const auto send = detail::product(peer.send.count, width);
-            const auto recv = detail::product(peer.recv.count, width);
+            const auto send = mpi::checked_product(peer.send.count, width);
+            const auto recv = mpi::checked_product(peer.recv.count, width);
             const std::size_t limit = static_cast<std::size_t>(std::numeric_limits<int>::max());
             mpi::require(send <= limit && recv <= limit,
                             "Halo: peer payload exceeds MPI-3 int count; split the group");
@@ -240,7 +238,8 @@ public:
                 const auto& peer = peers_[p];
                 if (peer.recv_values == 0) continue;
                 mpi::check(MPI_Irecv(recv_pointer() + peer.recv.offset * registered_.size(),
-                    peer.recv_values, datatype_, peer.rank, tag_, comm_, &requests_[p]), "MPI_Irecv");
+                    peer.recv_values, datatype_, peer.rank, tag_,
+                    comm_.native(), &requests_[p]), "MPI_Irecv");
             }
             if (send_.extent(0) != 0) {
                 if (unit_stride_) pack<true>(); else pack<false>();
@@ -253,8 +252,8 @@ public:
                 const auto& peer = peers_[p];
                 if (peer.send_values == 0) continue;
                 mpi::check(MPI_Isend(send_pointer() + peer.send.offset * registered_.size(),
-                    peer.send_values, datatype_, peer.rank, tag_, comm_,
-                    &requests_[peers_.size() + p]), "MPI_Isend");
+                    peer.send_values, datatype_, peer.rank, tag_,
+                     comm_.native(), &requests_[peers_.size() + p]), "MPI_Isend");
             }
         });
     }
@@ -296,7 +295,7 @@ public:
 
 private:
     Exec exec_;
-    MPI_Comm comm_;
+    mpi::CommView comm_;
     int tag_;
     Transfer transfer_;
     MPI_Datatype datatype_ = MPI_DATATYPE_NULL;
@@ -312,18 +311,6 @@ private:
     HostBuffer send_host_, recv_host_;
     bool prepared_ = false, unit_stride_ = true;
     State state_ = State::Idle;
-
-    static void validate_offsets(std::span<const std::size_t> offsets,
-                                 std::size_t peers, std::size_t entries)
-    {
-        if (peers == 0 && offsets.empty()) {
-            mpi::require(entries == 0, "Halo: map entries without peers");
-            return;
-        }
-        mpi::require(offsets.size() == peers + 1 && offsets.front() == 0 &&
-                        offsets.back() == entries && std::is_sorted(offsets.begin(), offsets.end()),
-                        "Halo: invalid peer offsets");
-    }
 
     void make_segments(Segments& segments, Peers& lookup, bool sending)
     {

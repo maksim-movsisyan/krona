@@ -200,8 +200,6 @@ private:
         const auto& options = metrics_.options;
         mpi::require(options.scheme == Scheme::GreenGaussCell || options.scheme == Scheme::GreenGaussFace ||
                 options.scheme == Scheme::LeastSquaresFace, "Gradient: unknown scheme");
-        mpi::require(options.boundary == BoundaryValues::Face || options.boundary == BoundaryValues::MirrorCell,
-                "Gradient: unknown boundary-value location");
         mpi::require(options.interpolation == Interpolation::Arithmetic || options.interpolation == Interpolation::AuxiliaryWeights,
                 "Gradient: unknown interpolation");
         mpi::require(std::isfinite(options.pivot_tolerance) && options.pivot_tolerance > 0 && options.pivot_tolerance < 1,

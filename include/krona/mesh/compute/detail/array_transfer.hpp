@@ -3,36 +3,12 @@
 #include <krona/mesh/compute/mesh_view.hpp>
 #include <krona/mpi/error.hpp>
 
-#include <cstdio>
 #include <source_location>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 namespace krona::mesh::compute::detail {
-
-template<class T>
-void require_size(const std::vector<T>& source, std::size_t expected, const char* name,
-                  std::source_location where = std::source_location::current()) noexcept
-{
-    if (source.size() != expected) [[unlikely]] {
-        // Format the diagnostic without allocating memory on the error path.
-        char message[512]{};
-        std::snprintf(message, sizeof(message),
-                      "Mesh compute: invalid size of %s (expected %zu, got %zu)",
-                      name, expected, source.size());
-        krona::mpi::fatal(message, where);
-    }
-}
-
-inline void require_csr(const std::vector<std::size_t>& offsets,
-                        const std::vector<LocalIndex>& values, std::size_t rows,
-                        const char* name,
-                        std::source_location where = std::source_location::current()) noexcept
-{
-    require_size(offsets, rows + 1, name, where);
-    mpi::require(offsets.front() == 0 && offsets.back() == values.size(), "Mesh compute: invalid CSR bounds", where);
-}
 
 inline void require_kokkos(
     std::source_location where = std::source_location::current()) noexcept

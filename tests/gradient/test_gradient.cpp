@@ -5,6 +5,7 @@
 #include <krona/mesh/compute/aux_storage.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
+#include <krona/mpi/communicator.hpp>
 
 #include <algorithm>
 #include <array>
@@ -73,7 +74,7 @@ Fixture fixture(int rank = 0, int ranks = 1, bool unequal = false, bool skew = f
             const double area = length * scale*scale * (axis == 0 ? 1 : right-left);
             const double weight = interior ?
                 (edge[static_cast<std::size_t>(ng+1)]-edge[static_cast<std::size_t>(ng)]) /
-                (right-left+edge[static_cast<std::size_t>(ng+1)]-edge[static_cast<std::size_t>(ng)]) : 0.5;
+                (right-left+edge[static_cast<std::size_t>(ng+1)]-edge[static_cast<std::size_t>(ng)]) : 0.0;
             const int group = !interior ? 2 : neigh < m.n_own ? 0 : 1;
             groups[static_cast<std::size_t>(group)].push_back({i, neigh, centre, surface, area, weight});
         }
@@ -86,9 +87,10 @@ Fixture fixture(int rank = 0, int ranks = 1, bool unequal = false, bool skew = f
         m.face_normal_x.push_back(f.normal[0]); m.face_normal_y.push_back(f.normal[1]); m.face_normal_z.push_back(f.normal[2]);
         m.face_area.push_back(f.area); result.geometry.face_interp_weight.push_back(f.weight);
         const auto o = static_cast<std::size_t>(f.owner), n = static_cast<std::size_t>(f.neigh >= 0 ? f.neigh : f.owner);
-        result.geometry.face_cell_dist_x.push_back(f.neigh >= 0 ? m.cell_centroid_x[n]-m.cell_centroid_x[o] : 2*(f.centre[0]-m.cell_centroid_x[o]));
-        result.geometry.face_cell_dist_y.push_back(f.neigh >= 0 ? m.cell_centroid_y[n]-m.cell_centroid_y[o] : 2*(f.centre[1]-m.cell_centroid_y[o]));
-        result.geometry.face_cell_dist_z.push_back(f.neigh >= 0 ? m.cell_centroid_z[n]-m.cell_centroid_z[o] : 2*(f.centre[2]-m.cell_centroid_z[o]));
+        // Physical boundary stencils end at the face centroid.
+        result.geometry.face_cell_dist_x.push_back(f.neigh >= 0 ? m.cell_centroid_x[n]-m.cell_centroid_x[o] : f.centre[0]-m.cell_centroid_x[o]);
+        result.geometry.face_cell_dist_y.push_back(f.neigh >= 0 ? m.cell_centroid_y[n]-m.cell_centroid_y[o] : f.centre[1]-m.cell_centroid_y[o]);
+        result.geometry.face_cell_dist_z.push_back(f.neigh >= 0 ? m.cell_centroid_z[n]-m.cell_centroid_z[o] : f.centre[2]-m.cell_centroid_z[o]);
     }
     m.n_faces = static_cast<Index>(m.face_owner.size());
     auto& conn = result.connectivity;
@@ -113,7 +115,8 @@ template<class T, int N, class Layout, class Coefficient = krona::GeometryReal,
          class Accumulator = krona::AccumulationReal>
 void numerical(const Exec& exec, Fixture data, gradient::Options options, bool constant = false,
                bool ranges = false, bool distributed = false, bool use_geometry = true)
-{
+{   
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto& m = data.mesh;
     MeshStorage<> mesh(m, {.data = MeshData::FiniteVolume}, exec);
     AuxConnectivityStorage<> connectivity(m, data.connectivity, exec);
@@ -130,12 +133,9 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
         Vec p{};
         if (i < static_cast<std::size_t>(m.n_cells)) p = {m.cell_centroid_x[i], m.cell_centroid_y[i], m.cell_centroid_z[i]};
         else {
+            // Boundary entries store values at face centroids.
             const auto f = static_cast<std::size_t>(m.n_inner_faces) + i - static_cast<std::size_t>(m.n_cells);
             p = {m.face_centroid_x[f], m.face_centroid_y[f], m.face_centroid_z[f]};
-            if (options.boundary == gradient::BoundaryValues::MirrorCell) {
-                const auto owner = static_cast<std::size_t>(m.face_owner[f]);
-                p = {2*p[0]-m.cell_centroid_x[owner], 2*p[1]-m.cell_centroid_y[owner], 2*p[2]-m.cell_centroid_z[owner]};
-            }
         }
         for (int c = 0; c < N; ++c) {
             T value = static_cast<T>(constant ? 9.0 : static_cast<double>(c+1)*(2*p[0]-3*p[1]+0.75*p[2]));
@@ -147,14 +147,14 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
     output.fill(exec, T{-999});
     auto hg = output.create_host_buffer();
     if (distributed) {
-        krona::halo::Exchange<T> exchange(mesh.view(), mesh.halo_plan(), MPI_COMM_WORLD, 931, exec);
+        krona::halo::Exchange<T> exchange(mesh.view(), mesh.halo_plan(), comm, 931, exec);
         for (int c = 0; c < N; ++c)
             exchange.add_component(Kokkos::subview(q.component(c), std::pair<std::size_t, std::size_t>{0, static_cast<std::size_t>(m.n_cells)}));
         exchange.prepare(); exchange.start(); exchange.finish_async();
         op.apply(q.as_const(), g);
         exchange.wait();
         // Gradient halo fills MPI ghosts; physical boundary entries retain the sentinel.
-        krona::halo::Exchange<T> gradient_exchange(mesh.view(), mesh.halo_plan(), MPI_COMM_WORLD, 932, exec);
+        krona::halo::Exchange<T> gradient_exchange(mesh.view(), mesh.halo_plan(), comm, 932, exec);
         for (int c = 0; c < 3*N; ++c)
             gradient_exchange.add_component(Kokkos::subview(g.component(c), std::pair<std::size_t, std::size_t>{0, static_cast<std::size_t>(m.n_cells)}));
         gradient_exchange.prepare(); gradient_exchange.exchange();
@@ -177,7 +177,7 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
         static_cast<double>(std::numeric_limits<Accumulator>::epsilon()),
         static_cast<double>(std::numeric_limits<krona::GeometryReal>::epsilon())});
     for (std::size_t i = 0; i < n; ++i) for (int c = 0; c < N; ++c) for (int axis = 0; axis < 3; ++axis) {
-        if (i >= ready) equal(hg(i, 3*c+axis), T{-999}, "Ghost/boundary tail is not written");
+        if (i >= ready) equal(hg(i, 3*c+axis), T{-999}, "Entries outside the ready cell range are not written");
         else {
             const T expected = static_cast<T>(constant ? 0 : (c+1)*slope[static_cast<std::size_t>(axis)]);
             const T tolerance = static_cast<T>(64*epsilon*std::max(1.0, std::abs(static_cast<double>(expected))));
@@ -190,21 +190,21 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
 
 void constant_case(const Exec& exec)
 {
-    for (const auto scheme : schemes) for (const auto boundary : {gradient::BoundaryValues::Face, gradient::BoundaryValues::MirrorCell})
-        numerical<krona::StorageReal, 1, Kokkos::LayoutLeft>(exec, fixture(), {.scheme=scheme, .boundary=boundary}, true);
+    for (const auto scheme : schemes)
+        numerical<krona::StorageReal, 1, Kokkos::LayoutLeft>(exec, fixture(), {.scheme=scheme}, true);
 }
 void affine_case(const Exec& exec)
 {
-    for (const auto scheme : schemes) for (const auto boundary : {gradient::BoundaryValues::Face, gradient::BoundaryValues::MirrorCell})
-        numerical<krona::StorageReal, 3, Kokkos::LayoutLeft>(exec, fixture(0, 1, false, true), {.scheme=scheme, .boundary=boundary});
+    for (const auto scheme : schemes)
+        numerical<krona::StorageReal, 3, Kokkos::LayoutLeft>(exec, fixture(0, 1, false, true), {.scheme=scheme});
 }
 void weighted_case(const Exec& exec)
 {
-    for (const auto scheme : schemes) for (const auto boundary : {gradient::BoundaryValues::Face, gradient::BoundaryValues::MirrorCell}) {
+    for (const auto scheme : schemes) {
         numerical<double, 1, Kokkos::LayoutLeft>(exec, fixture(0, 1, true, true),
-            {.scheme=scheme, .boundary=boundary, .interpolation=gradient::Interpolation::AuxiliaryWeights});
+            {.scheme=scheme, .interpolation=gradient::Interpolation::AuxiliaryWeights});
         if (scheme == gradient::Scheme::LeastSquaresFace)
-            numerical<double, 1, Kokkos::LayoutLeft>(exec, fixture(0, 1, true, true), {.scheme=scheme, .boundary=boundary}, false, false, false, false);
+            numerical<double, 1, Kokkos::LayoutLeft>(exec, fixture(0, 1, true, true), {.scheme=scheme}, false, false, false, false);
     }
 }
 void layouts_case(const Exec& exec)

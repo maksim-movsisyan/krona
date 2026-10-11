@@ -40,9 +40,7 @@ namespace detail {
 inline void collective_comm(CommView comm, std::source_location where) noexcept
 {
     // The caller guarantees that the borrowed handle remains live.
-    if (comm.is_null()) {
-        fatal("Collective requires a live communicator", where);
-    }
+    require(!comm.is_null(),"Collective requires a live communicator", where);
 }
 
 /// @brief Checks the communicator and asserts the root locally in debug builds.

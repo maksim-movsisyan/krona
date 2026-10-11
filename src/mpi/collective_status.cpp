@@ -37,9 +37,7 @@ void require_collective_success(
     std::string_view stage,
     std::source_location where) noexcept
 {
-    if (comm.is_null()) {
-        fatal("Collective status checking requires a live communicator", where);
-    }
+    require(!comm.is_null(),"Collective status checking requires a live communicator", where);
 
     // The communicator size is greater than every valid rank.
     const int no_failure = comm.size();

@@ -101,7 +101,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     options.linear.restart_length = 100;
     // Keep the default orthogonality check and host-staged MPI transport.
     ts::SteadyDiffusion<> solver{host_mesh, mesh.view(), temperature.view().component(0),
-                                 comm.native(), exec, options};
+                                 comm, exec, options};
     const ts::UniformSource<Real> source{Real{0}};
     const bc::UniformDiffusivity<Real> diffusion{static_cast<Real>(conductivity)};
 

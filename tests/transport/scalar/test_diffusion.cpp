@@ -1,5 +1,6 @@
 #include "common/test_support.hpp"
 #include "cartesian_fixture.hpp"
+#include "krona/mpi/communicator.hpp"
 
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
@@ -129,14 +130,15 @@ void assembly(const Exec& exec) { assembly_case(exec, false); }
 void duplicate_faces(const Exec& exec) { assembly_case(exec, true); }
 
 void affine_case(const Exec& exec, int nx)
-{
-    auto m = krona::test::diffusion::cartesian(nx, 3, 2, MPI_COMM_WORLD);
+{   
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(nx, 3, 2, comm.native());
     MeshStorage mesh{m, {}, exec};
     bc::Manager<Exec, Calc, AffineValue> boundary{m, mesh.view(), exec};
     for (int p = 0; p < 6; ++p) boundary.set(p, AffineValue{});
     Field field{"phi", extended(m)+2, krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     for (int pass = 0; pass < 2; ++pass) {
         const Calc offset = pass == 0 ? Calc{1} : Calc{3};
         for (int p = 0; p < 6; ++p) boundary.set(p, AffineValue{offset});
@@ -162,13 +164,14 @@ void empty_rank(const Exec& exec) { affine_case(exec, 2); }
 
 void mixed(const Exec& exec)
 {
-    auto m = krona::test::diffusion::cartesian(10, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(10, 1, 1, comm.native());
     MeshStorage mesh{m, {}, exec};
     bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
     boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedFlux<Calc>{-6});
     Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     for (int pass = 0; pass < 2; ++pass) {
         if (pass == 1) boundary.set(1, bc::NormalGradient<Calc>{2});
         check_result(solver.solve(boundary, ts::UniformSource<Calc>{0}, bc::UniformDiffusivity<Calc>{3}));
@@ -182,7 +185,8 @@ void mixed(const Exec& exec)
 
 void variable(const Exec& exec)
 {
-    auto m = krona::test::diffusion::cartesian(12, 2, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(12, 2, 1, comm.native());
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
     boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{0});
     Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
@@ -195,7 +199,7 @@ void variable(const Exec& exec)
         host_d(f) = static_cast<Real>(x == 0.5 ? 1.6 : (x < 0.5 ? 1 : 4));
     }
     complete(exec, [&] { Kokkos::deep_copy(exec, d, host_d); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     check_result(solver.solve(boundary, ts::UniformSource<Calc>{0}, bc::FaceDiffusivity{d}));
     auto h = snapshot(exec, field.view().component(0));
     for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_cells); ++i) {
@@ -210,14 +214,15 @@ void variable(const Exec& exec)
 
 double quadratic_error(const Exec& exec, int nx)
 {
-    auto m = krona::test::diffusion::cartesian(nx, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(nx, 1, 1, comm.native());
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
     boundary.set(0, bc::FixedValue<Calc>{0}); boundary.set(1, bc::FixedValue<Calc>{0});
     Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{0}); });
     DeviceVector source{"source_density", static_cast<std::size_t>(m.n_own)};
     complete(exec, [&] { Kokkos::deep_copy(exec, source, Real{2}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     check_result(solver.solve(boundary, ts::CellSource{source}));
     const auto h = snapshot(exec, field.view().component(0));
     double local_error = 0;
@@ -242,13 +247,14 @@ void refinement(const Exec& exec)
 
 void strided(const Exec& exec)
 {
-    auto m = krona::test::diffusion::cartesian(8, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(8, 1, 1, comm.native());
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
     boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{3});
     krona::fields::FieldStorage<Real, 3, Exec, Kokkos::LayoutRight> field{
         "state", extended(m), krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{-7}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(1), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(1), comm, exec, options()};
     check_result(solver.solve(boundary));
     const auto h = snapshot(exec, field.view().kokkos_view());
     for (std::size_t i = 0; i < extended(m); ++i) {
@@ -261,13 +267,14 @@ void strided(const Exec& exec)
 
 void nonconvergence(const Exec& exec)
 {
-    auto m = krona::test::diffusion::cartesian(12, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(12, 1, 1, comm.native());
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
     boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{0});
     Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{-7}); });
     auto o = options(); o.linear.maximum_iterations = 1; o.linear.restart_length = 1; o.linear.preconditioner.clear();
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, o};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, o};
     const auto result = solver.solve(boundary);
     check(!result.converged, "Insufficient iteration budget reports nonconvergence");
     const auto h = snapshot(exec, field.view().component(0));
@@ -276,25 +283,27 @@ void nonconvergence(const Exec& exec)
 
 void all_empty(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     MeshPart m; m.faces_grouped = true;
-    krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD, &m.rank), "MPI_Comm_rank(empty)");
-    krona::mpi::check(MPI_Comm_size(MPI_COMM_WORLD, &m.nprocs), "MPI_Comm_size(empty)");
+    krona::mpi::check(MPI_Comm_rank(comm.native(), &m.rank), "MPI_Comm_rank(empty)");
+    krona::mpi::check(MPI_Comm_size(comm.native(), &m.nprocs), "MPI_Comm_size(empty)");
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec};
     Field field{"phi", 0, krona::fields::FieldLocation::Custom, exec};
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     check(solver.solve(boundary).converged, "Globally empty system succeeds");
     near(solver.balance(boundary).defect, 0.0, 0.0, "Empty balance is zero");
 }
 
 void publication(const Exec& exec)
 {
-    auto m = krona::test::diffusion::cartesian(1, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(1, 1, 1, comm.native());
     MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec};
     const Calc value = Calc{1}/Calc{3};
     for (int p = 0; p < 6; ++p) boundary.set(p, bc::FixedValue<Calc>{value});
     Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
     complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), MPI_COMM_WORLD, exec, options()};
+    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
     check_result(solver.solve(boundary));
     const auto h = snapshot(exec, field.view().component(0));
     double local_expected = 0;
@@ -318,13 +327,14 @@ void subcomm(const Exec& exec)
     const int color = rank%2;
     krona::mpi::check(MPI_Comm_split(MPI_COMM_WORLD, color, rank, &comm), "MPI_Comm_split(diffusion)");
     {
-        auto m = krona::test::diffusion::cartesian(4, 1, 1, comm);
+        krona::mpi::CommView comm_view(comm);
+        auto m = krona::test::diffusion::cartesian(4, 1, 1, comm_view.native());
         MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
         boundary.set(0, bc::FixedValue<Calc>{static_cast<Calc>(color+1)});
         boundary.set(1, bc::FixedValue<Calc>{static_cast<Calc>(color+3)});
         Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
         complete(exec, [&] { field.fill(exec, Real{0}); });
-        ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
+        ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm_view, exec, options()};
         check_result(solver.solve(boundary));
         const auto h = snapshot(exec, field.view().component(0));
         for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_own); ++i)

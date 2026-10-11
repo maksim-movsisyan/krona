@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/mpi/communicator.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/linalg/solver.hpp>
 #include <krona/transport/scalar/diffusion.hpp>
@@ -16,26 +17,6 @@ struct SteadyDiffusionOptions {
     halo::Transfer transfer = halo::Transfer::HostStaged;
 };
 
-namespace detail {
-
-/// @brief Private communication context isolates solver halo tags from application exchanges.
-class SolverComm {
-public:
-    explicit SolverComm(MPI_Comm source)
-    {
-        require(source != MPI_COMM_NULL, "Scalar diffusion: null solver communicator");
-        mpi::check(MPI_Comm_dup(source, &comm_), "MPI_Comm_dup(scalar diffusion)");
-    }
-    ~SolverComm() { mpi::check(MPI_Comm_free(&comm_), "MPI_Comm_free(scalar diffusion)"); }
-    SolverComm(const SolverComm&) = delete;
-    SolverComm& operator=(const SolverComm&) = delete;
-    [[nodiscard]] MPI_Comm get() const noexcept { return comm_; }
-private:
-    MPI_Comm comm_ = MPI_COMM_NULL;
-};
-
-} // namespace detail
-
 /// @brief Reusable blocking solve, followed by field publication, halo exchange and face-value filling.
 /// The field is borrowed; its address, mesh arrays and MPI/Kokkos runtimes must remain valid.
 template<class Storage = StorageReal, class Scalar = SolverReal,
@@ -50,12 +31,12 @@ public:
     /// @brief Borrows one writable rank-one component, including a strided vector-field subview.
     template<class View>
     SteadyDiffusion(const mesh::MeshPart& host, Mesh mesh_view, View component,
-                    MPI_Comm comm, Exec exec, SteadyDiffusionOptions options = {})
-        : comm_(comm), exec_(exec), field_(borrow(component)),
-          operation_(host, mesh_view, comm_.get(), exec_, options.diffusion),
+                    mpi::CommView comm, Exec exec, SteadyDiffusionOptions options = {})
+        : communicator_(mpi::Comm::duplicate(comm)), comm_(communicator_.view()), exec_(exec), field_(borrow(component)),
+          operation_(host, mesh_view, comm_.native(), exec_, options.diffusion),
           solution_(operation_.matrix().pattern().distribution()),
           linear_(operation_.matrix(), std::move(options.linear)),
-          halo_(mesh_view, {host.nb_ranks, host.send_offsets, host.recv_offsets}, comm_.get(), 0, exec_, options.transfer)
+          halo_(mesh_view, {host.nb_ranks, host.send_offsets, host.recv_offsets}, comm_, 0, exec_, options.transfer)
     {
         const auto cells = static_cast<std::size_t>(host.n_cells);
         const auto boundary_faces = static_cast<std::size_t>(host.n_faces-host.n_inner_faces);
@@ -104,7 +85,8 @@ public:
 
 private:
     // Declared first, hence destroyed last: all Tpetra and halo users release their context first.
-    detail::SolverComm comm_;
+    mpi::Comm communicator_;
+    mpi::CommView comm_;
     Exec exec_;
     Component field_;
     DiffusionOperator<Scalar, Exec, Real> operation_;

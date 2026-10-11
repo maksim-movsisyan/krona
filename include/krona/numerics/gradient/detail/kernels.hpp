@@ -5,13 +5,10 @@
 namespace krona::numerics::gradient {
 
 enum class Scheme { GreenGaussCell, GreenGaussFace, LeastSquaresFace };
-enum class BoundaryValues { Face, MirrorCell };
 enum class Interpolation { Arithmetic, AuxiliaryWeights };
 
-/// @brief MirrorCell preserves the reference GG boundary averaging convention.
 struct Options {
     Scheme scheme = Scheme::LeastSquaresFace;
-    BoundaryValues boundary = BoundaryValues::MirrorCell;
     Interpolation interpolation = Interpolation::Arithmetic;
     double pivot_tolerance = 1.0e-12;
 };
@@ -49,8 +46,8 @@ struct Metrics {
         } geometry;
         bool has(mesh::compute::MeshData flags) const
         {
-            const std::uint32_t bits = static_cast<std::uint32_t>(flags);
-            return (static_cast<std::uint32_t>(active_mask) & bits) == bits;
+            const std::uint64_t bits = static_cast<std::uint64_t>(flags);
+            return (static_cast<std::uint64_t>(active_mask) & bits) == bits;
         }
     } mesh;
     struct ConnectivityDescriptor {
@@ -95,15 +92,13 @@ struct Metrics {
         const bool boundary = face >= mesh.sizes.n_inner_faces;
         if (geometry.has_face_cell_dist_vector()) {
             const Real sign = mesh.connectivity.face_owner(f) == cell ? Real{1} : Real{-1};
-            const Real factor = boundary && options.boundary == BoundaryValues::Face ? Real{0.5} : Real{1};
-            d[0] = sign * factor * static_cast<Real>(geometry.face_cell_dist_x(f));
-            d[1] = sign * factor * static_cast<Real>(geometry.face_cell_dist_y(f));
-            d[2] = sign * factor * static_cast<Real>(geometry.face_cell_dist_z(f));
+            d[0] = sign * static_cast<Real>(geometry.face_cell_dist_x(f));
+            d[1] = sign * static_cast<Real>(geometry.face_cell_dist_y(f));
+            d[2] = sign * static_cast<Real>(geometry.face_cell_dist_z(f));
         } else if (boundary) {
-            const Real factor = options.boundary == BoundaryValues::MirrorCell ? Real{2} : Real{1};
-            d[0] = factor * (static_cast<Real>(mesh.geometry.face_centroid_x(f)) - static_cast<Real>(mesh.geometry.cell_centroid_x(i)));
-            d[1] = factor * (static_cast<Real>(mesh.geometry.face_centroid_y(f)) - static_cast<Real>(mesh.geometry.cell_centroid_y(i)));
-            d[2] = factor * (static_cast<Real>(mesh.geometry.face_centroid_z(f)) - static_cast<Real>(mesh.geometry.cell_centroid_z(i)));
+            d[0] = (static_cast<Real>(mesh.geometry.face_centroid_x(f)) - static_cast<Real>(mesh.geometry.cell_centroid_x(i)));
+            d[1] = (static_cast<Real>(mesh.geometry.face_centroid_y(f)) - static_cast<Real>(mesh.geometry.cell_centroid_y(i)));
+            d[2] = (static_cast<Real>(mesh.geometry.face_centroid_z(f)) - static_cast<Real>(mesh.geometry.cell_centroid_z(i)));
         } else {
             const auto j = sample(cell, face);
             d[0] = static_cast<Real>(mesh.geometry.cell_centroid_x(j)) - static_cast<Real>(mesh.geometry.cell_centroid_x(i));
@@ -277,7 +272,7 @@ struct CellKernel {
             } else {
                 const bool owner = metrics.mesh.connectivity.face_owner(f) == cell;
                 const Real alpha = face >= metrics.mesh.sizes.n_inner_faces
-                    ? (metrics.options.boundary == BoundaryValues::Face ? Real{1} : Real{0.5})
+                    ? Real{1}
                     : (owner ? Real{1} - metrics.template owner_weight<Real>(f) : metrics.template owner_weight<Real>(f));
                 const Real factor = (owner ? alpha : -alpha) * static_cast<Real>(metrics.mesh.geometry.face_area(f)) * cell_vol_inv;
                 x = factor * static_cast<Real>(metrics.mesh.geometry.face_normal_x(f));
@@ -320,45 +315,31 @@ struct FaceKernel {
         const auto neigh = metrics.mesh.connectivity.face_neigh(f);
         const bool boundary = face >= metrics.mesh.sizes.n_inner_faces;
 
-        const bool write_owner =
-            owner >= range.begin && owner < range.end;
-        const bool write_neigh =
-            !boundary && neigh >= range.begin && neigh < range.end;
+        const bool write_owner = owner >= range.begin && owner < range.end;
+        const bool write_neigh = !boundary && neigh >= range.begin && neigh < range.end;
 
         if (!write_owner && !write_neigh) return;
 
-        const auto i = static_cast<std::size_t>(owner);
+        const std::size_t i = static_cast<std::size_t>(owner);
         const auto j = metrics.sample(owner, face);
 
         const Real w = boundary
             ? Real{0} : metrics.template owner_weight<Real>(f);
 
-        const Real alpha = boundary
-            ? (metrics.options.boundary == BoundaryValues::Face
-                ? Real{1} : Real{0.5}) : Real{1} - w;
+        const Real alpha = boundary ? Real{1} : Real{1} - w;
 
         // Read volumes only for owned cells whose gradients are updated.
-        const Real owner_factor = write_owner
-            ? alpha / static_cast<Real>(
-                metrics.mesh.geometry.cell_volume(i)) : Real{0};
+        const Real owner_factor = write_owner ? alpha / static_cast<Real>(metrics.mesh.geometry.cell_volume(i)) : Real{0};
 
-        const Real neigh_factor = write_neigh
-            ? w / static_cast<Real>(
-                metrics.mesh.geometry.cell_volume(j)) : Real{0};
+        const Real neigh_factor = write_neigh ? w / static_cast<Real>(metrics.mesh.geometry.cell_volume(j)) : Real{0};
 
-        const Real area =
-            static_cast<Real>(metrics.mesh.geometry.face_area(f));
-        const Real sx =
-            area * static_cast<Real>(metrics.mesh.geometry.face_normal_x(f));
-        const Real sy =
-            area * static_cast<Real>(metrics.mesh.geometry.face_normal_y(f));
-        const Real sz =
-            area * static_cast<Real>(metrics.mesh.geometry.face_normal_z(f));
+        const Real area = static_cast<Real>(metrics.mesh.geometry.face_area(f));
+        const Real sx = area * static_cast<Real>(metrics.mesh.geometry.face_normal_x(f));
+        const Real sy = area * static_cast<Real>(metrics.mesh.geometry.face_normal_y(f));
+        const Real sz = area * static_cast<Real>(metrics.mesh.geometry.face_normal_z(f));
 
         for (std::size_t c = 0; c < N; ++c) {
-            const Real delta =
-                static_cast<Real>(fields.input[c](j)) -
-                static_cast<Real>(fields.input[c](i));
+            const Real delta = static_cast<Real>(fields.input[c](j)) - static_cast<Real>(fields.input[c](i));
 
             if (write_owner) {
                 const Real v = owner_factor * delta;

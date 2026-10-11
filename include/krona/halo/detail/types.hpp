@@ -5,17 +5,9 @@
 #include <Kokkos_Core.hpp>
 
 #include <cstddef>
-#include <limits>
 #include <utility>
 
 namespace krona::halo::detail {
-
-inline std::size_t product(std::size_t a, std::size_t b)
-{
-    mpi::require(b == 0 || a <= std::numeric_limits<std::size_t>::max() / b,
-            "Halo: payload size overflows size_t");
-    return a * b;
-}
 
 // Setup-only copies use temporary mirrors. Drain work while those mirrors are still alive.
 template<class Exec, class Submit>

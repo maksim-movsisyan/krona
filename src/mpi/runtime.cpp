@@ -45,12 +45,8 @@ Runtime::Runtime(
     std::source_location where) noexcept : construction_thread_(std::this_thread::get_id()), origin_(where)
 {
     // MPI cannot be initialized again after finalization.
-    if (!valid(required)) {
-        fatal("Invalid requested MPI thread level", where);
-    }
-    if (is_finalized()) {
-        fatal("MPI cannot be reinitialized after finalization", where);
-    }
+    require(valid(required), "Invalid requested MPI thread level", where);
+    require(!is_finalized(), "MPI cannot be reinitialized after finalization", where);
 
     int provided = MPI_THREAD_SINGLE;
     if (is_initialized()) {
@@ -66,16 +62,8 @@ Runtime::Runtime(
 
     // The actual support level may be lower than requested.
     provided_ = static_cast<ThreadLevel>(provided);
-    if (!valid(provided_)) {
-        fatal("MPI returned an invalid thread level", where);
-    }
-    if (provided < static_cast<int>(required)) {
-        char message[256]{};
-        std::snprintf(message, sizeof(message),
-                      "Insufficient MPI thread support: required=%s, provided=%s",
-                      to_string(required).data(), to_string(provided_).data());
-        fatal(message, where);
-    }
+    require(valid(required), "MPI returned an invalid thread level", where);
+    require(provided >= static_cast<int>(required), "Insufficient MPI thread support", where);
 }
 
 /// @brief Finalizes an owned runtime through the common lifecycle path.
@@ -112,14 +100,11 @@ void Runtime::finalize(std::source_location where) noexcept
     }
 
     if (owns_mpi_) {
-        if (!is_active()) {
-            fatal("Owned MPI runtime is no longer active; it must not be finalized externally",
-                  where);
-        }
+        require(is_active(), "Owned MPI runtime is no longer active; it must not be finalized externally", where);
+
         // Finalizing during unwinding may mismatch other ranks' collective calls.
-        if (std::uncaught_exceptions() != 0) {
-            fatal("MPI finalization during exception unwinding", where);
-        }
+        require(std::uncaught_exceptions() == 0, "MPI finalization during exception unwinding", where);
+
         check(MPI_Finalize(), "MPI_Finalize", where);
         owns_mpi_ = false;
     }

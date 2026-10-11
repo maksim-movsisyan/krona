@@ -102,19 +102,19 @@ private:
         mpi::require(source.n_faces == mesh.n_faces && source.n_cells_own == mesh.n_own &&
                         source.n_nodes_own == mesh.n_nodes_own, "AuxConnectivityStorage: counts mismatch");
         if (has(requested, AuxConnType::CellFaces))
-            detail::require_csr(source.cell_faces_offsets, source.cell_faces,
+            mpi::require_csr(source.cell_faces_offsets, source.cell_faces,
                                 static_cast<std::size_t>(source.n_cells_own), "cell_faces_offsets");
         if (has(requested, AuxConnType::CellCellsByFace))
-            detail::require_csr(source.cell_cells_face_offsets, source.cell_cells_face,
+            mpi::require_csr(source.cell_cells_face_offsets, source.cell_cells_face,
                                 static_cast<std::size_t>(source.n_cells_own), "cell_cells_face_offsets");
         if (has(requested, AuxConnType::NodeCells))
-            detail::require_csr(source.node_cells_offsets, source.node_cells,
+            mpi::require_csr(source.node_cells_offsets, source.node_cells,
                                 static_cast<std::size_t>(source.n_nodes_own), "node_cells_offsets");
         if (has(requested, AuxConnType::NodeFaces))
-            detail::require_csr(source.node_faces_offsets, source.node_faces,
+            mpi::require_csr(source.node_faces_offsets, source.node_faces,
                                 static_cast<std::size_t>(source.n_nodes_own), "node_faces_offsets");
         if (has(requested, AuxConnType::CellCellsByNode))
-            detail::require_csr(source.cell_cells_node_offsets, source.cell_cells_node,
+            mpi::require_csr(source.cell_cells_node_offsets, source.cell_cells_node,
                                 static_cast<std::size_t>(source.n_cells_own), "cell_cells_node_offsets");
     }
 };
@@ -231,35 +231,35 @@ private:
         const auto faces = static_cast<std::size_t>(mesh.n_faces);
         const auto cells = static_cast<std::size_t>(mesh.n_cells);
         if (has(requested, AuxGeomType::FaceCellDistance)) {
-            detail::require_size(source.face_cell_dist, faces, "face_cell_dist");
+            mpi::require_size(source.face_cell_dist, faces, "face_cell_dist");
         }
         if (has(requested, AuxGeomType::FaceCellDistanceVector)) {
-            detail::require_size(source.face_cell_dist_x, faces, "face_cell_dist_x");
-            detail::require_size(source.face_cell_dist_y, faces, "face_cell_dist_y");
-            detail::require_size(source.face_cell_dist_z, faces, "face_cell_dist_z");
+            mpi::require_size(source.face_cell_dist_x, faces, "face_cell_dist_x");
+            mpi::require_size(source.face_cell_dist_y, faces, "face_cell_dist_y");
+            mpi::require_size(source.face_cell_dist_z, faces, "face_cell_dist_z");
         }
         if (has(requested, AuxGeomType::FaceCellDistanceInv)) {
-            detail::require_size(source.face_cell_dist_inv, faces, "face_cell_dist_inv");
+            mpi::require_size(source.face_cell_dist_inv, faces, "face_cell_dist_inv");
         }
         if (has(requested, AuxGeomType::FaceInterpolationWeights)) {
-            detail::require_size(source.face_interp_weight, faces, "face_interp_weight");
+            mpi::require_size(source.face_interp_weight, faces, "face_interp_weight");
         }
         if (has(requested, AuxGeomType::FaceNonOrthogonalityVector)) {
-            detail::require_size(source.face_non_ortho_x, faces, "face_non_ortho_x");
-            detail::require_size(source.face_non_ortho_y, faces, "face_non_ortho_y");
-            detail::require_size(source.face_non_ortho_z, faces, "face_non_ortho_z");
+            mpi::require_size(source.face_non_ortho_x, faces, "face_non_ortho_x");
+            mpi::require_size(source.face_non_ortho_y, faces, "face_non_ortho_y");
+            mpi::require_size(source.face_non_ortho_z, faces, "face_non_ortho_z");
         }
         if (has(requested, AuxGeomType::FaceNormalDistance)) {
-            detail::require_size(source.face_normal_dist, faces, "face_normal_dist");
+            mpi::require_size(source.face_normal_dist, faces, "face_normal_dist");
         }
         if (has(requested, AuxGeomType::FaceNormalDistanceInv)) {
-            detail::require_size(source.face_normal_dist_inv, faces, "face_normal_dist_inv");
+            mpi::require_size(source.face_normal_dist_inv, faces, "face_normal_dist_inv");
         }
         if (has(requested, AuxGeomType::FaceAreaOverNormalDistance)) {
-            detail::require_size(source.face_area_over_normal_dist, faces, "face_area_over_normal_dist");
+            mpi::require_size(source.face_area_over_normal_dist, faces, "face_area_over_normal_dist");
         }
         if (has(requested, AuxGeomType::WallDistance)) {
-            detail::require_size(source.cell_wall_dist, cells, "cell_wall_dist");
+            mpi::require_size(source.cell_wall_dist, cells, "cell_wall_dist");
         }
     }
 };

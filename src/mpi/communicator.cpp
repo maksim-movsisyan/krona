@@ -11,12 +11,9 @@ namespace krona::mpi {
 CommView::CommView(MPI_Comm comm, std::source_location where) noexcept : comm_(comm)
 {
     // Empty views are valid even outside MPI's active lifetime.
-    if (is_null()) {
-        return;
-    }
-    if (!is_active()) {
-        fatal("Creating a communicator view requires active MPI", where);
-    }
+    if (is_null()) return;
+     
+    require(is_active(),"Creating a communicator view requires active MPI", where);
 
     // Cache metadata without modifying the borrowed error handler.
     check(MPI_Comm_rank(comm_, &rank_), "MPI_Comm_rank", where);
@@ -75,9 +72,7 @@ Comm& Comm::operator=(Comm&& other) noexcept
 Comm Comm::duplicate(CommView parent, std::source_location where) noexcept
 {
     // Check the lifetime boundary before entering the collective operation.
-    if (parent.is_null() || !is_active()) {
-        fatal("Duplicating a communicator requires a live parent and active MPI", where);
-    }
+    require(!parent.is_null() && is_active(),"Duplicating a communicator requires a live parent and active MPI", where);
 
     MPI_Comm comm = MPI_COMM_NULL;
     check(MPI_Comm_dup(parent.native(), &comm), "MPI_Comm_dup", where);
@@ -92,12 +87,8 @@ Comm Comm::split(
     std::source_location where) noexcept
 {
     // Every parent rank participates, including excluded ranks.
-    if (parent.is_null() || !is_active()) {
-        fatal("Splitting a communicator requires a live parent and active MPI", where);
-    }
-    if (color < 0 && color != MPI_UNDEFINED) {
-        fatal("Split color must be nonnegative or MPI_UNDEFINED", where);
-    }
+    require(!parent.is_null() && is_active(),"Splitting a communicator requires a live parent and active MPI", where);
+    require(color >= 0 || color == MPI_UNDEFINED, "Split color must be nonnegative or MPI_UNDEFINED", where);
 
     MPI_Comm comm = MPI_COMM_NULL;
     check(MPI_Comm_split(parent.native(), color, key, &comm), "MPI_Comm_split", where);
@@ -108,9 +99,7 @@ Comm Comm::split(
 Comm Comm::adopt(MPI_Comm& comm, std::source_location where) noexcept
 {
     // Predefined handles are borrowed and must never be freed by an owner.
-    if (comm == MPI_COMM_WORLD || comm == MPI_COMM_SELF) {
-        fatal("Predefined communicators cannot be adopted", where);
-    }
+    require(comm != MPI_COMM_WORLD && comm != MPI_COMM_SELF,"Predefined communicators cannot be adopted", where);
 
     Comm owner{comm, where};
     // Remove the raw source handle to make the ownership transfer explicit.
@@ -127,12 +116,8 @@ void Comm::close(std::source_location where) noexcept
     }
 
     // Never call MPI_Comm_free after MPI_Finalize or during exception unwinding.
-    if (!is_active()) {
-        fatal("An owned communicator must be closed before MPI_Finalize", where);
-    }
-    if (std::uncaught_exceptions() != 0) {
-        fatal("Cannot free an owned communicator during exception unwinding", where);
-    }
+    require(is_active(),"An owned communicator must be closed before MPI_Finalize", where);
+    require(std::uncaught_exceptions() == 0,"Cannot free an owned communicator during exception unwinding", where);
 
     MPI_Comm comm = view_.native();
     check(MPI_Comm_free(&comm), "MPI_Comm_free", where);

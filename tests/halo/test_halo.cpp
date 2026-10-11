@@ -3,7 +3,7 @@
 #include <krona/fields/fields_manager.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
-
+#include <krona/mpi/communicator.hpp>
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -58,9 +58,8 @@ Fixture make_fixture(int rank, int ranks, std::string_view mode)
 template<class T>
 void run_exchange(const Exec& exec, std::string_view mode)
 {
-    int rank = 0, ranks = 0;
-    krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "MPI_Comm_rank");
-    krona::mpi::check(MPI_Comm_size(MPI_COMM_WORLD, &ranks), "MPI_Comm_size");
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    int rank = comm.rank(), ranks = comm.size();
     equal(ranks, mode == "multi_peer" || mode == "isolated" ? 3 : 2, "Expected MPI rank count");
     const auto fixture = make_fixture(rank, ranks, mode);
     MeshStorage<> mesh(fixture.mesh, {.data = MeshData::Halo}, exec);
@@ -73,7 +72,7 @@ void run_exchange(const Exec& exec, std::string_view mode)
     const auto tensor = fields.template add_field<T, 9, Kokkos::LayoutRight>("tensor", Location::Cell);
 
     // Two independent groups are active together; finish order differs from start order.
-    krona::halo::Exchange<T> primary(mesh.view(), mesh.halo_plan(), MPI_COMM_WORLD, 910, exec);
+    krona::halo::Exchange<T> primary(mesh.view(), mesh.halo_plan(), comm, 910, exec);
     primary.add_field(scalar);
     primary.add_field(vector);
     primary.prepare();
@@ -81,8 +80,7 @@ void run_exchange(const Exec& exec, std::string_view mode)
     // CPU direct mode is safe; GPU tests keep the portable host-staging contract.
     constexpr auto secondary_transfer = std::is_same_v<Memory, Kokkos::HostSpace>
         ? krona::halo::Transfer::DeviceDirect : krona::halo::Transfer::HostStaged;
-    krona::halo::Exchange<T> secondary(mesh.view(), mesh.halo_plan(), MPI_COMM_WORLD, 911, exec,
-                                     secondary_transfer);
+    krona::halo::Exchange<T> secondary(mesh.view(), mesh.halo_plan(), comm, 911, exec, secondary_transfer);
     for (int c = 0; c < 9; ++c) secondary.add_component(tensor.component(c));
     secondary.prepare();
     equal(primary.component_count(), std::size_t{4}, "Primary group has four scalar planes");
@@ -139,7 +137,7 @@ void run_exchange(const Exec& exec, std::string_view mode)
 
     // A started exchange must be drained safely by its destructor.
     {
-        krona::halo::Exchange<T> temporary(mesh.view(), mesh.halo_plan(), MPI_COMM_WORLD, 912, exec);
+        krona::halo::Exchange<T> temporary(mesh.view(), mesh.halo_plan(), comm, 912, exec);
         temporary.add_field(scalar);
         temporary.prepare();
         temporary.start();
@@ -161,11 +159,10 @@ void loopback(const Exec& exec)
     int ranks = 0;
     krona::mpi::check(MPI_Comm_size(MPI_COMM_WORLD, &ranks), "MPI_Comm_size");
     equal(ranks, 1, "Loopback test uses one MPI process");
-    struct TestComm {
-        MPI_Comm value = MPI_COMM_NULL;
-        TestComm() { krona::mpi::check(MPI_Comm_split(MPI_COMM_WORLD, 0, 0, &value), "MPI_Comm_split"); }
-        ~TestComm() { krona::mpi::check(MPI_Comm_free(&value), "MPI_Comm_free"); }
-    } test_comm;
+
+    krona::mpi::Comm communitcator = krona::mpi::Comm::split(krona::mpi::CommView::world(), 0, 0);
+    krona::mpi::CommView comm = communitcator.view();
+    
     using Memory = typename Exec::memory_space;
     Kokkos::View<Index*, Memory> send("test/send_map", 3), recv("test/recv_map", 3);
     auto send_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, send);
@@ -185,7 +182,7 @@ void loopback(const Exec& exec)
     const HaloPlanView plan{peers, offsets, offsets};
     krona::fields::FieldsManager<> fields({3, 6, 0, 0}, exec);
     const auto field = fields.add_field<Real, 3>("loopback", krona::fields::FieldLocation::Cell);
-    krona::halo::Exchange<> halo(mesh, plan, test_comm.value, 913, exec);
+    krona::halo::Exchange<> halo(mesh, plan, comm, 913, exec);
     halo.add_field(field);
     halo.prepare();
     Kokkos::parallel_for("test/fill_loopback", Policy(exec, 0, 6),

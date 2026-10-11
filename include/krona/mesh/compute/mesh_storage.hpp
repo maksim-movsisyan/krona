@@ -151,27 +151,27 @@ private:
         const std::size_t faces = static_cast<std::size_t>(m.n_faces);
         const std::size_t nodes = static_cast<std::size_t>(m.n_nodes);
         if (has(selected, MeshData::FaceCells)) {
-            detail::require_size(m.face_owner, faces, "face_owner");
-            detail::require_size(m.face_neigh, faces, "face_neigh");
+            mpi::require_size(m.face_owner, faces, "face_owner");
+            mpi::require_size(m.face_neigh, faces, "face_neigh");
         }
         if (has(selected, MeshData::CellGeometry)) {
-            detail::require_size(m.cell_centroid_x, cells, "cell_centroid_x");
-            detail::require_size(m.cell_centroid_y, cells, "cell_centroid_y");
-            detail::require_size(m.cell_centroid_z, cells, "cell_centroid_z");
-            detail::require_size(m.cell_volume, cells, "cell_volume");
+            mpi::require_size(m.cell_centroid_x, cells, "cell_centroid_x");
+            mpi::require_size(m.cell_centroid_y, cells, "cell_centroid_y");
+            mpi::require_size(m.cell_centroid_z, cells, "cell_centroid_z");
+            mpi::require_size(m.cell_volume, cells, "cell_volume");
         }
         if (has(selected, MeshData::FaceGeometry)) {
-            detail::require_size(m.face_centroid_x, faces, "face_centroid_x");
-            detail::require_size(m.face_centroid_y, faces, "face_centroid_y");
-            detail::require_size(m.face_centroid_z, faces, "face_centroid_z");
-            detail::require_size(m.face_normal_x, faces, "face_normal_x");
-            detail::require_size(m.face_normal_y, faces, "face_normal_y");
-            detail::require_size(m.face_normal_z, faces, "face_normal_z");
-            detail::require_size(m.face_area, faces, "face_area");
+            mpi::require_size(m.face_centroid_x, faces, "face_centroid_x");
+            mpi::require_size(m.face_centroid_y, faces, "face_centroid_y");
+            mpi::require_size(m.face_centroid_z, faces, "face_centroid_z");
+            mpi::require_size(m.face_normal_x, faces, "face_normal_x");
+            mpi::require_size(m.face_normal_y, faces, "face_normal_y");
+            mpi::require_size(m.face_normal_z, faces, "face_normal_z");
+            mpi::require_size(m.face_area, faces, "face_area");
         }
         if (has(selected, MeshData::Halo)) {
-            detail::require_size(m.send_offsets, m.nb_ranks.size() + 1, "send_offsets");
-            detail::require_size(m.recv_offsets, m.nb_ranks.size() + 1, "recv_offsets");
+            mpi::require_size(m.send_offsets, m.nb_ranks.size() + 1, "send_offsets");
+            mpi::require_size(m.recv_offsets, m.nb_ranks.size() + 1, "recv_offsets");
             mpi::require(m.send_offsets.front() == 0 && m.send_offsets.back() == m.send_owned_local.size() &&
                     m.recv_offsets.front() == 0 && m.recv_offsets.back() == m.recv_ghost_local.size(),
                     "MeshStorage: invalid halo CSR bounds");
@@ -189,18 +189,18 @@ private:
             }
         }
         if (has(selected, MeshData::CellNodes)) {
-            detail::require_size(m.cell_type, cells, "cell_type");
-            detail::require_csr(m.cell_nodes_offsets, m.cell_nodes, cells, "cell_nodes_offsets");
+            mpi::require_size(m.cell_type, cells, "cell_type");
+            mpi::require_csr(m.cell_nodes_offsets, m.cell_nodes, cells, "cell_nodes_offsets");
         }
         if (has(selected, MeshData::NodeCoordinates)) {
-            detail::require_size(m.node_x, nodes, "node_x");
-            detail::require_size(m.node_y, nodes, "node_y");
-            detail::require_size(m.node_z, nodes, "node_z");
+            mpi::require_size(m.node_x, nodes, "node_x");
+            mpi::require_size(m.node_y, nodes, "node_y");
+            mpi::require_size(m.node_z, nodes, "node_z");
         }
         if (has(selected, MeshData::FaceNodes)) {
-            detail::require_size(m.face_type, faces, "face_type");
-            detail::require_size(m.face_local_index, faces, "face_local_index");
-            detail::require_csr(m.face_nodes_offsets, m.face_nodes, faces, "face_nodes_offsets");
+            mpi::require_size(m.face_type, faces, "face_type");
+            mpi::require_size(m.face_local_index, faces, "face_local_index");
+            mpi::require_csr(m.face_nodes_offsets, m.face_nodes, faces, "face_nodes_offsets");
         }
     }
 };
