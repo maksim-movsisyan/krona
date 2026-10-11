@@ -16,7 +16,7 @@ public:
         : sizes_(sizes), exec_(exec)
     {
         detail::require_kokkos();
-        detail::require(sizes_.own_cells <= sizes_.cells, "Fields: owned cells exceed total cells");
+        mpi::require(sizes_.own_cells <= sizes_.cells, "Fields: owned cells exceed total cells");
     }
     FieldsManager(const FieldsManager&) = delete;
     FieldsManager& operator=(const FieldsManager&) = delete;
@@ -31,7 +31,7 @@ public:
     auto add_field(const std::string& name, FieldLocation location,
                    FieldInitialization initialization = FieldInitialization::Zero)
     {
-        detail::require(location != FieldLocation::Custom, "Custom fields require an explicit size");
+        mpi::require(location != FieldLocation::Custom, "Custom fields require an explicit size");
         return add_field<T, Components, Layout>(name, entity_count(location), location, initialization);
     }
 
@@ -44,7 +44,7 @@ public:
         if (registry_.contains(name)) detail::field_error(name, "duplicate field");
         if (location != FieldLocation::Custom && count != entity_count(location))
             detail::field_error(name, "size does not match field location");
-        detail::require(initialization == FieldInitialization::Zero ||
+        mpi::require(initialization == FieldInitialization::Zero ||
                         initialization == FieldInitialization::Uninitialized,
                         "Fields: invalid initialization mode");
         using Storage = FieldStorage<T, Components, Exec, Layout>;
@@ -148,6 +148,11 @@ public:
             source.extent(1) != destination.extent(1))
             detail::field_error(name, "host upload shape mismatch");
         Kokkos::deep_copy(exec_, destination, source);
+    }
+
+    void fence() const
+    {
+        exec_.fence("KRONA fields: synchronization");
     }
 
 private:

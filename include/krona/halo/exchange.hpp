@@ -1,5 +1,6 @@
 #pragma once
 
+#include "krona/mpi/error.hpp"
 #include <krona/fields/fields_view.hpp>
 #include <krona/halo/detail/types.hpp>
 #include <krona/mesh/compute/halo_plan.hpp>
@@ -7,7 +8,6 @@
 #include <krona/mpi/context.hpp>
 
 #include <algorithm>
-#include <exception>
 #include <limits>
 #include <vector>
 
@@ -76,27 +76,27 @@ public:
           n_own_(mesh.sizes.n_own), n_cells_(mesh.sizes.n_cells),
           send_map_(mesh.halo.send_owned_local), recv_map_(mesh.halo.recv_ghost_local)
     {
-        detail::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Halo requires active Kokkos");
-        detail::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
-        detail::require(mesh.has(mesh::compute::MeshData::Halo), "Halo maps were not selected");
-        detail::require(n_own_ >= 0 && n_cells_ >= n_own_, "Halo: invalid cell counts");
-        detail::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect,
+        mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Halo requires active Kokkos");
+        mpi::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
+        mpi::require(mesh.has(mesh::compute::MeshData::Halo), "Halo maps were not selected");
+        mpi::require(n_own_ >= 0 && n_cells_ >= n_own_, "Halo: invalid cell counts");
+        mpi::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect,
                         "Halo: invalid transfer mode");
 
         int inter = 0, size = 0, flag = 0;
         int* tag_limit = nullptr;
         mpi::check(MPI_Comm_test_inter(comm_, &inter), "MPI_Comm_test_inter");
-        detail::require(inter == 0, "Halo supports intracommunicators only");
+        mpi::require(inter == 0, "Halo supports intracommunicators only");
         mpi::check(MPI_Comm_size(comm_, &size), "MPI_Comm_size");
         mpi::check(MPI_Comm_get_attr(comm_, MPI_TAG_UB, &tag_limit, &flag), "MPI_Comm_get_attr");
         // In the MPI world model, predefined environmental attributes are guaranteed on WORLD.
         if (flag == 0)
             mpi::check(MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &tag_limit, &flag),
                        "MPI_Comm_get_attr(MPI_COMM_WORLD)");
-        detail::require(flag != 0 && tag_limit != nullptr && tag >= 0 && tag <= *tag_limit,
+        mpi::require(flag != 0 && tag_limit != nullptr && tag >= 0 && tag <= *tag_limit,
                         "Halo: tag is outside the communicator's valid range");
         const auto count = plan.n_neighbors();
-        detail::require(count <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 2),
+        mpi::require(count <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 2),
                         "Halo: too many MPI requests");
         validate_offsets(plan.send_offsets, count, send_map_.extent(0));
         validate_offsets(plan.recv_offsets, count, recv_map_.extent(0));
@@ -105,13 +105,13 @@ public:
         ranks.reserve(count);
         for (std::size_t p = 0; p < count; ++p) {
             const int rank = plan.nb_ranks[p];
-            detail::require(rank >= 0 && rank < size, "Halo: peer rank is outside communicator");
+            mpi::require(rank >= 0 && rank < size, "Halo: peer rank is outside communicator");
             ranks.push_back(rank);
             peers_.push_back({rank, {plan.send_offsets[p], plan.send_count(p)},
                                    {plan.recv_offsets[p], plan.recv_count(p)}, 0, 0});
         }
         std::sort(ranks.begin(), ranks.end());
-        detail::require(std::adjacent_find(ranks.begin(), ranks.end()) == ranks.end(), "Halo: duplicate peer rank");
+        mpi::require(std::adjacent_find(ranks.begin(), ranks.end()) == ranks.end(), "Halo: duplicate peer rank");
         datatype_ = detail::datatype<T>();
     }
 
@@ -129,8 +129,8 @@ public:
     {
         static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible,
                       "Execution space cannot access this field");
-        detail::require(!prepared_, "Halo: registration is closed after prepare");
-        detail::require(field.size() >= static_cast<std::size_t>(n_cells_),
+        mpi::require(!prepared_, "Halo: registration is closed after prepare");
+        mpi::require(field.size() >= static_cast<std::size_t>(n_cells_),
                         "Halo fields must contain all owned and ghost cells");
         for (int c = 0; c < N; ++c) add_component(field.component(c));
     }
@@ -142,15 +142,15 @@ public:
         static_assert(Kokkos::is_view<View>::value && View::rank == 1);
         static_assert(std::is_same_v<typename View::value_type, T>);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
-        detail::require(!prepared_, "Halo: registration is closed after prepare");
-        detail::require(component.extent(0) >= static_cast<std::size_t>(n_cells_),
+        mpi::require(!prepared_, "Halo: registration is closed after prepare");
+        mpi::require(component.extent(0) >= static_cast<std::size_t>(n_cells_),
                         "Halo components must contain all owned and ghost cells");
         const detail::Component<T> descriptor{component.data(), component.stride(0)};
         if (component.extent(0) != 0) {
-            detail::require(descriptor.data != nullptr && descriptor.stride != 0,
+            mpi::require(descriptor.data != nullptr && descriptor.stride != 0,
                             "Halo: component requires valid storage and a positive stride");
             for (const auto& previous : registered_)
-                detail::require(previous.data != descriptor.data, "Halo: duplicate field component");
+                mpi::require(previous.data != descriptor.data, "Halo: duplicate field component");
         }
         registered_.push_back(descriptor);
         unit_stride_ = unit_stride_ && descriptor.stride == 1;
@@ -159,8 +159,8 @@ public:
     /// @brief Allocates reusable buffers and validates maps; local, not collective.
     void prepare()
     {
-        detail::require(!prepared_, "Halo: prepare was already called");
-        detail::require(!registered_.empty(), "Halo: register at least one field");
+        mpi::require(!prepared_, "Halo: prepare was already called");
+        mpi::require(!registered_.empty(), "Halo: register at least one field");
         const auto width = registered_.size();
         const auto send_values = detail::product(send_map_.extent(0), width);
         const auto recv_values = detail::product(recv_map_.extent(0), width);
@@ -170,7 +170,7 @@ public:
             const auto send = detail::product(peer.send.count, width);
             const auto recv = detail::product(peer.recv.count, width);
             const std::size_t limit = static_cast<std::size_t>(std::numeric_limits<int>::max());
-            detail::require(send <= limit && recv <= limit,
+            mpi::require(send <= limit && recv <= limit,
                             "Halo: peer payload exceeds MPI-3 int count; split the group");
             peer.send_values = static_cast<int>(send);
             peer.recv_values = static_cast<int>(recv);
@@ -191,17 +191,17 @@ public:
             }
         });
         for (std::size_t i = 0; i < send_host.extent(0); ++i)
-            detail::require(send_host(i) >= 0 && send_host(i) < n_own_,
+            mpi::require(send_host(i) >= 0 && send_host(i) < n_own_,
                             "Halo: send map must reference owned cells");
         std::vector<LocalIndex> destinations;
         destinations.reserve(recv_host.extent(0));
         for (std::size_t i = 0; i < recv_host.extent(0); ++i) {
-            detail::require(recv_host(i) >= n_own_ && recv_host(i) < n_cells_,
+            mpi::require(recv_host(i) >= n_own_ && recv_host(i) < n_cells_,
                             "Halo: receive map must reference ghost cells");
             destinations.push_back(recv_host(i));
         }
         std::sort(destinations.begin(), destinations.end());
-        detail::require(std::adjacent_find(destinations.begin(), destinations.end()) == destinations.end(),
+        mpi::require(std::adjacent_find(destinations.begin(), destinations.end()) == destinations.end(),
                         "Halo: receive map contains duplicate ghost cells");
 
         send_ = Buffer(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/send"), send_values);
@@ -231,11 +231,11 @@ public:
     /// Producers on another execution-space instance must be synchronized by the caller.
     void start()
     {
-        detail::require(prepared_, "Halo: prepare must precede start");
-        detail::require(state_ != State::Communicating, "Halo: exchange is already active");
+        mpi::require(prepared_, "Halo: prepare must precede start");
+        mpi::require(state_ != State::Communicating, "Halo: exchange is already active");
         if (state_ == State::Unpacking) wait(); // Previous unpack still owns the receive buffer.
         state_ = State::Communicating;
-        try {
+        mpi::guarded([&](){
             for (std::size_t p = 0; p < peers_.size(); ++p) {
                 const auto& peer = peers_[p];
                 if (peer.recv_values == 0) continue;
@@ -256,16 +256,15 @@ public:
                     peer.send_values, datatype_, peer.rank, tag_, comm_,
                     &requests_[peers_.size() + p]), "MPI_Isend");
             }
-        } catch (const std::exception& error) { mpi::fatal(error.what()); }
-          catch (...) { mpi::fatal("Halo: failed to start exchange"); }
+        });
     }
 
     /// @brief Waits for MPI, then queues receive upload and ghost scatter on exec.
     /// Subsequent kernels on this same instance observe updated ghosts in order.
     void finish_async()
     {
-        detail::require(state_ == State::Communicating, "Halo: no active MPI exchange");
-        try {
+        mpi::require(state_ == State::Communicating, "Halo: no active MPI exchange");
+        mpi::guarded([&](){
             if (!requests_.empty())
                 mpi::check(MPI_Waitall(static_cast<int>(requests_.size()), requests_.data(),
                                        MPI_STATUSES_IGNORE), "MPI_Waitall");
@@ -275,8 +274,7 @@ public:
                     if (transfer_ == Transfer::HostStaged) Kokkos::deep_copy(exec_, recv_, recv_host_);
                 if (unit_stride_) unpack<true>(); else unpack<false>();
             } else state_ = State::Idle;
-        } catch (const std::exception& error) { mpi::fatal(error.what()); }
-          catch (...) { mpi::fatal("Halo: failed to finish exchange"); }
+        });
     }
 
     /// @brief Completes outstanding communication and makes ghost values ready for external users.
@@ -284,9 +282,7 @@ public:
     {
         if (state_ == State::Communicating) finish_async();
         if (state_ == State::Unpacking) {
-            try { exec_.fence("KRONA halo: ghost values ready"); }
-            catch (const std::exception& error) { mpi::fatal(error.what()); }
-            catch (...) { mpi::fatal("Halo: failed to synchronize unpack"); }
+            mpi::guarded([&](){exec_.fence("KRONA halo: ghost values ready");});
             state_ = State::Idle;
         }
     }
@@ -321,10 +317,10 @@ private:
                                  std::size_t peers, std::size_t entries)
     {
         if (peers == 0 && offsets.empty()) {
-            detail::require(entries == 0, "Halo: map entries without peers");
+            mpi::require(entries == 0, "Halo: map entries without peers");
             return;
         }
-        detail::require(offsets.size() == peers + 1 && offsets.front() == 0 &&
+        mpi::require(offsets.size() == peers + 1 && offsets.front() == 0 &&
                         offsets.back() == entries && std::is_sorted(offsets.begin(), offsets.end()),
                         "Halo: invalid peer offsets");
     }

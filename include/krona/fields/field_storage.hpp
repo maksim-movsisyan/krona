@@ -22,13 +22,6 @@ struct FieldSizes {
 
 namespace detail {
 
-// Contract failures abort the MPI job; successful checks perform no MPI calls.
-inline void require(bool condition, const char* message,
-                    std::source_location where = std::source_location::current()) noexcept
-{
-    if (!condition) [[unlikely]] krona::mpi::fatal(message, where);
-}
-
 [[noreturn]] inline void field_error(std::string_view name, const char* reason,
                                     std::source_location where = std::source_location::current()) noexcept
 {
@@ -40,7 +33,7 @@ inline void require(bool condition, const char* message,
 
 inline void require_kokkos() noexcept
 {
-    require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
+    mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
             "Fields require active Kokkos");
 }
 
@@ -89,7 +82,7 @@ public:
     {
         detail::require_kokkos();
         constexpr auto bytes_per_entity = sizeof(T) * static_cast<std::size_t>(Components);
-        detail::require(count <= std::numeric_limits<std::size_t>::max() / bytes_per_entity,
+        mpi::require(count <= std::numeric_limits<std::size_t>::max() / bytes_per_entity,
                         "Field allocation size overflows size_t");
         buffer_ = buffer_type(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, std::string{this->name()}), count);
     }
@@ -103,9 +96,13 @@ public:
     [[nodiscard]] int component_count() const noexcept override { return Components; }
     /// @brief Allocated value bytes, including layout padding; excludes metadata.
     [[nodiscard]] std::size_t byte_size() const noexcept override { return buffer_.span() * sizeof(T); }
-    [[nodiscard]] view_type view() noexcept { return view_type{typename view_type::view_type{buffer_}}; }
-    [[nodiscard]] const_view_type view() const noexcept
-    { return const_view_type{typename const_view_type::view_type{buffer_}}; }
+
+    
+    [[nodiscard]] view_type view() & noexcept { return view_type{typename view_type::view_type{buffer_}}; }
+    [[nodiscard]] view_type view() && = delete;
+
+    [[nodiscard]] const_view_type view() const & noexcept { return const_view_type{typename const_view_type::view_type{buffer_}}; }
+    [[nodiscard]] const_view_type view() const && = delete;
 
     /// @brief Enqueues a fill on exec; caller synchronizes before external access.
     void fill(const Exec& exec, const T& value)

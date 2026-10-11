@@ -1,25 +1,18 @@
 #pragma once
 
-#include "krona/mpi/datatype.hpp"
-#include <Kokkos_Core.hpp>
+#include <krona/mpi/datatype.hpp>
 #include <krona/mpi/error.hpp>
+#include <Kokkos_Core.hpp>
 
 #include <cstddef>
 #include <limits>
-#include <source_location>
 #include <utility>
 
 namespace krona::halo::detail {
 
-inline void require(bool condition, const char* message,
-                    std::source_location where = std::source_location::current()) noexcept
-{
-    if (!condition) [[unlikely]] mpi::fatal(message, where);
-}
-
 inline std::size_t product(std::size_t a, std::size_t b)
 {
-    require(b == 0 || a <= std::numeric_limits<std::size_t>::max() / b,
+    mpi::require(b == 0 || a <= std::numeric_limits<std::size_t>::max() / b,
             "Halo: payload size overflows size_t");
     return a * b;
 }
