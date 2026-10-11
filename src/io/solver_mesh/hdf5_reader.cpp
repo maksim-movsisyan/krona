@@ -16,19 +16,19 @@ mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView
     auto properties = collective_transfer();
 
     // Check the schema and build widths before allocating or converting mesh payloads.
-    require(H5Lexists(file.get(), "meta/header", H5P_DEFAULT) > 0,
+    mpi::require(H5Lexists(file.get(), "meta/header", H5P_DEFAULT) > 0,
             "Unsupported KRONA mesh format; regenerate the mesh with the current writer");
     std::array<U64, header_size> header{};
     read(file.get(), properties.get(), "meta/header", header.size(), 0, std::span{header});
-    require(header[0] == magic && header[1] == version,
+    mpi::require(header[0] == magic && header[1] == version,
             "Unsupported KRONA mesh format; regenerate the mesh with the current writer");
-    require(header[2] == static_cast<U64>(comm.size()),
+    mpi::require(header[2] == static_cast<U64>(comm.size()),
             "Saved mesh requires the original MPI size; a different size needs repartitioning");
-    require((header[3] == 32 || header[3] == 64) && header[3] <= sizeof(LocalIndex) * 8 &&
+    mpi::require((header[3] == 32 || header[3] == 64) && header[3] <= sizeof(LocalIndex) * 8 &&
             (header[4] == 32 || header[4] == 64) && header[4] <= sizeof(GlobalIndex) * 8 &&
             (header[5] == 32 || header[5] == 64) && header[5] == sizeof(GeometryReal) * 8 && header[15] == 64,
             "Mesh file needs matching geometry precision and equally wide or wider index types");
-    require(header[6] < static_cast<U64>(std::numeric_limits<mesh::PatchId>::max()),
+    mpi::require(header[6] < static_cast<U64>(std::numeric_limits<mesh::PatchId>::max()),
             "Too many boundary patches in the mesh file");
 
     std::vector<int> part2rank(static_cast<std::size_t>(comm.size()));
@@ -41,7 +41,7 @@ mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView
          std::span{directory});
     const Layout layout{directory, part, comm.size()};
     const auto row = std::span<const U64>{directory}.subspan(static_cast<std::size_t>(part) * row_size, row_size);
-    require(row[owned] <= row[cells] && row[owned_nodes] <= row[nodes] &&
+    mpi::require(row[owned] <= row[cells] && row[owned_nodes] <= row[nodes] &&
             row[internal_faces] <= row[inner_faces] && row[inner_faces] <= row[faces] && row[grouped] == 1 &&
             row[cell_offsets] == row[cells] + 1 && row[face_offsets] == row[faces] + 1 &&
             row[peer_offsets] == row[peers] + 1 && row[patch_offsets] == header[6] + 1 &&
@@ -68,14 +68,14 @@ mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView
     // Shared string metadata is small and replicated; mesh payloads remain distributed.
     std::vector<U64> string_offsets;
     std::vector<std::uint8_t> string_bytes;
-    require(header[6] <= (std::numeric_limits<U64>::max() - 1) / 3, "Patch string count overflow");
+    mpi::require(header[6] <= (std::numeric_limits<U64>::max() - 1) / 3, "Patch string count overflow");
     resize(string_offsets, header[6] * 3 + 1);
     resize(string_bytes, header[14]);
     read(file.get(), properties.get(), "patches/string_offsets", string_offsets.size(), 0,
          std::span{string_offsets});
     read(file.get(), properties.get(), "patches/string_bytes", string_bytes.size(), 0,
          std::span{string_bytes});
-    require(string_offsets.front() == 0 && string_offsets.back() == string_bytes.size() &&
+    mpi::require(string_offsets.front() == 0 && string_offsets.back() == string_bytes.size() &&
             std::is_sorted(string_offsets.begin(), string_offsets.end()), "Invalid patch string offsets");
     m.patches.resize(static_cast<std::size_t>(header[6]));
     std::size_t string = 0;

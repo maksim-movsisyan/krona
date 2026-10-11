@@ -7,7 +7,6 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <exception>
 #include <limits>
 #include <span>
 #include <tuple>
@@ -200,19 +199,19 @@ void check_halo(const MeshPart& mesh)
 void validate_meshpart(const MeshPart& mesh)
 {
     if (mpi::is_active()) mpi::require_main_thread();
-    try {
+    mpi::guarded([&](){
         check_shape(mesh); check_cells(mesh); check_faces(mesh); check_patches(mesh); check_halo(mesh);
-    } catch (const std::exception& error) { mpi::fatal(error.what()); }
-      catch (...) { mpi::fatal("Unknown exception during local mesh validation"); }
+    });
 }
 
 /// @brief Reduces exact counts, flux-area sums and packed load extrema, then checks conservation.
 MeshStatistics collect_mesh_statistics(const MeshPart& mesh, mpi::CommView comm)
 {
-    if (comm.is_null() || !mpi::is_active()) mpi::fatal("Mesh statistics require active MPI");
+    mpi::require(!comm.is_null() && mpi::is_active(), "Mesh statistics require active MPI");
     mpi::require_main_thread();
-    if (mesh.rank != comm.rank() || mesh.nprocs != comm.size()) mpi::fatal("Mesh statistics communicator mismatch");
-    try {
+    mpi::require(mesh.rank == comm.rank() && mesh.nprocs == comm.size(), "Mesh statistics communicator mismatch");
+
+    return mpi::guarded([&](){
         const auto patches = mesh.patches.size();
         std::vector<std::uint64_t> counts(6 + patches);
         counts[0] = static_cast<std::uint64_t>(mesh.n_own);
@@ -252,8 +251,7 @@ MeshStatistics collect_mesh_statistics(const MeshPart& mesh, mpi::CommView comm)
         result.patch_face_counts.assign(counts.begin() + 6, counts.end());
         result.patch_flux_areas.assign(measures.begin() + 1, measures.end());
         return result;
-    } catch (const std::exception& error) { mpi::fatal(error.what()); }
-      catch (...) { mpi::fatal("Unknown exception during mesh statistics"); }
+    });
 }
 
 } // namespace krona::mesh

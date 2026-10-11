@@ -1,5 +1,4 @@
 #include <krona/mesh/faces.hpp>
-
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/context.hpp>
 #include <krona/mpi/error.hpp>
@@ -9,7 +8,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <limits>
 #include <span>
 #include <utility>
@@ -384,16 +382,12 @@ private:
 /// @brief Builds unique faces and symmetric adjacency from an owned 3D mesh snapshot.
 BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm, const BuildFacesOptions& options)
 {
-    if (comm.is_null() || !mpi::is_active()) mpi::fatal("Face construction requires active MPI");
+    mpi::require(!comm.is_null() && mpi::is_active(), "Face construction requires active MPI");
     mpi::require_main_thread();
-    try {
+    return mpi::guarded([&](){
         // Abort immediately on local allocation failure so peers cannot remain blocked.
         return build(mesh, comm, options);
-    } catch (const std::exception& error) {
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during face construction");
-    }
+    });
 }
  
 } // namespace krona::mesh

@@ -7,7 +7,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
-#include <exception>
 #include <limits>
 #include <numeric>
 #include <tuple>
@@ -379,7 +378,8 @@ void reorder_faces(MeshPart& mesh)
 void reorder_local_mesh(MeshPart& mesh, ReorderMethod method)
 {
     if (mpi::is_active()) mpi::require_main_thread();
-    try {
+
+    mpi::guarded([&]() {
         check_shape(mesh);
         if (method != ReorderMethod::NONE && method != ReorderMethod::RCM && method != ReorderMethod::HILBERT_SFC)
             mpi::fatal("Unknown mesh reordering method");
@@ -389,21 +389,20 @@ void reorder_local_mesh(MeshPart& mesh, ReorderMethod method)
             reorder_cells(mesh, order);
         }
         reorder_faces(mesh);
-    } catch (const std::exception& error) { mpi::fatal(error.what()); }
-      catch (...) { mpi::fatal("Unknown exception during mesh reordering"); }
+    });
 }
 
 /// @brief Applies a custom owned permutation through the same topology/metric update path.
 void reorder_local_mesh(MeshPart& mesh, std::span<const LocalIndex> owned_new_to_old)
 {
     if (mpi::is_active()) mpi::require_main_thread();
-    try {
+
+    mpi::guarded([&](){
         check_shape(mesh);
         mesh.faces_grouped = false;
         reorder_cells(mesh, owned_new_to_old);
         reorder_faces(mesh);
-    } catch (const std::exception& error) { mpi::fatal(error.what()); }
-      catch (...) { mpi::fatal("Unknown exception during custom mesh reordering"); }
+    });
 }
 
 } // namespace krona::mesh

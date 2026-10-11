@@ -13,7 +13,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
 #include <iterator>
 #include <limits>
 #include <span>
@@ -57,19 +56,11 @@ void check_cgio(int code, const char* operation,
     mpi::fatal(message, where);
 }
 
-/// @brief Rejects an unsupported file or an invalid import option locally.
-void ensure(bool condition, const char* message,
-            std::source_location where = std::source_location::current()) noexcept
-{
-    // A fatal local error does not need another status collective.
-    if (!condition) mpi::fatal(message, where);
-}
-
 /// @brief Converts a source count or ID to the project's global index type.
 [[nodiscard]] GlobalIndex global_index(cgsize_t value)
 {
     // Narrow global indices remain an explicit project configuration choice.
-    ensure(value >= 0 && std::in_range<GlobalIndex>(value),
+    mpi::require(value >= 0 && std::in_range<GlobalIndex>(value),
            "CGNS index exceeds GlobalIndex; use 64-bit global indices");
     return static_cast<GlobalIndex>(value);
 }
@@ -77,7 +68,7 @@ void ensure(bool condition, const char* message,
 /// @brief Converts an allocation size without wrapping size_t.
 [[nodiscard]] std::size_t host_size(std::int64_t value)
 {
-    ensure(value >= 0 && std::in_range<std::size_t>(value), "Import size exceeds host address space");
+    mpi::require(value >= 0 && std::in_range<std::size_t>(value), "Import size exceeds host address space");
     return static_cast<std::size_t>(value);
 }
 
@@ -85,7 +76,7 @@ void ensure(bool condition, const char* message,
 void check_local_size(GlobalIndex count)
 {
     // Check once at a distribution boundary, not in element loops.
-    ensure(std::in_range<LocalIndex>(count),
+    mpi::require(std::in_range<LocalIndex>(count),
            "Owned entity count exceeds LocalIndex; use more ranks or 64-bit local indices");
 }
 
@@ -116,7 +107,7 @@ void check_legacy_sections(int file, double parent, int version, std::size_t lev
             std::array<cgsize_t, CGIO_MAX_DIMENSIONS> shape{};
             check_cgio(cgio_get_dimensions(file, id, &dimensions, shape.data()),
                        "Read Elements_t header dimensions");
-            ensure(dimensions == 1 && shape[0] == 2, "Invalid Elements_t header");
+            mpi::require(dimensions == 1 && shape[0] == 2, "Invalid Elements_t header");
             std::array<int, 2> header{};
             check_cgio(cgio_read_all_data_type(file, id, "I4", header.data()),
                        "Read Elements_t header");
@@ -125,7 +116,7 @@ void check_legacy_sections(int file, double parent, int version, std::size_t lev
             if (version >= 3000 && version < 3100 &&
                 type > CGNS_ENUMV(PYRA_5) && type < CGNS_ENUMV(NGON_n))
                 type = type == CGNS_ENUMV(PYRA_14) ? CGNS_ENUMV(PYRA_13) : type - 1;
-            ensure(type != CGNS_ENUMV(MIXED) && type != CGNS_ENUMV(NGON_n) &&
+            mpi::require(type != CGNS_ENUMV(MIXED) && type != CGNS_ENUMV(NGON_n) &&
                        type != CGNS_ENUMV(NFACE_n),
                    "Update legacy CGNS to 4.x first: implicit MIXED/NGON_n/NFACE_n "
                    "conversion violates distributed import");
@@ -149,11 +140,11 @@ void check_source_format(const std::string& path)
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> shape{};
     check_cgio(cgio_get_dimensions(probe, version_id, &dimensions, shape.data()),
                "CGNSLibraryVersion dimensions");
-    ensure(dimensions == 1 && shape[0] == 1, "Invalid CGNSLibraryVersion array");
+    mpi::require(dimensions == 1 && shape[0] == 1, "Invalid CGNSLibraryVersion array");
     float version = 0;
     check_cgio(cgio_read_all_data_type(probe, version_id, "R4", &version),
                "Read CGNSLibraryVersion");
-    ensure(std::isfinite(version) && version > 0, "Invalid CGNSLibraryVersion value");
+    mpi::require(std::isfinite(version) && version > 0, "Invalid CGNSLibraryVersion value");
     if (version < 4.0F) {
         const int source_version = static_cast<int>(version * 1000.0F + 0.5F);
         // CGNS 3.4 already uses modern offsets; uniform legacy sections need no bulk conversion.
@@ -181,7 +172,7 @@ struct File final
         check_cgns(cg_get_cgio(id, &cgio), "cg_get_cgio");
         int type = 0;
         check_cgns(cg_get_file_type(id, &type), "cg_get_file_type");
-        ensure(type == CG_FILE_HDF5, "Parallel import requires HDF5-backed CGNS");
+        mpi::require(type == CG_FILE_HDF5, "Parallel import requires HDF5-backed CGNS");
     }
 
     /// @brief Prevents accidental implicit collective close during exception unwinding.
@@ -230,13 +221,13 @@ struct IntegerArray
     array.id = file.child(parent, name);
     check_cgio(cgio_get_dimensions(file.cgio, array.id, &array.dimensions, array.shape.data()),
                "cgio_get_dimensions");
-    ensure(array.dimensions == dimensions, "Unexpected CGNS integer array rank");
+    mpi::require(array.dimensions == dimensions, "Unexpected CGNS integer array rank");
     char type[3]{};
     check_cgio(cgio_get_data_type(file.cgio, array.id, type), "cgio_get_data_type");
     // Inspect each array independently: I4 connectivity may have I8 MIXED offsets.
-    ensure(std::string_view{type} == "I4" || std::string_view{type} == "I8",
+    mpi::require(std::string_view{type} == "I4" || std::string_view{type} == "I8",
            "Expected an I4/I8 CGNS integer array");
-    if (dimensions == 2) ensure(array.shape[0] == 1, "Expected an unstructured point set");
+    if (dimensions == 2) mpi::require(array.shape[0] == 1, "Expected an unstructured point set");
     return array;
 }
 
@@ -253,7 +244,7 @@ void read_integer(const File& file, const IntegerArray& array, std::int64_t firs
         first = 0;
     }
     const auto axis = static_cast<std::size_t>(array.dimensions - 1);
-    ensure(first >= 0 && first <= array.shape[axis] &&
+    mpi::require(first >= 0 && first <= array.shape[axis] &&
                output.size() <= static_cast<std::uint64_t>(array.shape[axis] - first),
            "CGNS integer slice exceeds its array extent");
     std::array<cgsize_t, 2> start{1, 1}, end{1, 1}, stride{1, 1};
@@ -336,7 +327,7 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
                                         &parent_data), "cg_section_read");
 
         // fill section metadata
-        ensure(first >= 1 && last >= first, "Invalid CGNS section range");
+        mpi::require(first >= 1 && last >= first, "Invalid CGNS section range");
         section.begin = global_index(first - 1);
         section.end = global_index(last);
         section.source_begin = section.begin;
@@ -344,7 +335,7 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
         section.volume = section.end <= cells;
 
         // mixed section can contain elements of different dims (volume + boundary) ???
-        ensure(section.volume || section.begin >= cells || section.type == CGNS_ENUMV(MIXED),
+        mpi::require(section.volume || section.begin >= cells || section.type == CGNS_ENUMV(MIXED),
                "A section crosses the volume/boundary ID boundary");
 
         if (section.type == CGNS_ENUMV(MIXED)) {
@@ -352,8 +343,8 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
         } else {
             // get element dimension
             const int dimension = mesh::dimension(cell_type(section.type));
-            ensure(!section.volume || dimension == mesh.cell_dimension, "Volume section has the wrong dimension");
-            ensure(section.volume || dimension < mesh.cell_dimension, "A volume section lies outside the zone cell range");
+            mpi::require(!section.volume || dimension == mesh.cell_dimension, "Volume section has the wrong dimension");
+            mpi::require(section.volume || dimension < mesh.cell_dimension, "A volume section lies outside the zone cell range");
             section.boundary = dimension == mesh.cell_dimension - 1;
         }
 
@@ -363,17 +354,17 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
             if (section.type == CGNS_ENUMV(MIXED)) {
                 section.offsets = integer_array(file, section_id, "ElementStartOffset", 1);
                 const auto element_count = last - first + 1;
-                ensure(element_count < std::numeric_limits<cgsize_t>::max(),
+                mpi::require(element_count < std::numeric_limits<cgsize_t>::max(),
                        "MIXED offset array size overflow");
-                ensure(section.offsets.shape[0] == element_count + 1,
+                mpi::require(section.offsets.shape[0] == element_count + 1,
                        "Invalid MIXED offset array extent");
             }
             else {
                 const auto arity =
                     static_cast<cgsize_t>(mesh::nodes_per_element(cell_type(section.type)));
-                ensure(last - first + 1 <= std::numeric_limits<cgsize_t>::max() / arity,
+                mpi::require(last - first + 1 <= std::numeric_limits<cgsize_t>::max() / arity,
                        "Section connectivity size overflow");
-                ensure(section.connectivity.shape[0] == (last - first + 1) * arity,
+                mpi::require(section.connectivity.shape[0] == (last - first + 1) * arity,
                        "Invalid uniform connectivity extent");
             }
         }
@@ -395,31 +386,31 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
 
     // loop over all sections
     for (auto &section : metadata.sections) {
-        ensure(section.begin >= previous_end, "Overlapping CGNS section ranges");
+        mpi::require(section.begin >= previous_end, "Overlapping CGNS section ranges");
         previous_end = section.end;
 
         // volume section check
         if (section.volume) {
-            ensure(section.begin == next_cell, "Volume sections must cover CGNS cell IDs without gaps");
+            mpi::require(section.begin == next_cell, "Volume sections must cover CGNS cell IDs without gaps");
             next_cell = section.end;
         }
 
         // boundary section check
         if (section.boundary) {
             section.boundary_offset = boundary_total;
-            ensure(section.end - section.begin <= std::numeric_limits<GlobalIndex>::max() - boundary_total,
+            mpi::require(section.end - section.begin <= std::numeric_limits<GlobalIndex>::max() - boundary_total,
                    "Global boundary count overflow");
             boundary_total += section.end - section.begin;
         }
     }
 
-    ensure(next_cell == cells, "Volume sections do not cover the zone cell range");
+    mpi::require(next_cell == cells, "Volume sections do not cover the zone cell range");
 
     // distribute boundary elements among ranks
     mesh.distribution.boundary_ordinals = Block{boundary_total, file.comm.size()};
     const std::size_t boundary_local = host_size(mesh.distribution.boundary_ordinals.local_size(file.comm.rank()));
 
-    ensure(boundary_local <= static_cast<std::uint64_t>(std::numeric_limits<LocalIndex>::max()),
+    mpi::require(boundary_local <= static_cast<std::uint64_t>(std::numeric_limits<LocalIndex>::max()),
            "Local boundary count exceeds LocalIndex");
     mesh.boundary.global_ids.reserve(boundary_local);
     mesh.boundary.patch_ids.assign(boundary_local, mesh::invalid_patch_id);
@@ -465,15 +456,15 @@ void read_patch_metadata(const File& file, const ReaderOptions& options, ReadRes
              ((mesh.cell_dimension == 3 && location == CGNS_ENUMV(FaceCenter)) ||
               (mesh.cell_dimension == 2 && location == CGNS_ENUMV(EdgeCenter))));
         if (!supported) {
-            ensure(options.unsupported_boundary == UnsupportedBoundary::ignore,
+            mpi::require(options.unsupported_boundary == UnsupportedBoundary::ignore,
                    "Unsupported BC: require PointList/PointRange at FaceCenter (3D) or EdgeCenter " "(2D); absent GridLocation means Vertex");
             result.source.ignored_boundary_conditions.emplace_back(name);
             continue;
         }
 
-        ensure(count >= 0, "Negative BC point count");
+        mpi::require(count >= 0, "Negative BC point count");
         condition.count = count;
-        ensure(mesh.patches.size() < static_cast<std::size_t>(std::numeric_limits<mesh::PatchId>::max()),
+        mpi::require(mesh.patches.size() < static_cast<std::size_t>(std::numeric_limits<mesh::PatchId>::max()),
                "Too many boundary patches");
 
         // set patch id
@@ -497,8 +488,8 @@ void read_patch_metadata(const File& file, const ReaderOptions& options, ReadRes
             point_name = condition.type == CGNS_ENUMV(PointRange) ? "ElementRange" : "ElementList";
         }
         condition.points = integer_array(file, bc_id, point_name, 2);
-        ensure(condition.points.shape[1] == count, "BC point set extent mismatch");
-        ensure((condition.type != CGNS_ENUMV(PointRange) &&
+        mpi::require(condition.points.shape[1] == count, "BC point set extent mismatch");
+        mpi::require((condition.type != CGNS_ENUMV(PointRange) &&
                 condition.type != CGNS_ENUMV(ElementRange)) || count == 2,
                "PointRange must contain two endpoints");
         metadata.bcs.push_back(condition);
@@ -525,20 +516,20 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
     result.source.physical_dimension = mesh.physical_dimension;
 
     // check if mesh is 2D/3D
-    ensure((mesh.cell_dimension == 2 || mesh.cell_dimension == 3) &&
+    mpi::require((mesh.cell_dimension == 2 || mesh.cell_dimension == 3) &&
            mesh.physical_dimension >= mesh.cell_dimension && mesh.physical_dimension <= 3,
            "Expected a 2D/3D CGNS base");
 
     // read zone metadata
     CGNS_ENUMT(ZoneType_t) zone_type{};
     check_cgns(cg_zone_type(f, b, z, &zone_type), "cg_zone_type");
-    ensure(zone_type == CGNS_ENUMV(Unstructured), "Only unstructured zones are implemented");
+    mpi::require(zone_type == CGNS_ENUMV(Unstructured), "Only unstructured zones are implemented");
     std::array<cgsize_t, 9> zone_size{};
     check_cgns(cg_zone_read(f, b, z, name, zone_size.data()), "cg_zone_read");
     result.source.zone_name = name;
 
     const GlobalIndex nodes = global_index(zone_size[0]), cells = global_index(zone_size[1]);
-    ensure(nodes > 0 && cells > 0, "Empty CGNS zones are not supported");
+    mpi::require(nodes > 0 && cells > 0, "Empty CGNS zones are not supported");
 
     // create contiguous nodes and cells distributions
     mesh.distribution = {
@@ -565,15 +556,15 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
             {
                 continue;
             }
-            ensure(type == CGNS_ENUMV(RealSingle) || type == CGNS_ENUMV(RealDouble), "Expected floating-point Cartesian coordinates");
-            ensure(metadata.coordinate_indices[axis] == 0, "Duplicate Cartesian coordinate array");
+            mpi::require(type == CGNS_ENUMV(RealSingle) || type == CGNS_ENUMV(RealDouble), "Expected floating-point Cartesian coordinates");
+            mpi::require(metadata.coordinate_indices[axis] == 0, "Duplicate Cartesian coordinate array");
             metadata.coordinate_indices[axis] = c;
         }
     }
 
     for (int axis = 0; axis < mesh.physical_dimension; ++axis)
     {
-        ensure(metadata.coordinate_indices[static_cast<std::size_t>(axis)] != 0, "Missing named Cartesian coordinate array, SEE IMPLEMENTATION");
+        mpi::require(metadata.coordinate_indices[static_cast<std::size_t>(axis)] != 0, "Missing named Cartesian coordinate array, SEE IMPLEMENTATION");
     }
 
     read_sections(file, options, result, metadata);
@@ -671,7 +662,7 @@ struct LocalSection {
         }
         if (slice.count == 0) slice.first = section.begin;
         const auto n = host_size(slice.count);
-        ensure(n <= std::numeric_limits<std::size_t>::max() / 9,
+        mpi::require(n <= std::numeric_limits<std::size_t>::max() / 9,
                "Local linear connectivity size exceeds host address space");
         if (section.type == CGNS_ENUMV(MIXED)) {
             std::int64_t first = 0, last = 0;
@@ -680,10 +671,10 @@ struct LocalSection {
                          std::span<std::int64_t>{&first, 1});
             read_integer(file, section.offsets, slice.first + slice.count - section.source_begin,
                          std::span<std::int64_t>{&last, 1});
-            ensure(first >= 0 && last >= first && last <= section.connectivity.shape[0],
+            mpi::require(first >= 0 && last >= first && last <= section.connectivity.shape[0],
                    "MIXED offset endpoints exceed connectivity extent");
             const auto records = host_size(last - first);
-            ensure(records >= 2 * n && records - n <= 8 * n,
+            mpi::require(records >= 2 * n && records - n <= 8 * n,
                    "Invalid or unsupported MIXED connectivity size");
             slice.node_count = records - n; // One element-type tag per record.
         } else {
@@ -693,7 +684,7 @@ struct LocalSection {
         const auto target = section.volume ? 0U : 1U;
         slice.element_begin = elements[target];
         slice.node_begin = nodes[target];
-        ensure(slice.node_count <= std::numeric_limits<std::size_t>::max() - nodes[target],
+        mpi::require(slice.node_count <= std::numeric_limits<std::size_t>::max() - nodes[target],
                "Local connectivity allocation overflows size_t");
         elements[target] += n;
         nodes[target] += slice.node_count;
@@ -749,7 +740,7 @@ void read_elements(const File& file, const ReaderOptions& options,
                              static_cast<std::int64_t>(at - section.source_begin) * static_cast<std::int64_t>(arity),
                              destination);
                 for (auto& id : destination) {
-                    ensure(id > 0 && id <= total_nodes, "Connectivity references an invalid node ID");
+                    mpi::require(id > 0 && id <= total_nodes, "Connectivity references an invalid node ID");
                     --id;
                 }
                 for (std::size_t i = 0; i < n; ++i) {
@@ -761,34 +752,34 @@ void read_elements(const File& file, const ReaderOptions& options,
                 offsets.resize(n + 1);
                 read_integer(file, section.offsets, at - section.source_begin,
                              std::span<std::int64_t>{offsets});
-                ensure(offsets.front() >= 0 && offsets.back() >= offsets.front() &&
+                mpi::require(offsets.front() >= 0 && offsets.back() >= offsets.front() &&
                            offsets.back() <= section.connectivity.shape[0],
                        "MIXED offsets exceed connectivity extent");
                 const auto size = host_size(offsets.back() - offsets.front());
-                ensure(size <= 9 * n, "MIXED records exceed supported linear arity");
+                mpi::require(size <= 9 * n, "MIXED records exceed supported linear arity");
                 records.resize(size);
                 read_integer(file, section.connectivity, offsets.front(),
                              std::span<std::int64_t>{records});
                 for (std::size_t i = 0; i < n; ++i) {
                     const auto first = offsets[i], last = offsets[i + 1];
-                    ensure(first >= offsets.front() && last > first && last <= offsets.back() &&
+                    mpi::require(first >= offsets.front() && last > first && last <= offsets.back() &&
                                last - first >= 2 && last - first <= 9,
                            "Invalid MIXED record offsets");
                     const auto start = host_size(first - offsets.front());
-                    ensure(std::in_range<int>(records[start]), "Invalid MIXED element type");
+                    mpi::require(std::in_range<int>(records[start]), "Invalid MIXED element type");
                     const auto type = cell_type(static_cast<ElementType>(records[start]));
                     const auto arity = static_cast<std::size_t>(mesh::nodes_per_element(type));
-                    ensure(last - first == static_cast<std::int64_t>(arity + 1) &&
+                    mpi::require(last - first == static_cast<std::int64_t>(arity + 1) &&
                                mesh::dimension(type) == (section.volume ? mesh.cell_dimension
                                                                        : mesh.cell_dimension - 1),
                            "MIXED section has an unsupported type, arity or dimension");
-                    ensure(arity <= slice.node_begin + slice.node_count - node_at,
+                    mpi::require(arity <= slice.node_begin + slice.node_count - node_at,
                            "MIXED offset plan does not match its records");
                     table.types[element_at + i] = type;
                     table.offsets[element_at + i] = node_at;
                     for (std::size_t j = 0; j < arity; ++j) {
                         const auto id = records[start + 1 + j];
-                        ensure(id > 0 && id <= total_nodes, "MIXED connectivity references an invalid node ID");
+                        mpi::require(id > 0 && id <= total_nodes, "MIXED connectivity references an invalid node ID");
                         table.node_ids[node_at++] = static_cast<GlobalIndex>(id - 1);
                     }
                 }
@@ -799,10 +790,10 @@ void read_elements(const File& file, const ReaderOptions& options,
             }
             round += std::min(options.batch_elements, maximum - round);
         }
-        ensure(node_at == slice.node_begin + slice.node_count, "Connectivity does not match its allocation plan");
+        mpi::require(node_at == slice.node_begin + slice.node_count, "Connectivity does not match its allocation plan");
         table.offsets[slice.element_begin + count_local] = node_at;
     }
-    ensure(mesh.cells.size() == host_size(mesh.distribution.cells.local_size(file.comm.rank())) &&
+    mpi::require(mesh.cells.size() == host_size(mesh.distribution.cells.local_size(file.comm.rank())) &&
                mesh.boundary.size() == mesh.boundary.patch_ids.size(), "Imported entity counts do not match ownership");
 }
 
@@ -811,9 +802,9 @@ void read_elements(const File& file, const ReaderOptions& options,
 {
     const auto found = std::upper_bound(metadata.sections.begin(), metadata.sections.end(), id,
         [](GlobalIndex value, const Section& section) { return value < section.begin; });
-    ensure(found != metadata.sections.begin(), "BC references a missing boundary element");
+    mpi::require(found != metadata.sections.begin(), "BC references a missing boundary element");
     const auto& section = *std::prev(found);
-    ensure(section.boundary && id < section.end, "BC references a non-boundary or missing element");
+    mpi::require(section.boundary && id < section.end, "BC references a non-boundary or missing element");
     return section;
 }
 
@@ -822,7 +813,7 @@ void assign_patch(mesh::RawMesh& mesh, std::size_t local, mesh::PatchId patch)
 {
     assert(local < mesh.boundary.size());
     auto& current = mesh.boundary.patch_ids[local];
-    ensure(current == mesh::invalid_patch_id || current == patch,
+    mpi::require(current == mesh::invalid_patch_id || current == patch,
            "Boundary element belongs to conflicting BC patches");
     current = patch;
 }
@@ -845,15 +836,15 @@ void read_boundaries(const File& file, const ReaderOptions& options,
         if (bc.type == CGNS_ENUMV(PointRange) || bc.type == CGNS_ENUMV(ElementRange)) {
             std::array<std::int64_t, 2> range{};
             read_integer(file, bc.points, 0, std::span<std::int64_t>{range});
-            ensure(range[0] >= 1 && range[1] >= 1, "Invalid BC range endpoint");
+            mpi::require(range[0] >= 1 && range[1] >= 1, "Invalid BC range endpoint");
             const auto low = std::min(range[0], range[1]) - 1, high = std::max(range[0], range[1]);
-            ensure(std::in_range<GlobalIndex>(high), "BC range exceeds GlobalIndex");
+            mpi::require(std::in_range<GlobalIndex>(high), "BC range exceeds GlobalIndex");
             std::int64_t covered = 0;
             for (const auto& section : metadata.sections) {
                 const auto first = std::max(low, static_cast<std::int64_t>(section.begin));
                 const auto last = std::min(high, static_cast<std::int64_t>(section.end));
                 if (first >= last) continue;
-                ensure(section.boundary, "BC range references non-boundary elements");
+                mpi::require(section.boundary, "BC range references non-boundary elements");
                 covered += last - first;
                 const auto [own_begin, own_end] = owned_boundary_range(mesh, section);
                 for (auto id = std::max(first, static_cast<std::int64_t>(own_begin));
@@ -862,7 +853,7 @@ void read_boundaries(const File& file, const ReaderOptions& options,
                     assign_patch(mesh, host_size(ordinal - ownership.begin(comm.rank())), bc.patch);
                 }
             }
-            ensure(covered == high - low, "BC range contains missing boundary elements");
+            mpi::require(covered == high - low, "BC range contains missing boundary elements");
             continue;
         }
         const WideBlock points_owner{bc.count, comm.size()};
@@ -875,7 +866,7 @@ void read_boundaries(const File& file, const ReaderOptions& options,
                          std::span<std::int64_t>{points});
             std::fill(counts.begin(), counts.end(), 0);
             for (auto& point : points) {
-                ensure(point >= 1 && std::in_range<GlobalIndex>(point - 1), "Invalid BC point ID");
+                mpi::require(point >= 1 && std::in_range<GlobalIndex>(point - 1), "Invalid BC point ID");
                 const auto id = static_cast<GlobalIndex>(point - 1);
                 point = boundary_ordinal(boundary_section(metadata, id), id);
                 ++counts[static_cast<std::size_t>(ownership.owner(static_cast<GlobalIndex>(point)))];
@@ -907,41 +898,37 @@ void read_boundaries(const File& file, const ReaderOptions& options,
 ReadResult read_parallel(const std::string& path, mpi::CommView comm, const ReaderOptions& options)
 {
     // check if MPI context is active and communicator is not MPI_COMM_NULL
-    ensure(!comm.is_null() && mpi::is_active(), "CGNS import requires active MPI and a live communicator");
+    mpi::require(!comm.is_null() && mpi::is_active(), "CGNS import requires active MPI and a live communicator");
 
     // only main thread can perform parallel read
     mpi::require_main_thread();
 
     // check input parameters
-    ensure(!path.empty() && options.base_index > 0 && options.zone_index > 0,
+    mpi::require(!path.empty() && options.base_index > 0 && options.zone_index > 0,
            "Invalid CGNS path or one-based base/zone index");
-    ensure(options.batch_elements > 0 && options.batch_elements <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
+    mpi::require(options.batch_elements > 0 && options.batch_elements <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 9),
            "Invalid CGNS temporary-buffer batch size");
 
     // open CGNS file 
     File file(path, comm, options);
 
-    try {
-        // prepare output results
+    return mpi::guarded([&]() {
         ReadResult result;
-
-        // read metadata (replicated on each rank)
         Metadata metadata;
+
         read_metadata(file, options, result, metadata);
         read_coordinates(file, options, metadata, result.mesh);
         read_elements(file, options, metadata, result.mesh);
         read_boundaries(file, options, metadata, result.mesh);
-        // Complete all file operations before communication-driven 2D conversion.
+
+        // Close before communication-driven 2D conversion.
         file.close();
         if (result.mesh.cell_dimension == 2)
-            result.extrusion = mesh::extrude_one_layer(result.mesh, comm, options.extrusion);
+            result.extrusion =
+                mesh::extrude_one_layer(result.mesh, comm, options.extrusion);
+
         return result;
-    } catch (const std::exception& error) {
-        // Keep File alive here; never attempt collective close from one rank's unwinding path.
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during CGNS import");
-    }
+    });
 }
 
 } // namespace krona::io::cgns

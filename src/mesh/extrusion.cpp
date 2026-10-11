@@ -8,7 +8,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <exception>
 #include <limits>
 #include <span>
 #include <utility>
@@ -18,25 +17,17 @@ namespace krona::mesh {
 namespace {
 using Block = distribution::BlockDistribution<GlobalIndex>;
 
-/// @brief Rejects invalid geometry or an unrepresentable output size.
-void ensure(bool condition, const char* message,
-            std::source_location where = std::source_location::current()) noexcept
-{
-    // Abort WORLD directly; no status collective is needed on the failure path.
-    if (!condition) mpi::fatal(message, where);
-}
-
 /// @brief Converts a nonnegative entity count to an allocation size.
 [[nodiscard]] std::size_t size(GlobalIndex count)
 {
-    ensure(count >= 0 && std::in_range<std::size_t>(count), "Extrusion size exceeds size_t");
+    mpi::require(count >= 0 && std::in_range<std::size_t>(count), "Extrusion size exceeds size_t");
     return static_cast<std::size_t>(count);
 }
 
 /// @brief Computes a buffer size without overflowing host indices.
 [[nodiscard]] std::size_t product(std::size_t count, std::size_t width)
 {
-    ensure(count <= std::numeric_limits<std::size_t>::max() / width,
+    mpi::require(count <= std::numeric_limits<std::size_t>::max() / width,
            "Extrusion allocation size overflows size_t");
     return count * width;
 }
@@ -47,7 +38,7 @@ void ensure(bool condition, const char* message,
     // MPI 3.1 represents counts and displacements as int.
     const auto limit = static_cast<std::size_t>(std::numeric_limits<int>::max()) /
                        static_cast<std::size_t>(comm.size()) / width;
-    ensure(requested > 0 && limit > 0, "Extrusion batch/communicator exceeds MPI 3.1 limits");
+    mpi::require(requested > 0 && limit > 0, "Extrusion batch/communicator exceeds MPI 3.1 limits");
     return std::min(requested, limit);
 }
 
@@ -77,7 +68,7 @@ struct NodeCache {
     const auto batch = batch_size(comm, requested_batch, 3);
     const auto lo = output_nodes.begin(comm.rank()), hi = output_nodes.end(comm.rank());
     const auto output_count = size(hi - lo);
-    ensure(mesh.cells.node_ids.size() <= cache.ids.max_size() &&
+    mpi::require(mesh.cells.node_ids.size() <= cache.ids.max_size() &&
                output_count <= cache.ids.max_size() - mesh.cells.node_ids.size(),
            "Extrusion node requests exceed host storage");
     cache.ids.reserve(mesh.cells.node_ids.size() + output_count);
@@ -165,7 +156,7 @@ struct NodeCache {
     // Only the owner of cell zero contributes this constant-size geometry sample.
     mpi::allreduce_in_place<mpi::Reduction::sum>(comm, std::span<double>{sample});
     auto normal = options.direction;
-    for (const auto component : normal) ensure(std::isfinite(component), "Invalid extrusion direction");
+    for (const auto component : normal) mpi::require(std::isfinite(component), "Invalid extrusion direction");
     if (normal == std::array<double, 3>{}) {
         std::array<double, 3> a{}, b{};
         for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -181,7 +172,7 @@ struct NodeCache {
             for (auto& component : normal) component = -component;
     }
     const auto norm = std::hypot(normal[0], normal[1], normal[2]);
-    ensure(std::isfinite(norm) && norm > 0, "Degenerate extrusion plane or direction");
+    mpi::require(std::isfinite(norm) && norm > 0, "Degenerate extrusion plane or direction");
     for (auto& component : normal) component /= norm;
     double deviation = 0;
     for (std::size_t i = 0; i < mesh.coordinates.size(); ++i) {
@@ -192,7 +183,7 @@ struct NodeCache {
         deviation = std::max(deviation, std::abs(distance));
     }
     deviation = mpi::allreduce<mpi::Reduction::max>(comm, deviation);
-    ensure(deviation <= options.planarity_tolerance,
+    mpi::require(deviation <= options.planarity_tolerance,
            "Extrusion requires a planar mesh and a direction normal to its plane");
     return normal;
 }
@@ -218,9 +209,9 @@ struct NodeCache {
         const auto turn = (a[1] * b[2] - a[2] * b[1]) * normal[0] +
                           (a[2] * b[0] - a[0] * b[2]) * normal[1] +
                           (a[0] * b[1] - a[1] * b[0]) * normal[2];
-        ensure(std::isfinite(turn) && turn != 0, "Degenerate extrusion cell");
+        mpi::require(std::isfinite(turn) && turn != 0, "Degenerate extrusion cell");
         const int sign = turn > 0 ? 1 : -1;
-        ensure(orientation == 0 || orientation == sign, "Non-convex or folded extrusion QUAD");
+        mpi::require(orientation == 0 || orientation == sign, "Non-convex or folded extrusion QUAD");
         orientation = sign;
     }
     return orientation < 0;
@@ -239,11 +230,11 @@ struct NodeCache {
     const auto begin = output.begin(comm.rank());
     const auto batch = batch_size(comm, requested, width);
     const auto cap_tasks = product(mesh.cells.size(), 2);
-    ensure(mesh.boundary.size() <= std::numeric_limits<std::size_t>::max() - cap_tasks,
+    mpi::require(mesh.boundary.size() <= std::numeric_limits<std::size_t>::max() - cap_tasks,
            "Extrusion boundary task count overflows size_t");
     const auto tasks = mesh.boundary.size() + cap_tasks;
     const auto count = size(output.local_size(comm.rank()));
-    ensure(std::in_range<LocalIndex>(count), "Extrusion owned boundary count exceeds LocalIndex");
+    mpi::require(std::in_range<LocalIndex>(count), "Extrusion owned boundary count exceeds LocalIndex");
     BoundaryTable result;
     result.elements.types.resize(count);
     result.elements.offsets.resize(count + 1);
@@ -332,17 +323,17 @@ struct NodeCache {
 /// @brief Converts a validated import snapshot into one 3D extrusion layer.
 [[nodiscard]] ExtrusionInfo extrude(RawMesh& mesh, mpi::CommView comm, const ExtrusionOptions& options)
 {
-    ensure(mesh.cell_dimension == 2 && (mesh.physical_dimension == 2 || mesh.physical_dimension == 3),
+    mpi::require(mesh.cell_dimension == 2 && (mesh.physical_dimension == 2 || mesh.physical_dimension == 3),
            "Extrusion requires a 2D mesh");
-    ensure(std::isfinite(options.thickness_fraction) && options.thickness_fraction > 0 &&
+    mpi::require(std::isfinite(options.thickness_fraction) && options.thickness_fraction > 0 &&
                std::isfinite(options.planarity_tolerance) && options.planarity_tolerance >= 0 &&
                options.planarity_tolerance < 1, "Invalid extrusion thickness/planarity tolerance");
-    ensure(!options.bottom_patch.empty() && !options.top_patch.empty() && options.bottom_patch != options.top_patch,
+    mpi::require(!options.bottom_patch.empty() && !options.top_patch.empty() && options.bottom_patch != options.top_patch,
            "Invalid extrusion cap names");
-    ensure(mesh.patches.size() <= static_cast<std::size_t>(std::numeric_limits<PatchId>::max()) - 1,
+    mpi::require(mesh.patches.size() <= static_cast<std::size_t>(std::numeric_limits<PatchId>::max()) - 1,
            "Extrusion patch IDs overflow");
     for (const auto& patch : mesh.patches)
-        ensure(patch.name != options.bottom_patch && patch.name != options.top_patch,
+        mpi::require(patch.name != options.bottom_patch && patch.name != options.top_patch,
                "Extrusion cap name collides with an existing patch");
     const auto& dist = mesh.distribution;
     assert(dist.rank == comm.rank() && dist.nodes.parts() == comm.size() &&
@@ -350,7 +341,7 @@ struct NodeCache {
     const auto nodes = dist.nodes.global_size(), cells = dist.cells.global_size();
     const auto boundaries = dist.boundary_ordinals.global_size();
     const auto maximum = std::numeric_limits<GlobalIndex>::max();
-    ensure(nodes > 0 && cells > 0 && nodes <= maximum / 2 && cells <= (maximum - boundaries) / 2,
+    mpi::require(nodes > 0 && cells > 0 && nodes <= maximum / 2 && cells <= (maximum - boundaries) / 2,
            "Extrusion global counts are empty or overflow GlobalIndex");
     assert(mesh.coordinates.size() == size(dist.nodes.local_size(comm.rank())) &&
            mesh.coordinates.y.size() == mesh.coordinates.size() && mesh.coordinates.z.size() == mesh.coordinates.size());
@@ -367,7 +358,7 @@ struct NodeCache {
     for (std::size_t i = 0; i < mesh.coordinates.size(); ++i) {
         const std::array<double, 3> point{mesh.coordinates.x[i], mesh.coordinates.y[i], mesh.coordinates.z[i]};
         for (std::size_t axis = 0; axis < 3; ++axis) {
-            ensure(std::isfinite(point[axis]), "Non-finite extrusion coordinate");
+            mpi::require(std::isfinite(point[axis]), "Non-finite extrusion coordinate");
             low[axis] = std::min(low[axis], point[axis]);
             high[axis] = std::max(high[axis], point[axis]);
         }
@@ -378,16 +369,16 @@ struct NodeCache {
     double length = 0;
     for (std::size_t axis = 0; axis < 3; ++axis) {
         const auto span = high[axis] - low[axis];
-        ensure(std::isfinite(span), "Extrusion bbox span overflows");
+        mpi::require(std::isfinite(span), "Extrusion bbox span overflows");
         length = std::max(length, span);
     }
-    ensure(length > 0, "Degenerate extrusion bbox");
+    mpi::require(length > 0, "Degenerate extrusion bbox");
     GlobalIndex maximum_id = cells - 1;
     for (const auto id : mesh.boundary.global_ids) maximum_id = std::max(maximum_id, id);
     maximum_id = mpi::allreduce<mpi::Reduction::max>(comm, maximum_id);
-    ensure(maximum_id <= maximum - 2 * cells, "Extrusion cap IDs overflow GlobalIndex");
+    mpi::require(maximum_id <= maximum - 2 * cells, "Extrusion cap IDs overflow GlobalIndex");
     const Block output_nodes{2 * nodes, comm.size()}, output_boundary{boundaries + 2 * cells, comm.size()};
-    ensure(std::in_range<LocalIndex>(output_nodes.local_size(comm.rank())), "Extrusion owned nodes exceed LocalIndex");
+    mpi::require(std::in_range<LocalIndex>(output_nodes.local_size(comm.rank())), "Extrusion owned nodes exceed LocalIndex");
     auto cache = fetch_nodes(mesh, output_nodes, comm, options.batch_elements);
     ExtrusionInfo info;
     info.normal = plane_normal(mesh, cache, comm, length, options);
@@ -395,10 +386,10 @@ struct NodeCache {
         [](double left, double right) { return std::abs(left) < std::abs(right); }) - info.normal.begin());
     info.normal_sign = info.normal[static_cast<std::size_t>(info.normal_axis)] < 0 ? -1 : 1;
     const auto h = options.thickness_fraction * length;
-    ensure(std::isfinite(h) && h > 0 && h <= std::numeric_limits<GeometryReal>::max(),
+    mpi::require(std::isfinite(h) && h > 0 && h <= std::numeric_limits<GeometryReal>::max(),
            "Extrusion thickness exceeds GeometryReal");
     info.thickness = static_cast<GeometryReal>(h);
-    ensure(info.thickness > 0, "Extrusion thickness underflows GeometryReal");
+    mpi::require(info.thickness > 0, "Extrusion thickness underflows GeometryReal");
     std::vector<bool> reverse(mesh.cells.size());
     for (std::size_t i = 0; i < mesh.cells.size(); ++i)
         reverse[i] = reverse_cell(cache, mesh.cells.nodes(i), info.normal, length);
@@ -414,9 +405,9 @@ struct NodeCache {
             const auto original = point;
             for (std::size_t axis = 0; axis < 3; ++axis) {
                 point[axis] = static_cast<GeometryReal>(static_cast<double>(point[axis]) + info.thickness * info.normal[axis]);
-                ensure(std::isfinite(point[axis]), "Extrusion coordinate overflows GeometryReal");
+                mpi::require(std::isfinite(point[axis]), "Extrusion coordinate overflows GeometryReal");
             }
-            ensure(point != original, "Extrusion layer collapses at GeometryReal precision");
+            mpi::require(point != original, "Extrusion layer collapses at GeometryReal precision");
         }
         coordinates.x[i] = point[0];
         coordinates.y[i] = point[1];
@@ -456,14 +447,9 @@ struct NodeCache {
 /// @brief Collectively constructs a 3D layer without per-stage status collectives.
 ExtrusionInfo extrude_one_layer(RawMesh& mesh, mpi::CommView comm, const ExtrusionOptions& options)
 {
-    ensure(!comm.is_null() && mpi::is_active(), "Extrusion requires active MPI and a live communicator");
-    try {
+    mpi::require(!comm.is_null() && mpi::is_active(), "Extrusion requires active MPI and a live communicator");
+    return mpi::guarded([&](){
         return extrude(mesh, comm, options);
-    } catch (const std::exception& error) {
-        // Allocation failures must not leave other ranks waiting in the next exchange.
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during mesh extrusion");
-    }
+    });
 }
 } // namespace krona::mesh

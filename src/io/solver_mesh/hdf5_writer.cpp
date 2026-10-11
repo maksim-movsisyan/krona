@@ -14,8 +14,8 @@ void export_mesh_hdf5(const mesh::MeshPart& m, const std::filesystem::path& path
 {
     using namespace detail;
     auto access = file_access(comm);
-    require(!path.empty(), "Solver mesh output path is empty");
-    require(m.rank == comm.rank() && m.nprocs == comm.size() && m.faces_grouped,
+    mpi::require(!path.empty(), "Solver mesh output path is empty");
+    mpi::require(m.rank == comm.rank() && m.nprocs == comm.size() && m.faces_grouped,
             "HDF5 export requires a grouped mesh on the supplied communicator");
 
     // A partition SDK is not required by the file format: only its rank permutation is used.
@@ -96,7 +96,7 @@ void export_mesh_hdf5(const mesh::MeshPart& m, const std::filesystem::path& path
     // Write mesh arrays directly from their final storage, with no AoS conversion or mesh gathering.
     visit_arrays(m, [&](const char* name, const auto& values, Category category) {
         using T = typename std::remove_cvref_t<decltype(values)>::value_type;
-        require(values.size() == layout.count[category], std::string{"Invalid export array: "} + name);
+        mpi::require(values.size() == layout.count[category], std::string{"Invalid export array: "} + name);
         const bool offsets = category >= cell_offsets;
         write(file.get(), properties.get(), name, layout.total[category], layout.start[category],
               std::span<const T>{values}, offsets);

@@ -8,7 +8,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
-#include <exception>
 #include <span>
 
 namespace krona::mesh {
@@ -327,29 +326,21 @@ struct FaceMetrics { double area = 0; Vec3 centre, normal; };
 GeometryStats compute_mesh_geometry(MeshPart& mesh)
 {
     if (mpi::is_active()) mpi::require_main_thread();
-    try {
+    return mpi::guarded([&](){
         return compute(mesh);
-    } catch (const std::exception& error) {
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during local geometry computation");
-    }
+    });
 }
 
 /// @brief Computes metrics collectively and refreshes the global coordinate bounds.
 GeometryStats compute_mesh_geometry(MeshPart& mesh, mpi::CommView comm)
 {
-    if (comm.is_null() || !mpi::is_active()) mpi::fatal("Collective geometry requires active MPI");
+    mpi::require(!comm.is_null() && mpi::is_active(),"Collective geometry requires active MPI");
     mpi::require_main_thread();
-    if (mesh.rank != comm.rank() || mesh.nprocs != comm.size())
-        mpi::fatal("Mesh geometry communicator does not match migration ranks");
-    try {
+    mpi::require(mesh.rank == comm.rank() && mesh.nprocs == comm.size(),"Mesh geometry communicator does not match migration ranks");
+
+    return mpi::guarded([&](){
         return global_stats(compute(mesh), mesh, comm);
-    } catch (const std::exception& error) {
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during collective geometry computation");
-    }
+    });
 }
 
 } // namespace krona::mesh

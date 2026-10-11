@@ -3,7 +3,6 @@
 #include <krona/mpi/error.hpp>
 
 #include <cstdio>
-#include <exception>
 #include <fstream>
 #include <locale>
 #include <ostream>
@@ -77,9 +76,9 @@ void generate_bc_template_config(const MeshPart& mesh, const std::filesystem::pa
 {
     if (output.empty() || mesh.rank != 0) return;
     if (mpi::is_active()) mpi::require_main_thread();
-    if (global_patch_faces.size() != mesh.patches.size()) mpi::fatal("BC template patch-count extent mismatch");
+    mpi::require(global_patch_faces.size() == mesh.patches.size(), "BC template patch-count extent mismatch");
     std::string filename;
-    try {
+    mpi::guarded([&](){
         filename = output.string();
         std::ofstream out;
         out.exceptions(std::ios::failbit | std::ios::badbit);
@@ -108,11 +107,7 @@ void generate_bc_template_config(const MeshPart& mesh, const std::filesystem::pa
         }
         // close() also exposes buffered-write failures, such as a full filesystem.
         out.close();
-    } catch (const std::exception& error) {
-        char message[512];
-        std::snprintf(message, sizeof(message), "BC template '%s': %s", filename.c_str(), error.what());
-        mpi::fatal(message);
-    } catch (...) { mpi::fatal("Unknown exception while writing the BC template"); }
+    });
 }
 
 } // namespace krona::mesh

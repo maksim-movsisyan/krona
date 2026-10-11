@@ -36,4 +36,31 @@ inline void check(
     std::string_view message,
     std::source_location where = std::source_location::current()) noexcept;
 
+/// @brief Terminates the job when a required condition is not satisfied.
+inline void require(
+    bool condition,
+    std::string_view message,
+    std::source_location where = std::source_location::current()) noexcept
+{
+    if (!condition) [[unlikely]] {
+        fatal(message, where);
+    }
+}
+
+/// @brief Converts escaping exceptions into a fatal job error.
+template<class Function>
+decltype(auto) guarded(
+    Function&& function,
+    std::source_location where = std::source_location::current()) noexcept
+{
+    try {
+        return std::forward<Function>(function)();
+    } catch (const std::exception& error) {
+        fatal(error.what(), where);
+    } catch (...) {
+        fatal("Unhandled non-standard exception", where);
+    }
+}
+
+
 } // namespace krona::mpi

@@ -36,18 +36,11 @@ enum LocalField : std::size_t {
     owned = category_count, owned_nodes, internal_faces, inner_faces, grouped, flipped
 };
 
-/// @brief Aborts the MPI job when a file or format invariant fails.
-inline void require(bool condition, std::string_view message)
-{
-    // Failure is terminal: no extra status collective is needed.
-    if (!condition) mpi::fatal(message);
-}
-
 /// @brief Checks an HDF5 operation and retains its native error stack on failure.
 inline void check(herr_t status, std::string_view operation)
 {
     // HDF5 prints its detailed error stack; add the KRONA operation name.
-    require(status >= 0, operation);
+    mpi::require(status >= 0, operation);
 }
 
 /// @brief Owns one HDF5 handle and closes it with its matching H5*close function.
@@ -57,7 +50,7 @@ public:
     Handle(hid_t value, herr_t (*close_function)(hid_t)) : id_(value), close_(close_function)
     {
         // Negative IDs indicate creation or opening failure.
-        require(id_ >= 0, "Cannot create or open an HDF5 object");
+        mpi::require(id_ >= 0, "Cannot create or open an HDF5 object");
     }
     /// @brief Closes normally or aborts before collective cleanup during exception unwinding.
     ~Handle()
@@ -128,7 +121,7 @@ template<class T> hid_t file_type()
 /// @brief Opens a parallel file access property list on the caller's communicator.
 inline Handle file_access(mpi::CommView comm)
 {
-    require(mpi::is_active() && !comm.is_null(), "HDF5 I/O requires an active communicator");
+    mpi::require(mpi::is_active() && !comm.is_null(), "HDF5 I/O requires an active communicator");
     mpi::require_main_thread();
     Handle access{H5Pcreate(H5P_FILE_ACCESS), H5Pclose};
     check(H5Pset_fapl_mpio(access.get(), comm.native(), MPI_INFO_NULL), "H5Pset_fapl_mpio");
@@ -150,11 +143,11 @@ inline Handle collective_transfer()
 /// @brief Checks the replicated partition permutation and builds its inverse.
 inline std::vector<int> inverse_mapping(std::span<const int> part2rank, int size)
 {
-    require(part2rank.size() == static_cast<std::size_t>(size), "Invalid partition mapping size");
+    mpi::require(part2rank.size() == static_cast<std::size_t>(size), "Invalid partition mapping size");
     std::vector<int> rank2part(static_cast<std::size_t>(size), -1);
     for (int part = 0; part < size; ++part) {
         const int rank = part2rank[static_cast<std::size_t>(part)];
-        require(rank >= 0 && rank < size && rank2part[static_cast<std::size_t>(rank)] == -1,
+        mpi::require(rank >= 0 && rank < size && rank2part[static_cast<std::size_t>(rank)] == -1,
                 "Partition mapping must be a permutation of MPI ranks");
         rank2part[static_cast<std::size_t>(rank)] = part;
     }
@@ -167,13 +160,13 @@ struct Layout {
     /// @brief Accumulates partition-ordered prefixes and selects one partition's counts.
     Layout(std::span<const U64> directory, int part, int size)
     {
-        require(directory.size() == static_cast<std::size_t>(size) * row_size,
+        mpi::require(directory.size() == static_cast<std::size_t>(size) * row_size,
                 "Invalid partition directory size");
         for (int p = 0; p < size; ++p) {
             for (std::size_t c = 0; c < category_count; ++c) {
                 const U64 n = directory[static_cast<std::size_t>(p) * row_size + c];
                 if (p == part) { start[c] = total[c]; count[c] = n; }
-                require(n <= std::numeric_limits<U64>::max() - total[c], "File layout overflow");
+                mpi::require(n <= std::numeric_limits<U64>::max() - total[c], "File layout overflow");
                 total[c] += n;
             }
         }
@@ -267,16 +260,16 @@ template<class T, std::size_t Extent> void read(hid_t file, hid_t properties, co
     Handle dataset{H5Dopen2(file, name, H5P_DEFAULT), H5Dclose};
     Handle space{H5Dget_space(dataset.get()), H5Sclose};
     hsize_t extent = 0;
-    require(H5Sget_simple_extent_ndims(space.get()) == 1, "Invalid HDF5 dataset rank");
+    mpi::require(H5Sget_simple_extent_ndims(space.get()) == 1, "Invalid HDF5 dataset rank");
     check(H5Sget_simple_extent_dims(space.get(), &extent, nullptr), "H5Sget_simple_extent_dims");
-    require(extent == total && start <= total && values.size() <= total - start,
+    mpi::require(extent == total && start <= total && values.size() <= total - start,
             std::string{"Invalid dataset extent: "} + name);
     Handle type{H5Dget_type(dataset.get()), H5Tclose};
     const auto target = offsets ? H5T_STD_U64LE : file_type<T>();
-    require(H5Tget_class(type.get()) == H5Tget_class(target), "Invalid dataset datatype class");
+    mpi::require(H5Tget_class(type.get()) == H5Tget_class(target), "Invalid dataset datatype class");
     if (H5Tget_class(target) == H5T_INTEGER)
-        require(H5Tget_sign(type.get()) == H5Tget_sign(target), "Invalid dataset integer signedness");
-    require(H5Tget_size(type.get()) <= (offsets ? 8 : sizeof(T)), "Unsafe dataset type narrowing");
+        mpi::require(H5Tget_sign(type.get()) == H5Tget_sign(target), "Invalid dataset integer signedness");
+    mpi::require(H5Tget_size(type.get()) <= (offsets ? 8 : sizeof(T)), "Unsafe dataset type narrowing");
     // HDF5 performs permitted endian conversion and datatype widening directly into the output.
     if (total != 0)
         transfer(dataset.get(), properties, start, values.size(), values.data(), false);
@@ -293,7 +286,7 @@ template<class T> void write_shared(hid_t file, hid_t properties, const char* na
 /// @brief Resizes an output array after checking its allocation limit.
 template<class T> void resize(std::vector<T>& values, U64 count)
 {
-    require(count <= values.max_size(), "HDF5 array exceeds the host allocation range");
+    mpi::require(count <= values.max_size(), "HDF5 array exceeds the host allocation range");
     // Storage is final MeshPart storage; no payload staging array is allocated.
     values.resize(static_cast<std::size_t>(count));
 }
@@ -301,7 +294,7 @@ template<class T> void resize(std::vector<T>& values, U64 count)
 /// @brief Converts a file count to a representable local mesh count.
 inline LocalIndex local_count(U64 value)
 {
-    require(value <= static_cast<U64>(std::numeric_limits<LocalIndex>::max()),
+    mpi::require(value <= static_cast<U64>(std::numeric_limits<LocalIndex>::max()),
             "HDF5 mesh count exceeds LocalIndex");
     return static_cast<LocalIndex>(value);
 }

@@ -1,10 +1,10 @@
 #include <krona/mesh/migrate.hpp>
 #include <krona/mpi/context.hpp>
 
+#include "krona/mpi/error.hpp"
 #include "migration_detail.hpp"
 
 #include <array>
-#include <exception>
 #include <numeric>
 #include <span>
 
@@ -552,24 +552,20 @@ void global_statistics(MeshPart& mesh, std::array<std::uint64_t, 6> totals, mpi:
 MeshPart migrate_local_mesh(MigrationSource&& source, std::vector<FaceRecord>&& faces,
                             std::span<const int> targets, mpi::CommView comm)
 {
-    if (comm.is_null() || !mpi::is_active()) mpi::fatal("Migration requires active MPI");
+    mpi::require(!comm.is_null() && mpi::is_active(),"Migration requires active MPI");
     mpi::require_main_thread();
-    try {
+    return mpi::guarded([&](){
         return migrate(source, faces, targets, comm);
-    } catch (const std::exception& error) {
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception during mesh migration");
-    }
+    });
 }
 
 /// @brief Adapts a 3D block-distributed import without copying cell or coordinate payloads.
 MeshPart migrate_local_mesh(RawMesh&& source, std::vector<FaceRecord>&& faces,
                             std::span<const int> targets, mpi::CommView comm)
 {
-    if (comm.is_null() || !mpi::is_active()) mpi::fatal("Migration requires active MPI");
+    mpi::require(!comm.is_null() && mpi::is_active(),"Migration requires active MPI");
     mpi::require_main_thread();
-    try {
+    return mpi::guarded([&](){
         if (source.cell_dimension != 3 || source.physical_dimension != 3 ||
             source.distribution.rank != comm.rank() ||
             source.distribution.cells.parts() != comm.size() ||
@@ -590,11 +586,7 @@ MeshPart migrate_local_mesh(RawMesh&& source, std::vector<FaceRecord>&& faces,
         // Boundary labels already live in FaceRecord; original surface payload is dead.
         source.boundary = {};
         return migrate(input, faces, targets, comm);
-    } catch (const std::exception& error) {
-        mpi::fatal(error.what());
-    } catch (...) {
-        mpi::fatal("Unknown exception while adapting mesh migration input");
-    }
+    });
 }
 
 } // namespace krona::mesh

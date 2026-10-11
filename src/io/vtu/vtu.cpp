@@ -2,6 +2,7 @@
 #include <krona/mpi/context.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/communicator.hpp>
+#include <krona/mpi/collectives.hpp>
 
 #include <algorithm>
 #include <bit>
@@ -21,12 +22,6 @@ inline constexpr std::array<std::size_t, 10> type_sizes{1, 1, 2, 2, 4, 4, 8, 8, 
 inline constexpr const char* byte_order = std::endian::native == std::endian::little
                                          ? "LittleEndian" : "BigEndian";
 
-/// @brief Reports an invalid view or filesystem operation without a status collective.
-void require(bool condition, std::string_view message)
-{
-    if (!condition) mpi::fatal(message);
-}
-
 /// @brief Escapes XML attributes, preserving quoted names and whitespace.
 std::string xml(std::string_view value)
 {
@@ -43,7 +38,7 @@ std::string xml(std::string_view value)
         case '\r': result += "&#13;"; break;
         case '\t': result += "&#9;"; break;
         default:
-            require(c >= 32, "VTK names cannot contain XML control characters");
+            mpi::require(c >= 32, "VTK names cannot contain XML control characters");
             result.push_back(static_cast<char>(c));
         }
     }
@@ -54,7 +49,7 @@ std::string xml(std::string_view value)
 std::ofstream open(const std::filesystem::path& path)
 {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    require(stream.is_open(), std::string{"Cannot create VTK file: "} + path.string());
+    mpi::require(stream.is_open(), std::string{"Cannot create VTK file: "} + path.string());
     stream.imbue(std::locale::classic());
     return stream;
 }
@@ -64,16 +59,16 @@ void finish(std::ofstream& stream)
 {
     // Disk-full errors may be delayed until flushing or closing.
     stream.close();
-    require(!stream.fail(), "Cannot finish writing a VTK file");
+    mpi::require(!stream.fail(), "Cannot finish writing a VTK file");
 }
 
 /// @brief Computes a field's raw payload size with overflow protection.
 std::uint64_t payload_bytes(const Field& f)
 {
-    require(f.components > 0 && static_cast<std::size_t>(f.type) < type_sizes.size(),
+    mpi::require(f.components > 0 && static_cast<std::size_t>(f.type) < type_sizes.size(),
             "Invalid VTK field type or component count");
     const auto width = type_sizes[static_cast<std::size_t>(f.type)] * static_cast<std::uint64_t>(f.components);
-    require(f.tuples <= std::numeric_limits<std::uint64_t>::max() / width, "VTK payload size overflow");
+    mpi::require(f.tuples <= std::numeric_limits<std::uint64_t>::max() / width, "VTK payload size overflow");
     return static_cast<std::uint64_t>(f.tuples) * width;
 }
 
@@ -83,16 +78,16 @@ void validate_fields(std::span<const Field> fields, std::size_t tuples)
     for (std::size_t i = 0; i < fields.size(); ++i) {
         const auto& f = fields[i];
         (void)payload_bytes(f);
-        require(f.tuples == tuples && !f.name.empty() && (!f.soa || f.components == 3),
+        mpi::require(f.tuples == tuples && !f.name.empty() && (!f.soa || f.components == 3),
                 "VTK field does not match its grid association");
-        require(!f.indices || (!f.soa && f.components == 1 && f.type == scalar_type<LocalIndex>()),
+        mpi::require(!f.indices || (!f.soa && f.components == 1 && f.type == scalar_type<LocalIndex>()),
                 "Invalid VTK index sequence");
         if (tuples != 0 && !f.indices) {
-            require(f.data[0] != nullptr && (!f.soa || (f.data[1] && f.data[2])),
+            mpi::require(f.data[0] != nullptr && (!f.soa || (f.data[1] && f.data[2])),
                     "VTK field points to missing storage");
         }
         for (std::size_t j = 0; j < i; ++j)
-            require(f.name != fields[j].name, "Duplicate VTK field name");
+            mpi::require(f.name != fields[j].name, "Duplicate VTK field name");
     }
 }
 
@@ -105,7 +100,7 @@ void declaration(std::ofstream& out, const Field& f, std::uint64_t& offset, bool
     if (!parallel) {
         out << " format=\"appended\" offset=\"" << offset << '"';
         const auto bytes = payload_bytes(f);
-        require(offset <= std::numeric_limits<std::uint64_t>::max() - sizeof(std::uint64_t) &&
+        mpi::require(offset <= std::numeric_limits<std::uint64_t>::max() - sizeof(std::uint64_t) &&
                 bytes <= std::numeric_limits<std::uint64_t>::max() - offset - sizeof(std::uint64_t),
                 "VTK appended offset overflow");
         offset += sizeof(std::uint64_t) + bytes;
@@ -121,7 +116,7 @@ void raw(std::ofstream& out, const void* data, std::uint64_t bytes)
     while (bytes != 0) {
         const auto n = std::min(bytes, chunk);
         out.write(position, static_cast<std::streamsize>(n));
-        require(static_cast<bool>(out), "VTK binary write failed");
+        mpi::require(static_cast<bool>(out), "VTK binary write failed");
         position += n;
         bytes -= n;
     }
@@ -151,7 +146,7 @@ template<class T> void field_values(std::ofstream& out, const Field& f)
         // Contiguous scalar/vector arrays need no numeric conversion or packing.
         if (f.tuples != 0) raw(out, values + f.first_tuple * components, payload_bytes(f));
     } else {
-        require(f.tuples <= std::numeric_limits<std::size_t>::max() / components, "VTK field index overflow");
+        mpi::require(f.tuples <= std::numeric_limits<std::size_t>::max() / components, "VTK field index overflow");
         generated<T>(out, f.tuples * components, [&](std::size_t i) {
             const auto tuple = f.first_tuple + i / components, component = i % components;
             const auto* column = static_cast<const T*>(f.data[f.soa ? component : 0]);
@@ -185,7 +180,7 @@ std::uint8_t vtk_type(mesh::CellType type)
     // These linear element families use the same vertex positions in CGNS and VTK.
     constexpr std::array<std::uint8_t, 8> types{10, 14, 13, 12, 5, 9, 3, 1};
     const auto index = static_cast<std::size_t>(type);
-    require(index < types.size(), "Unsupported VTK cell type");
+    mpi::require(index < types.size(), "Unsupported VTK cell type");
     return types[index];
 }
 
@@ -198,17 +193,17 @@ std::string piece_name(std::string_view stem, int rank)
 /// @brief Creates the output directory once and synchronizes before per-rank file creation.
 void prepare_directory(const std::filesystem::path& directory, std::string_view stem, mpi::CommView comm)
 {
-    require(mpi::is_active() && !comm.is_null(), "Parallel VTK export requires active MPI");
+    mpi::require(mpi::is_active() && !comm.is_null(), "Parallel VTK export requires active MPI");
     mpi::require_main_thread();
-    require(!directory.empty() && !stem.empty() && stem.find_first_of("/\\") == std::string_view::npos &&
+    mpi::require(!directory.empty() && !stem.empty() && stem.find_first_of("/\\") == std::string_view::npos &&
             stem != "." && stem != "..", "Invalid VTK directory or filename stem");
     if (comm.rank() == 0) {
         std::error_code error;
         std::filesystem::create_directories(directory, error);
-        require(!error, std::string{"Cannot create VTK directory: "} + error.message());
+        mpi::require(!error, std::string{"Cannot create VTK directory: "} + error.message());
     }
     // This barrier coordinates filesystem creation, not mesh validation.
-    mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(VTK directory)");
+    mpi::barrier(comm);
 }
 
 /// @brief Writes a PVTU index referencing all completed pieces with a matching field schema.
@@ -238,7 +233,7 @@ void append_fields(std::vector<Field>& target, std::span<const Field> extra,
                    std::size_t full_count, std::size_t first, std::size_t count)
 {
     for (const auto& f : extra) {
-        require(f.tuples == full_count || f.tuples == count, "MeshPart VTK field has the wrong length");
+        mpi::require(f.tuples == full_count || f.tuples == count, "MeshPart VTK field has the wrong length");
         target.push_back(f.tuples == full_count ? f.slice(first, count) : f);
     }
 }
@@ -250,7 +245,7 @@ Field index_field(std::string_view name, std::size_t tuples, std::size_t first)
 {
     // Check the last generated ID once, without scanning or allocating a sequence.
     const auto limit = static_cast<std::uint64_t>(std::numeric_limits<LocalIndex>::max());
-    require(first <= limit && (tuples == 0 || tuples - 1 <= limit - first),
+    mpi::require(first <= limit && (tuples == 0 || tuples - 1 <= limit - first),
             "VTK local ID exceeds LocalIndex");
     return {name, scalar_type<LocalIndex>(), {}, tuples, first, 1, 1, false, true};
 }
@@ -258,7 +253,7 @@ Field index_field(std::string_view name, std::size_t tuples, std::size_t first)
 /// @brief Selects a valid tuple interval while retaining the original borrowed storage.
 Field Field::slice(std::size_t first, std::size_t count) const
 {
-    require(first <= tuples && count <= tuples - first, "VTK field slice is out of range");
+    mpi::require(first <= tuples && count <= tuples - first, "VTK field slice is out of range");
     Field result = *this;
     // Keep the storage borrowed; only the tuple interval changes.
     result.first_tuple += first;
@@ -270,7 +265,7 @@ Field Field::slice(std::size_t first, std::size_t count) const
 void write_vtu_piece(GridView grid, const std::filesystem::path& path, Fields fields)
 {
     const auto points = grid.x.size(), cells = grid.types.size();
-    require(grid.y.size() == points && grid.z.size() == points && grid.offsets.size() == cells + 1 &&
+    mpi::require(grid.y.size() == points && grid.z.size() == points && grid.offsets.size() == cells + 1 &&
             grid.offsets.front() <= grid.offsets.back() && grid.offsets.back() <= grid.connectivity.size(),
             "Invalid VTK grid view");
     validate_fields(fields.point, points);
@@ -321,7 +316,7 @@ void write_parallel_vtu(GridView grid, const std::filesystem::path& directory,
     prepare_directory(directory, stem, comm);
     write_vtu_piece(grid, directory / piece_name(stem, comm.rank()), fields);
     // Rank zero publishes an index only after all referenced files are closed.
-    mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(VTK pieces)");
+    mpi::barrier(comm);
     if (comm.rank() == 0) parallel_index(directory, stem, comm.size(), fields);
 }
 
@@ -329,7 +324,7 @@ void write_parallel_vtu(GridView grid, const std::filesystem::path& directory,
 void write_vtu(const mesh::MeshPart& m, const std::filesystem::path& directory,
                std::string_view stem, mpi::CommView comm, MeshFields extra)
 {
-    require(m.faces_grouped && m.rank == comm.rank() && m.nprocs == comm.size(),
+    mpi::require(m.faces_grouped && m.rank == comm.rank() && m.nprocs == comm.size(),
             "MeshPart VTK export requires grouped faces and the matching communicator");
     const auto nodes = static_cast<std::size_t>(m.n_nodes_own);
     const auto owned = static_cast<std::size_t>(m.n_own);
@@ -367,7 +362,7 @@ void write_vtu(const mesh::MeshPart& m, const std::filesystem::path& directory,
     const std::string boundary_stem = std::string{stem} + "_bnd";
     write_vtu_piece(volume, directory / piece_name(stem, comm.rank()), {point, cell});
     write_vtu_piece(boundary, directory / piece_name(boundary_stem, comm.rank()), {point, surface});
-    mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(VTK volume and boundary pieces)");
+    mpi::barrier(comm);
     if (comm.rank() == 0) {
         parallel_index(directory, stem, comm.size(), {point, cell});
         parallel_index(directory, boundary_stem, comm.size(), {point, surface});
