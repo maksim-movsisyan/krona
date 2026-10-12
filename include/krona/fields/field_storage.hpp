@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/execution/utils.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/mpi/error.hpp> 
 
@@ -16,33 +17,17 @@ enum class FieldLocation { OwnCell, Cell, CellExtnd, Face, Node, Custom };
 enum class FieldInitialization { Zero, Uninitialized };
 
 /// @brief Local entity counts; Cell includes owned and MPI ghost cells only.
-struct FieldSizes {
-    std::size_t own_cells = 0, cells = 0, faces = 0, bfaces = 0, nodes = 0;
-};
+struct FieldSizes { std::size_t own_cells = 0, cells = 0, faces = 0, bfaces = 0, nodes = 0; };
 
 namespace detail {
 
 [[noreturn]] inline void field_error(std::string_view name, const char* reason,
-                                    std::source_location where = std::source_location::current()) noexcept
+                                     std::source_location where = std::source_location::current()) noexcept
 {
     char message[512]{};
     const int length = static_cast<int>(name.size() < 256 ? name.size() : 256);
     std::snprintf(message, sizeof(message), "Fields: %s ('%.*s')", reason, length, name.data());
     krona::mpi::fatal(message, where);
-}
-
-inline void require_kokkos() noexcept
-{
-    mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
-            "Fields require active Kokkos");
-}
-
-// Check before constructing an execution-space instance, including default arguments.
-template<class Exec>
-[[nodiscard]] Exec default_execution_space()
-{
-    require_kokkos();
-    return Exec{};
 }
 
 } // namespace detail
@@ -80,7 +65,7 @@ public:
     FieldStorage(std::string name, std::size_t count, FieldLocation location, const Exec& exec)
         : AbstractField(std::move(name), location)
     {
-        detail::require_kokkos();
+        execution::require_kokkos();
         constexpr auto bytes_per_entity = sizeof(T) * static_cast<std::size_t>(Components);
         mpi::require(count <= std::numeric_limits<std::size_t>::max() / bytes_per_entity,
                         "Field allocation size overflows size_t");

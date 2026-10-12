@@ -1,10 +1,14 @@
 #pragma once
+
+#include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/mesh/compute/detail/array_transfer.hpp>
+#include <krona/mesh/compute/validation.hpp>
 #include <krona/numerics/gradient/detail/kernels.hpp>
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <type_traits>
 
@@ -13,8 +17,7 @@ namespace krona::numerics::gradient {
 /// @brief Immutable static-mesh gradient plan; only owned output cells are written.
 /// Construction validates and prepares locally, then fences exec. Apply calls are asynchronous.
 /// Borrowed mesh/auxiliary buffers and this plan must outlive all submitted work.
-template<class Exec = execution::ExecutionSpace, class Coefficient = GeometryReal,
-         class Accumulator = AccumulationReal>
+template<class Exec = execution::ExecutionSpace, class Coefficient = GeometryReal, class Accumulator = AccumulationReal>
 class GradientOperator {
     static_assert(std::is_floating_point_v<Coefficient> && std::is_floating_point_v<Accumulator>);
     using Space = typename Exec::memory_space;
@@ -26,41 +29,24 @@ class GradientOperator {
 
 public:
     /// @brief Uses already attached mesh and optional caches; never builds topology or performs MPI.
-    GradientOperator(Mesh mesh_view, Connectivity connectivity, Geometry geometry,
-                     Options options, Exec exec)
+    GradientOperator(Mesh mesh_view, Connectivity connectivity, Geometry geometry, Options options, Exec exec = {})
         : metrics_{mesh_view, connectivity, geometry, options}, exec_(exec)
     {
         validate_descriptors();
-        try {
+        execution::complete(exec, [&](){
+            validate_mesh(mesh_view, connectivity, geometry);
             std::size_t bad = 0;
             const bool least_squares = options.scheme == Scheme::LeastSquaresFace;
-            Kokkos::parallel_reduce("gradient/validate_faces", Policy(exec_, 0, mesh_view.sizes.n_faces),
-                detail::ValidateFaces<Space>{mesh_view, least_squares}, bad);
-            mpi::require(bad == 0, "Gradient: invalid face topology or metrics");
-            if (options.scheme != Scheme::GreenGaussFace) {
-                Kokkos::parallel_reduce("gradient/validate_rows", Policy(exec_, 0, mesh_view.sizes.n_own),
-                    detail::ValidateRows<Space>{metrics_}, bad);
-                mpi::require(bad == 0, "Gradient: invalid cell-to-face CSR or incidence");
-            }
             if (least_squares) {
                 const auto count = connectivity.cell_faces.extent(0);
                 mpi::require(count <= std::numeric_limits<std::size_t>::max() / (3 * sizeof(Coefficient)),
                         "Gradient: coefficient allocation overflows size_t");
-                coefficients_ = Coefficients(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
-                                                              "gradient/ls_coefficients"), count);
+                coefficients_ = Coefficients(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"), count);
                 Kokkos::parallel_reduce("gradient/prepare_least_squares", Policy(exec_, 0, mesh_view.sizes.n_own),
                     detail::PrepareLeastSquares<Space, Coefficients, double>{metrics_, coefficients_}, bad);
                 mpi::require(bad == 0, "Gradient: singular/ill-conditioned 3-D LS stencil or invalid sample displacement");
-            } else {
-                Kokkos::parallel_reduce("gradient/validate_volumes", Policy(exec_, 0, mesh_view.sizes.n_own),
-                    detail::ValidateVolumes<Space>{mesh_view}, bad);
-                mpi::require(bad == 0, "Gradient: owned volumes must be finite and positive");
             }
-            exec_.fence("KRONA gradient: setup complete");
-        } catch (...) {
-            exec_.fence("KRONA gradient: drain failed setup");
-            throw;
-        }
+        });
     }
 
     GradientOperator(const GradientOperator&) = delete;
@@ -69,8 +55,7 @@ public:
     GradientOperator& operator=(GradientOperator&&) = delete;
 
     /// @brief Computes all input components; output component 3*c+axis is d(input_c)/d(axis).
-    template<class T, int N, class InputSpace, class InputLayout,
-             class U, class OutputSpace, class OutputLayout>
+    template<class T, int N, class InputSpace, class InputLayout, class U, class OutputSpace, class OutputLayout>
     void apply(fields::FieldView<T, N, InputSpace, InputLayout> input,
                fields::FieldView<U, 3*N, OutputSpace, OutputLayout> output, CellRange range = {}) const
     {
@@ -99,8 +84,7 @@ public:
     /// @brief Fuses a compile-time batch of unrelated scalar components without device pointer tables.
     template<class Input, class OutputX, class OutputY, class OutputZ, std::size_t N>
     void apply_set(const std::array<Input, N>& input, const std::array<OutputX, N>& x,
-                   const std::array<OutputY, N>& y, const std::array<OutputZ, N>& z,
-                   CellRange range = {}) const
+                   const std::array<OutputY, N>& y, const std::array<OutputZ, N>& z, CellRange range = {}) const
     {
         static_assert(N > 0);
         using T = std::remove_const_t<typename Input::value_type>;
@@ -114,7 +98,7 @@ public:
         }
         submit(batch, resolve(range));
     }
-
+    
     [[nodiscard]] Scheme scheme() const noexcept { return metrics_.options.scheme; }
     [[nodiscard]] const Exec& execution_space() const noexcept { return exec_; }
     [[nodiscard]] std::size_t required_input_size() const noexcept { return input_size_; }
@@ -134,6 +118,49 @@ private:
     Exec exec_;
     Coefficients coefficients_;
     std::size_t input_size_ = 0;
+
+    template<mesh::compute::MeshData Data, mesh::AuxConnType ConnectivityMask, mesh::AuxGeomType GeometryMask>
+    void validate_selected(Mesh mesh_view, Connectivity connectivity, Geometry geometry) const
+    {
+        namespace validation = mesh::compute::validation;
+        // Compare checks CSR incidence here; CellGeometry is checked separately on owned cells.
+        const auto result = validation::validate<Data, ConnectivityMask, GeometryMask, true>(
+            exec_, mesh_view, connectivity, geometry);
+        mpi::require(result.shapes == 0, "Gradient: invalid selected mesh/auxiliary descriptors");
+        mpi::require(result.faces == 0, "Gradient: invalid face topology or metrics");
+        mpi::require(result.cell_faces == 0 && result.cell_incidence == 0 && result.face_incidence == 0,
+                     "Gradient: invalid cell-to-face CSR or incidence");
+    }
+
+    void validate_mesh(Mesh mesh_view, Connectivity connectivity, Geometry geometry) const
+    {
+        using MeshData = mesh::compute::MeshData;
+        using mesh::AuxConnType;
+        using mesh::AuxGeomType;
+        namespace validation = mesh::compute::validation;
+        if (scheme() == Scheme::LeastSquaresFace) {
+            if (geometry.has_face_cell_dist_vector())
+                validate_selected<MeshData::FaceCells, AuxConnType::CellFaces, AuxGeomType::FaceCellDistanceVector>(mesh_view, connectivity, geometry);
+            else
+                validate_selected<MeshData::FaceCells, AuxConnType::CellFaces, AuxGeomType::None>(mesh_view, connectivity, geometry);
+            return;
+        }
+        const auto green_gauss = [&]<AuxConnType ConnectivityMask>() {
+            constexpr auto data = MeshData::FaceCells | MeshData::FaceGeometry;
+            if (metrics_.options.interpolation == Interpolation::AuxiliaryWeights)
+                validate_selected<data, ConnectivityMask, AuxGeomType::FaceInterpolationWeights>(mesh_view, connectivity, geometry);
+            else
+                validate_selected<data, ConnectivityMask, AuxGeomType::None>(mesh_view, connectivity, geometry);
+        };
+        if (scheme() == Scheme::GreenGaussCell) green_gauss.template operator()<AuxConnType::CellFaces>();
+        else green_gauss.template operator()<AuxConnType::None>();
+
+        // Ghost volumes are not used; preserve the owned-only output contract.
+        std::size_t bad = 0;
+        Kokkos::parallel_reduce("gradient/validate_owned_geometry", Policy(exec_, 0, mesh_view.sizes.n_own),
+            validation::ValidateCells<MeshData::CellGeometry, AuxGeomType::None, Space>{mesh_view, {}}, bad);
+        mpi::require(bad == 0, "Gradient: owned centres must be finite and volumes positive");
+    }
 
     template<class View>
     static void accessible_component()
@@ -194,20 +221,17 @@ private:
 
     void validate_descriptors()
     {
-        mesh::compute::detail::require_kokkos();
+        execution::require_kokkos();
         const auto& m = metrics_.mesh;
         const auto& s = m.sizes;
         const auto& options = metrics_.options;
-        mpi::require(options.scheme == Scheme::GreenGaussCell || options.scheme == Scheme::GreenGaussFace ||
-                options.scheme == Scheme::LeastSquaresFace, "Gradient: unknown scheme");
-        mpi::require(options.interpolation == Interpolation::Arithmetic || options.interpolation == Interpolation::AuxiliaryWeights,
-                "Gradient: unknown interpolation");
+        const auto needed = gradient::requirements(options);
         mpi::require(std::isfinite(options.pivot_tolerance) && options.pivot_tolerance > 0 && options.pivot_tolerance < 1,
                 "Gradient: pivot tolerance must be finite and between zero and one");
         mpi::require(s.faces_grouped && s.n_own >= 0 && s.n_cells >= s.n_own && s.n_internal_faces >= 0 &&
                 s.n_internal_faces <= s.n_inner_faces && s.n_inner_faces <= s.n_faces,
                 "Gradient: requires valid counts and grouped faces");
-        mpi::require(m.has(mesh::compute::MeshData::FaceCells | mesh::compute::MeshData::Geometry),
+        mpi::require(m.has(needed.mesh),
                 "Gradient: requires face connectivity and cell/face geometry");
         const auto cells = static_cast<std::size_t>(s.n_cells), faces = static_cast<std::size_t>(s.n_faces);
         const auto boundary = static_cast<std::size_t>(s.n_faces - s.n_inner_faces);
@@ -222,7 +246,7 @@ private:
                 m.geometry.face_centroid_z.extent(0) == faces && m.geometry.face_area.extent(0) == faces &&
                 m.geometry.face_normal_x.extent(0) == faces && m.geometry.face_normal_y.extent(0) == faces &&
                 m.geometry.face_normal_z.extent(0) == faces, "Gradient: face geometry size mismatch");
-        if (scheme() != Scheme::GreenGaussFace) {
+        if (needed.connectivity != mesh::AuxConnType::None) {
             const auto& conn = metrics_.connectivity;
             mpi::require(conn.has_cell_faces() && conn.n_cells_own == s.n_own && conn.n_faces == s.n_faces &&
                     conn.cell_faces_offsets.extent(0) == static_cast<std::size_t>(s.n_own) + 1,
@@ -234,7 +258,7 @@ private:
             mpi::require(geometry.n_faces == s.n_faces && geometry.face_cell_dist_x.extent(0) == faces &&
                     geometry.face_cell_dist_y.extent(0) == faces && geometry.face_cell_dist_z.extent(0) == faces,
                     "Gradient: auxiliary displacement size mismatch");
-        if (scheme() != Scheme::LeastSquaresFace && options.interpolation == Interpolation::AuxiliaryWeights)
+        if (needed.geometry != mesh::AuxGeomType::None)
             mpi::require(geometry.has_face_interp_weights() && geometry.n_faces == s.n_faces && geometry.face_interp_weight.extent(0) == faces,
                     "Gradient: attach ready owner interpolation weights");
     }

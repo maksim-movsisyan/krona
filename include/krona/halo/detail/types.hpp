@@ -5,22 +5,8 @@
 #include <Kokkos_Core.hpp>
 
 #include <cstddef>
-#include <utility>
 
 namespace krona::halo::detail {
-
-// Setup-only copies use temporary mirrors. Drain work while those mirrors are still alive.
-template<class Exec, class Submit>
-void complete(const Exec& exec, Submit&& submit)
-{
-    try {
-        std::forward<Submit>(submit)();
-        exec.fence("KRONA halo: setup copies complete");
-    } catch (...) {
-        exec.fence("KRONA halo: drain failed setup copies");
-        throw;
-    }
-}
 
 template<class> inline constexpr bool unsupported = false;
 

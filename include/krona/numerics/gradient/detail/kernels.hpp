@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/mesh/compute/aux_view.hpp>
+#include <krona/mpi/error.hpp>
 
 namespace krona::numerics::gradient {
 
@@ -12,6 +13,31 @@ struct Options {
     Interpolation interpolation = Interpolation::Arithmetic;
     double pivot_tolerance = 1.0e-12;
 };
+
+struct Requirements {
+    krona::mesh::compute::MeshData mesh;
+    krona::mesh::AuxConnType connectivity;
+    krona::mesh::AuxGeomType geometry;
+};
+
+/// @brief Returns mandatory storage groups before creating the gradient plan.
+[[nodiscard]] constexpr Requirements requirements(Options options = {}) noexcept
+{
+    using MeshData = mesh::compute::MeshData;
+    using mesh::AuxConnType;
+    using mesh::AuxGeomType;
+    if (options.scheme != Scheme::GreenGaussCell && options.scheme != Scheme::GreenGaussFace &&
+        options.scheme != Scheme::LeastSquaresFace)
+        mpi::fatal("Gradient: unknown scheme");
+    if (options.interpolation != Interpolation::Arithmetic && options.interpolation != Interpolation::AuxiliaryWeights)
+        mpi::fatal("Gradient: unknown interpolation");
+    // Current MeshData groups include the unused LS volumes, areas and normals.
+    // Displacement vectors are an optional cache; centroids provide the fallback.
+    return {MeshData::FaceCells | MeshData::Geometry,
+            options.scheme == Scheme::GreenGaussFace ? AuxConnType::None : AuxConnType::CellFaces,
+            options.scheme != Scheme::LeastSquaresFace && options.interpolation == Interpolation::AuxiliaryWeights
+                ? AuxGeomType::FaceInterpolationWeights : AuxGeomType::None};
+}
 
 /// @brief Half-open owned-cell interval; end=-1 selects all remaining owned cells.
 struct CellRange { LocalIndex begin = 0, end = -1; };
@@ -194,57 +220,6 @@ struct PrepareLeastSquares {
     }
 };
 
-template<class Space>
-struct ValidateFaces {
-    mesh::compute::MeshView<Space> mesh;
-    bool least_squares;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
-    {
-        const std::size_t f = static_cast<std::size_t>(face);
-        const auto owner = mesh.connectivity.face_owner(f), neigh = mesh.connectivity.face_neigh(f);
-        if (owner < 0 || owner >= mesh.sizes.n_own ||
-            (face < mesh.sizes.n_inner_faces ? neigh < 0 || neigh >= mesh.sizes.n_cells || neigh == owner : neigh != -1)) {
-            ++bad; return;
-        }
-        if (!least_squares) {
-            const auto area = mesh.geometry.face_area(f);
-            if (!Kokkos::isfinite(area) || !(area > 0) ||
-                !Kokkos::isfinite(mesh.geometry.face_normal_x(f)) ||
-                !Kokkos::isfinite(mesh.geometry.face_normal_y(f)) ||
-                !Kokkos::isfinite(mesh.geometry.face_normal_z(f))) ++bad;
-        }
-    }
-};
-
-template<class Space>
-struct ValidateRows {
-    Metrics<Space> metrics;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, std::size_t& bad) const
-    {
-        const auto& conn = metrics.connectivity;
-        const auto i = static_cast<std::size_t>(cell), total = conn.cell_faces.extent(0);
-        const auto begin = conn.cell_faces_offsets(i), end = conn.cell_faces_offsets(i + 1);
-        if (begin > end || end > total || (i == 0 && begin != 0) ||
-            (cell + 1 == metrics.mesh.sizes.n_own && end != total)) { ++bad; return; }
-        for (auto k = begin; k < end; ++k) {
-            const auto face = conn.cell_faces(k);
-            if (face < 0 || face >= metrics.mesh.sizes.n_faces) { ++bad; continue; }
-            const auto f = static_cast<std::size_t>(face);
-            if (metrics.mesh.connectivity.face_owner(f) != cell && metrics.mesh.connectivity.face_neigh(f) != cell) ++bad;
-        }
-    }
-};
-
-template<class Space>
-struct ValidateVolumes {
-    mesh::compute::MeshView<Space> mesh;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, std::size_t& bad) const
-    {
-        const auto v = mesh.geometry.cell_volume(static_cast<std::size_t>(cell));
-        if (!Kokkos::isfinite(v) || !(v > 0)) ++bad;
-    }
-};
-
 template<bool LeastSquares, class Space, class Coefficients, class T, std::size_t N, class Real>
 struct CellKernel {
     Metrics<Space> metrics;
@@ -297,7 +272,7 @@ struct ClearKernel {
     Batch<T, N> fields;
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
     {
-        const auto i = static_cast<std::size_t>(cell);
+        const std::size_t i = static_cast<std::size_t>(cell);
         for (std::size_t c = 0; c < N; ++c) fields.x[c](i) = fields.y[c](i) = fields.z[c](i) = T{};
     }
 };
@@ -310,7 +285,7 @@ struct FaceKernel {
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
     {
-        const auto f = static_cast<std::size_t>(face);
+        const std::size_t f = static_cast<std::size_t>(face);
         const auto owner = metrics.mesh.connectivity.face_owner(f);
         const auto neigh = metrics.mesh.connectivity.face_neigh(f);
         const bool boundary = face >= metrics.mesh.sizes.n_inner_faces;
@@ -359,4 +334,5 @@ struct FaceKernel {
 };
 
 } // namespace detail
+
 } // namespace krona::numerics::gradient

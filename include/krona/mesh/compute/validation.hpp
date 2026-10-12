@@ -188,14 +188,14 @@ struct ValidateFaces {
             }
         }
         if constexpr (Compare) {
-            if constexpr (has(Geometry, AuxGeomType::FaceCellDistance | AuxGeomType::FaceCellDistanceInv))
+            if constexpr ((has(Geometry, AuxGeomType::FaceCellDistance) && has(Geometry, AuxGeomType::FaceCellDistanceInv)))
                 valid &= detail::close(geometry.face_cell_dist(f) * geometry.face_cell_dist_inv(f), 1, tolerance.relative);
-            if constexpr (has(Geometry, AuxGeomType::FaceNormalDistance | AuxGeomType::FaceNormalDistanceInv))
+            if constexpr ((has(Geometry, AuxGeomType::FaceNormalDistance) && has(Geometry, AuxGeomType::FaceNormalDistanceInv)))
                 valid &= detail::close(geometry.face_normal_dist(f) * geometry.face_normal_dist_inv(f), 1, tolerance.relative);
             if constexpr (has(Data, MeshData::FaceGeometry) &&
-                          has(Geometry, AuxGeomType::FaceNormalDistance | AuxGeomType::FaceAreaOverNormalDistance))
+                          (has(Geometry, AuxGeomType::FaceNormalDistance) && has(Geometry, AuxGeomType::FaceAreaOverNormalDistance)))
                 valid &= detail::close(geometry.face_normal_dist(f) * geometry.face_area_over_normal_dist(f), mesh.geometry.face_area(f), tolerance.relative);
-            if constexpr (has(Data, MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry)) {
+            if constexpr ((has(Data, MeshData::FaceCells) && has(Data, MeshData::CellGeometry) && has(Data, MeshData::FaceGeometry))) {
                 const auto& g = mesh.geometry;
                 const auto o = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
                 const auto neighbour = mesh.connectivity.face_neigh(f);
@@ -373,7 +373,7 @@ struct ValidateFaceIncidence {
             if (n >= 0 && n < mesh.sizes.n_own)
                 valid &= detail::contains(conn.cell_faces_offsets, conn.cell_faces, static_cast<std::size_t>(n), static_cast<LocalIndex>(face));
         }
-        if constexpr (has(Data, MeshData::FaceCells | MeshData::FaceNodes | MeshData::CellNodes)) {
+        if constexpr ((has(Data, MeshData::FaceCells) && has(Data, MeshData::FaceNodes) && has(Data, MeshData::CellNodes))) {
             const auto o = static_cast<std::size_t>(a.face_owner(face));
             const auto n = a.face_neigh(face);
             for (std::size_t j = a.face_nodes_offsets(face); j < a.face_nodes_offsets(face + 1); ++j) {
@@ -414,6 +414,38 @@ struct ValidateNodeIncidence {
             for (std::size_t j = conn.node_faces_offsets(node); j < conn.node_faces_offsets(node + 1); ++j)
                 valid &= detail::contains(a.face_nodes_offsets, a.face_nodes, static_cast<std::size_t>(conn.node_faces(j)), static_cast<LocalIndex>(node));
         if (!valid) ++bad;
+    }
+};
+
+/// @brief Optional type-aware check. Rules must supply device-callable cell_nodes(type),
+/// cell_faces(type), face_nodes(type); return zero for an unsupported type.
+/// Validate CSR first. Shape/type tables are deliberately not inferred from enum values.
+template<class Space, class Rules>
+struct ValidateCellTypes {
+    MeshView<Space> mesh;
+    Rules rules;
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t c, std::size_t& bad) const
+    {
+        const auto& a = mesh.connectivity;
+        const auto b = a.cell_nodes_offsets(c), e = a.cell_nodes_offsets(c + 1);
+        const auto expected = rules.cell_nodes(a.cell_type(c));
+        if (expected == 0 || b > e || e > a.cell_nodes.extent(0) || e - b != expected) ++bad;
+    }
+};
+
+template<class Space, class Rules>
+struct ValidateFaceTypes {
+    MeshView<Space> mesh;
+    Rules rules;
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t f, std::size_t& bad) const
+    {
+        const auto& a = mesh.connectivity;
+        const auto b = a.face_nodes_offsets(f), e = a.face_nodes_offsets(f + 1);
+        const auto expected = rules.face_nodes(a.face_type(f));
+        const auto owner = a.face_owner(f);
+        if (expected == 0 || b > e || e > a.face_nodes.extent(0) || e - b != expected ||
+            owner < 0 || owner >= mesh.sizes.n_own) { ++bad; return; }
+        if (a.face_local_index(f) >= rules.cell_faces(a.cell_type(static_cast<std::size_t>(owner)))) ++bad;
     }
 };
 
@@ -533,7 +565,7 @@ template<MeshData Data = MeshData::All, AuxConnType Connectivity = AuxConnType::
             if constexpr (has(Data, MeshData::CellNodes) || (has(Data, MeshData::FaceCells) && has(Connectivity, AuxConnType::CellFaces)))
                 result.cell_incidence = detail::reduce("mesh/validate_cell_incidence", exec, own, ValidateCellIncidence<Data, Connectivity, Space>{mesh, conn});
             if constexpr ((has(Data, MeshData::FaceCells) && has(Connectivity, AuxConnType::CellFaces)) ||
-                          has(Data, MeshData::FaceCells | MeshData::FaceNodes | MeshData::CellNodes) ||
+                          (has(Data, MeshData::FaceCells) && has(Data, MeshData::FaceNodes) && has(Data, MeshData::CellNodes)) ||
                           (has(Data, MeshData::FaceNodes) && has(Connectivity, AuxConnType::NodeFaces)))
                 result.face_incidence = detail::reduce("mesh/validate_face_incidence", exec, faces, ValidateFaceIncidence<Data, Connectivity, Space>{mesh, conn});
             if constexpr (has(Connectivity, AuxConnType::NodeCells) ||

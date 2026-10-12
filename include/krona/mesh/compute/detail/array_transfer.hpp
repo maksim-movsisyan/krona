@@ -1,20 +1,14 @@
 #pragma once
 
+#include <krona/execution/utils.hpp>
 #include <krona/mesh/compute/mesh_view.hpp>
 #include <krona/mpi/error.hpp>
 
-#include <source_location>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 namespace krona::mesh::compute::detail {
-
-inline void require_kokkos(
-    std::source_location where = std::source_location::current()) noexcept
-{
-    mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Mesh compute requires active Kokkos", where);
-}
 
 // Shared transfer mechanism; no host cache is built or modified here.
 template<class Exec>

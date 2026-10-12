@@ -1,12 +1,13 @@
 #pragma once
 
+#include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/communicator.hpp>
+#include <krona/mpi/context.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/halo/detail/types.hpp>
 #include <krona/mesh/compute/halo_plan.hpp>
 #include <krona/mesh/compute/mesh_view.hpp>
-#include <krona/mpi/context.hpp>
 
 #include <algorithm>
 #include <limits>
@@ -182,7 +183,7 @@ public:
             if constexpr (host_memory) return recv_map_;
             else return Kokkos::create_mirror(Kokkos::WithoutInitializing, recv_map_);
         }();
-        detail::complete(exec_, [&] {
+        execution::complete(exec_, [&] {
             if constexpr (!host_memory) {
                 Kokkos::deep_copy(exec_, send_host, send_map_);
                 Kokkos::deep_copy(exec_, recv_host, recv_map_);
@@ -216,7 +217,7 @@ public:
                                                    "halo/components"), width);
         auto components_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, components_);
         for (std::size_t c = 0; c < width; ++c) components_host(c) = registered_[c];
-        detail::complete(exec_, [&] {
+        execution::complete(exec_, [&] {
             Kokkos::deep_copy(exec_, components_, components_host);
             make_segments(send_segments_, send_peers_, true);
             make_segments(recv_segments_, recv_peers_, false);
@@ -326,7 +327,7 @@ private:
             for (std::size_t i = segment.offset; i < segment.offset + segment.count; ++i)
                 lookup_host(i) = static_cast<int>(p);
         }
-        detail::complete(exec_, [&] {
+        execution::complete(exec_, [&] {
             Kokkos::deep_copy(exec_, segments, segment_host);
             Kokkos::deep_copy(exec_, lookup, lookup_host);
         });

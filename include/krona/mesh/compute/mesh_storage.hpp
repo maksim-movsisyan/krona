@@ -138,7 +138,7 @@ private:
     // Cheap shape checks; full index/geometry validation belongs to the mesh module.
     static void validate(const MeshPart& m, MeshData selected)
     {
-        detail::require_kokkos();
+        execution::require_kokkos();
         mpi::require((static_cast<std::uint64_t>(selected) & ~static_cast<std::uint64_t>(MeshData::All)) == 0,
                         "MeshStorage: unknown data flags");
         mpi::require(m.n_own >= 0 && m.n_cells >= m.n_own && m.n_nodes_own >= 0 &&

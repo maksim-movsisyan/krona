@@ -92,7 +92,7 @@ private:
 
     static void validate(const MeshPart& mesh, const MeshAuxConnectivity& source, AuxConnType requested)
     {
-        detail::require_kokkos();
+        execution::require_kokkos();
         mpi::require((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxConnType::All)) == 0,
                         "AuxConnectivityStorage: unknown flags");
         mpi::require(has(source.active_mask, requested), "AuxConnectivityStorage: requested data is not ready");
@@ -220,7 +220,7 @@ private:
  
     static void validate(const MeshPart& mesh, const MeshAuxGeometry& source, AuxGeomType requested)
     {
-        detail::require_kokkos();
+        execution::require_kokkos();
         mpi::require((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxGeomType::All)) == 0,
                         "AuxGeometryStorage: unknown flags");
         mpi::require(has(source.active_mask, requested), "AuxGeometryStorage: requested data is not ready");
