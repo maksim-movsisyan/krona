@@ -1,5 +1,6 @@
 #include <krona/boundary/scalar/config.hpp>
-#include <krona/boundary/detail/support.hpp>
+#include <krona/mpi/error.hpp>
+#include <krona/execution/utils.hpp>
 
 #if __has_include(<toml++/toml.hpp>)
 #include <toml++/toml.hpp>
@@ -99,7 +100,7 @@ namespace {
 
 Configuration parse_config(std::string_view text, std::string_view field)
 {
-    return detail::guarded([&] {
+    return mpi::guarded([&] {
 #if TOML_EXCEPTIONS
         return decode(toml::parse(text), field);
 #else
@@ -112,7 +113,7 @@ Configuration parse_config(std::string_view text, std::string_view field)
 
 Configuration read_config(const std::filesystem::path& file, std::string_view field)
 {
-    return detail::guarded([&] {
+    return mpi::guarded([&] {
 #if TOML_EXCEPTIONS
         return decode(toml::parse_file(file.string()), field);
 #else

@@ -18,7 +18,7 @@ struct GeometryView {
 
     template<class Real, class Diffusivity, class Correction = NoCorrection>
     KOKKOS_INLINE_FUNCTION Context<Real> context(LocalIndex face, const Diffusivity& diffusion,
-                                               const Correction& correction = {}, Real time = 0) const
+                                                 const Correction& correction = {}, Real time = 0) const
     {
         const std::size_t f = static_cast<std::size_t>(face);
         const auto owner = face_owner(f);

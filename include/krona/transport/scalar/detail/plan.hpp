@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/mpi/error.hpp>
 #include <krona/boundary/scalar/conditions.hpp>
 #include <krona/linalg/mesh_adapter.hpp>
 #include <krona/mesh/compute/mesh_view.hpp>
@@ -9,25 +10,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <exception>
 #include <limits>
-#include <source_location>
 #include <string>
-#include <utility>
 
 namespace krona::transport::scalar::detail {
-\
-inline void require(bool condition, const char* message,
-                    std::source_location where = std::source_location::current()) noexcept
-{ if (!condition) [[unlikely]] mpi::fatal(message, where); }
-
-template<class Function>
-decltype(auto) guarded(Function&& function)
-{
-    try { return std::forward<Function>(function)(); }
-    catch (const std::exception& error) { mpi::fatal(error.what()); }
-    catch (...) { mpi::fatal("Scalar diffusion: unknown exception"); }
-}
 
 template<class Space, class Real>
 struct RowPlan {
@@ -45,8 +31,8 @@ struct ValidateGeometry {
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, int& bad) const
     {
-        const auto f = static_cast<std::size_t>(face);
-        const auto i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
+        const std::size_t f = static_cast<std::size_t>(face);
+        const std::size_t i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
         const auto& g = mesh.geometry;
         Real dx, dy, dz;
         if (face < mesh.sizes.n_inner_faces) {
@@ -126,22 +112,22 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
     mesh::compute::MeshView<typename Exec::memory_space> mesh,
     MPI_Comm comm, const Exec& exec, DiffusionOptions options)
 {
-    return guarded([&] {
-        require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Scalar diffusion requires active Kokkos");
-        require(std::isfinite(options.orthogonality_tolerance) && options.orthogonality_tolerance >= 0 &&
+    return mpi::guarded([&] {
+        mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Scalar diffusion requires active Kokkos");
+        mpi::require(std::isfinite(options.orthogonality_tolerance) && options.orthogonality_tolerance >= 0 &&
                 options.orthogonality_tolerance < 1, "Scalar diffusion: invalid orthogonality tolerance");
-        require(host.n_own >= 0 && host.n_cells >= host.n_own && host.faces_grouped &&
+        mpi::require(host.n_own >= 0 && host.n_cells >= host.n_own && host.faces_grouped &&
             mesh.sizes.faces_grouped && host.n_internal_faces >= 0 &&
             host.n_inner_faces >= host.n_internal_faces && host.n_faces >= host.n_inner_faces &&
             mesh.sizes.n_own == host.n_own && mesh.sizes.n_cells == host.n_cells &&
             mesh.sizes.n_faces == host.n_faces && mesh.sizes.n_internal_faces == host.n_internal_faces &&
             mesh.sizes.n_inner_faces == host.n_inner_faces, "Scalar diffusion: grouped host/view mesh mismatch");
-        require(mesh.has(mesh::compute::MeshData::FaceCells | mesh::compute::MeshData::Geometry),
+        mpi::require(mesh.has(mesh::compute::MeshData::FaceCells | mesh::compute::MeshData::Geometry),
                 "Scalar diffusion requires face cells and cell/face geometry");
         const std::size_t n = static_cast<std::size_t>(host.n_own);
         const std::size_t cells = static_cast<std::size_t>(host.n_cells);
         const std::size_t nf = static_cast<std::size_t>(host.n_faces);
-        require(mesh.connectivity.face_owner.extent(0) == nf && mesh.connectivity.face_neigh.extent(0) == nf &&
+        mpi::require(mesh.connectivity.face_owner.extent(0) == nf && mesh.connectivity.face_neigh.extent(0) == nf &&
             mesh.geometry.cell_centroid_x.extent(0) == cells && mesh.geometry.cell_centroid_y.extent(0) == cells &&
             mesh.geometry.cell_centroid_z.extent(0) == cells && mesh.geometry.cell_volume.extent(0) >= n &&
             mesh.geometry.face_centroid_x.extent(0) == nf && mesh.geometry.face_centroid_y.extent(0) == nf &&
@@ -156,7 +142,7 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
             const bool valid = f < static_cast<std::size_t>(host.n_internal_faces) ?
                 neighbour >= 0 && neighbour < host.n_own :
                 (f < static_cast<std::size_t>(host.n_inner_faces) ? neighbour >= host.n_own : neighbour == -1);
-            require(valid, "Scalar diffusion: face endpoints disagree with grouped intervals");
+            mpi::require(valid, "Scalar diffusion: face endpoints disagree with grouped intervals");
         }
         linalg::Distribution<Exec> distribution(numbering.owned_gids(), comm);
         linalg::CsrPattern<Exec> pattern(distribution, input, exec);
@@ -165,7 +151,7 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
             const auto begin = input.column_gids.begin()+static_cast<std::ptrdiff_t>(input.row_offsets[row]);
             const auto end = input.column_gids.begin()+static_cast<std::ptrdiff_t>(input.row_offsets[row+1]);
             const auto found = std::lower_bound(begin, end, gid);
-            require(found != end && *found == gid, "Scalar diffusion: missing matrix entry");
+            mpi::require(found != end && *found == gid, "Scalar diffusion: missing matrix entry");
             return permutation[static_cast<std::size_t>(found-input.column_gids.begin())];
         };
         std::vector<std::size_t> offsets(n+1, 0), diagonal(n);
@@ -175,8 +161,8 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
             if (host.face_neigh[u] < host.n_own) ++offsets[static_cast<std::size_t>(host.face_neigh[u])+1];
         }
         for (std::size_t i = 0; i < n; ++i) {
-            require(offsets[i+1] <= std::numeric_limits<std::size_t>::max()-offsets[i],
-                    "Scalar diffusion: incidence size overflow");
+            mpi::require(offsets[i+1] <= std::numeric_limits<std::size_t>::max()-offsets[i],
+                         "Scalar diffusion: incidence size overflow");
             offsets[i+1] += offsets[i];
             diagonal[i] = find_entry(i, numbering.cell_to_global[i]);
         }
@@ -209,8 +195,8 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
         Kokkos::parallel_reduce("diffusion/validate_cells", Policy(exec, 0, host.n_cells),
             ValidateCells<Space, Real>{mesh}, bad_cells);
         exec.fence("Scalar diffusion: geometry preparation complete");
-        require(bad_faces == 0, "Scalar diffusion: invalid or nonorthogonal face geometry");
-        require(bad_cells == 0, "Scalar diffusion: invalid cell geometry");
+        mpi::require(bad_faces == 0, "Scalar diffusion: invalid or nonorthogonal face geometry");
+        mpi::require(bad_cells == 0, "Scalar diffusion: invalid cell geometry");
         plan.area_over_distance = metric;
         return Prepared<Exec, Real>{pattern, plan};
     });
@@ -221,7 +207,7 @@ void validate_view(View view, std::size_t count)
 {
     static_assert(Kokkos::is_view<View>::value && View::rank == 1);
     static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
-    require(view.extent(0) >= count && (count == 0 || (view.data() != nullptr && view.stride(0) > 0)),
+    mpi::require(view.extent(0) >= count && (count == 0 || (view.data() != nullptr && view.stride(0) > 0)),
             "Scalar diffusion: field/coefficient/source extent or storage is invalid");
 }
 

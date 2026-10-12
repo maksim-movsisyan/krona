@@ -1,14 +1,14 @@
 #pragma once
 
 #include <krona/boundary/scalar/geometry_view.hpp>
-#include <krona/boundary/detail/support.hpp>
+#include <krona/mpi/error.hpp>
 
 #include <Kokkos_NumericTraits.hpp>
 
 namespace krona::boundary::scalar::detail {
 
-using krona::boundary::detail::guarded;
-using krona::boundary::detail::require;
+using krona::mpi::guarded;
+using krona::mpi::require;
 
 template<class Space, class Real>
 struct ValidateGeometry {

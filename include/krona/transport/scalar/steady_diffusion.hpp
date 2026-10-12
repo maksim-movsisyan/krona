@@ -33,14 +33,14 @@ public:
     SteadyDiffusion(const mesh::MeshPart& host, Mesh mesh_view, View component,
                     mpi::CommView comm, Exec exec, SteadyDiffusionOptions options = {})
         : communicator_(mpi::Comm::duplicate(comm)), comm_(communicator_.view()), exec_(exec), field_(borrow(component)),
-          operation_(host, mesh_view, comm_.native(), exec_, options.diffusion),
+          operation_(host, mesh_view, comm_, exec_, options.diffusion),
           solution_(operation_.matrix().pattern().distribution()),
           linear_(operation_.matrix(), std::move(options.linear)),
           halo_(mesh_view, {host.nb_ranks, host.send_offsets, host.recv_offsets}, comm_, 0, exec_, options.transfer)
     {
         const auto cells = static_cast<std::size_t>(host.n_cells);
         const auto boundary_faces = static_cast<std::size_t>(host.n_faces-host.n_inner_faces);
-        detail::require(boundary_faces <= std::numeric_limits<std::size_t>::max()-cells,
+        mpi::require(boundary_faces <= std::numeric_limits<std::size_t>::max()-cells,
                         "Scalar diffusion: extended field size overflow");
         detail::validate_view<Exec>(field_, cells+boundary_faces);
         // The existing halo API accepts exactly n_cells; borrow that prefix without copying data.

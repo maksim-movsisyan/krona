@@ -1,5 +1,7 @@
 #pragma once
 
+#include <krona/mpi/error.hpp>
+#include <krona/mpi/communicator.hpp>
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/linalg/csr_matrix.hpp>
 #include <krona/transport/scalar/detail/assembly.hpp>
@@ -22,10 +24,9 @@ class DiffusionOperator {
     using Flags = Kokkos::View<int*, Space>;
 
 public:
-    DiffusionOperator(const mesh::MeshPart& host, Mesh mesh_view, MPI_Comm comm, Exec exec,
-                      DiffusionOptions options = {})
+    DiffusionOperator(const mesh::MeshPart& host, Mesh mesh_view, mpi::CommView comm, Exec exec, DiffusionOptions options = {})
         : exec_(exec), mesh_(mesh_view), comm_(comm),
-          prepared_(detail::prepare<Exec, Real>(host, mesh_view, comm, exec, options)),
+          prepared_(detail::prepare<Exec, Real>(host, mesh_view, comm.native(), exec, options)),
           matrix_(prepared_.pattern), rhs_(prepared_.pattern.distribution()),
           flags_("diffusion/status", detail::StatusCount), host_flags_(Kokkos::create_mirror(flags_)) {}
 
@@ -41,12 +42,12 @@ public:
              class Diffusivity = boundary::scalar::UniformDiffusivity<Real>>
     void assemble_async(const Boundary& boundary, Source source = {}, Diffusivity diffusion = {}, Real time = 0)
     {
-        detail::require(!pending_, "Scalar diffusion: assembly is pending; call commit()");
+        mpi::require(!pending_, "Scalar diffusion: assembly is pending; call commit()");
         validate_boundary(boundary);
-        detail::require(std::isfinite(time), "Scalar diffusion: time must be finite");
+        mpi::require(std::isfinite(time), "Scalar diffusion: time must be finite");
         detail::validate_source<Exec>(source, static_cast<std::size_t>(mesh_.sizes.n_own));
         detail::validate_diffusion<Exec>(diffusion, static_cast<std::size_t>(mesh_.sizes.n_faces));
-        detail::guarded([&] {
+        mpi::guarded([&] {
             auto values = matrix_.edit_values(exec_);
             auto rhs = rhs_.edit(exec_);
             pending_ = true; ready_ = false;
@@ -75,19 +76,20 @@ public:
     /// @brief Completes local assembly, checks data collectively and rejects an unanchored global problem.
     void commit()
     {
-        detail::require(pending_, "Scalar diffusion: no pending assembly to commit");
+        mpi::require(pending_, "Scalar diffusion: no pending assembly to commit");
         Kokkos::deep_copy(exec_, host_flags_, flags_);
         matrix_.commit(); rhs_.commit();
         pending_ = false;
         std::array<int, detail::StatusCount> global{};
-        mpi::check(MPI_Allreduce(host_flags_.data(), global.data(), detail::StatusCount, MPI_INT, MPI_MAX, comm_),
+        mpi::check(MPI_Allreduce(host_flags_.data(), global.data(), 
+                   detail::StatusCount, MPI_INT, MPI_MAX, comm_.native()),
                    "MPI_Allreduce(diffusion status)");
-        detail::require(global[detail::BadSource] == 0, "Scalar diffusion: source density must be finite");
-        detail::require(global[detail::BadDiffusion] == 0, "Scalar diffusion: face diffusivity must be finite and positive");
-        detail::require(global[detail::BadBoundary] == 0, "Scalar diffusion: boundary flux relation must be finite with a nonnegative owner coefficient");
-        detail::require(global[detail::BadSystem] == 0, "Scalar diffusion: coefficients are not representable or a row has no positive diagonal");
-        detail::require(prepared_.pattern.distribution().global_size() == 0 || global[detail::HasAnchor] != 0,
-                        "Scalar diffusion: pure Neumann problem needs an explicit reference; not supported yet");
+        mpi::require(global[detail::BadSource] == 0, "Scalar diffusion: source density must be finite");
+        mpi::require(global[detail::BadDiffusion] == 0, "Scalar diffusion: face diffusivity must be finite and positive");
+        mpi::require(global[detail::BadBoundary] == 0, "Scalar diffusion: boundary flux relation must be finite with a nonnegative owner coefficient");
+        mpi::require(global[detail::BadSystem] == 0, "Scalar diffusion: coefficients are not representable or a row has no positive diagonal");
+        mpi::require(prepared_.pattern.distribution().global_size() == 0 || global[detail::HasAnchor] != 0,
+                     "Scalar diffusion: pure Neumann problem needs an explicit reference; not supported yet");
         ready_ = true;
     }
 
@@ -99,7 +101,7 @@ public:
                                         Diffusivity diffusion = {}, Real time = 0) const
     {
         require_ready(); validate_boundary(boundary);
-        detail::require(std::isfinite(time), "Scalar diffusion: time must be finite");
+        mpi::require(std::isfinite(time), "Scalar diffusion: time must be finite");
         detail::validate_view<Exec>(field, static_cast<std::size_t>(mesh_.sizes.n_own));
         detail::validate_source<Exec>(source, static_cast<std::size_t>(mesh_.sizes.n_own));
         detail::validate_diffusion<Exec>(diffusion, static_cast<std::size_t>(mesh_.sizes.n_faces));
@@ -117,9 +119,12 @@ public:
         exec_.fence("Scalar diffusion: balance integration complete");
         const std::array<double, 2> local{static_cast<double>(source_sum), static_cast<double>(boundary_sum)};
         std::array<double, 2> global{};
-        mpi::check(MPI_Allreduce(local.data(), global.data(), 2, MPI_DOUBLE, MPI_SUM, comm_),
+
+        
+        mpi::check(MPI_Allreduce(local.data(), global.data(), 
+                   2, MPI_DOUBLE, MPI_SUM, comm_.native()),
                    "MPI_Allreduce(diffusion balance)");
-        detail::require(std::isfinite(global[0]) && std::isfinite(global[1]), "Scalar diffusion: nonfinite balance");
+        mpi::require(std::isfinite(global[0]) && std::isfinite(global[1]), "Scalar diffusion: nonfinite balance");
         return {global[0], global[1], global[1]-global[0]};
     }
 
@@ -127,12 +132,12 @@ public:
     [[nodiscard]] const linalg::Vector<Scalar, Exec>& rhs() const noexcept { return rhs_; }
     [[nodiscard]] const Exec& execution_space() const noexcept { return exec_; }
     [[nodiscard]] bool pending() const noexcept { return pending_; }
-    void require_ready() const { detail::require(ready_ && !pending_, "Scalar diffusion: assemble and commit before use"); }
+    void require_ready() const { mpi::require(ready_ && !pending_, "Scalar diffusion: assemble and commit before use"); }
 
 private:
     Exec exec_;
     Mesh mesh_;
-    MPI_Comm comm_;
+    mpi::CommView comm_;
     detail::Prepared<Exec, Real> prepared_;
     linalg::CsrMatrix<Scalar, Exec> matrix_;
     linalg::Vector<Scalar, Exec> rhs_;
@@ -145,7 +150,7 @@ private:
     {
         const auto b = boundary.geometry_view();
         const auto& g = mesh_.geometry;
-        detail::require(b.n_cells == mesh_.sizes.n_cells && b.n_inner_faces == mesh_.sizes.n_inner_faces &&
+        mpi::require(b.n_cells == mesh_.sizes.n_cells && b.n_inner_faces == mesh_.sizes.n_inner_faces &&
             b.face_owner.data() == mesh_.connectivity.face_owner.data() &&
             b.cell_x.data() == g.cell_centroid_x.data() && b.cell_y.data() == g.cell_centroid_y.data() &&
             b.cell_z.data() == g.cell_centroid_z.data() && b.face_x.data() == g.face_centroid_x.data() &&

@@ -100,12 +100,13 @@ void check_two_cell_matrix(const MeshPart& m, Values values, Rhs rhs, double d)
 
 void assembly_case(const Exec& exec, bool split)
 {
-    auto m = krona::test::diffusion::cartesian(2, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(2, 1, 1, comm.native());
     if (split) krona::test::diffusion::split_face(m);
     MeshStorage mesh{m, {}, exec};
     bc::Manager<> boundary{m, mesh.view(), exec};
     insulated(boundary); boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{3});
-    ts::DiffusionOperator<> op{m, mesh.view(), MPI_COMM_WORLD, exec};
+    ts::DiffusionOperator<> op{m, mesh.view(), comm, exec};
     op.assemble_async(boundary, ts::UniformSource<Calc>{2}, bc::UniformDiffusivity<Calc>{3});
     check(op.pending(), "Assembly records an outstanding batch");
     op.commit(); op.require_ready();
@@ -345,7 +346,8 @@ void subcomm(const Exec& exec)
 
 void rejection(const Exec& exec, std::string_view name)
 {
-    auto m = krona::test::diffusion::cartesian(6, 1, 1, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    auto m = krona::test::diffusion::cartesian(6, 1, 1, comm.native());
     if (name == "nonorthogonal") {
         m.face_normal_x[0] *= std::sqrt(0.99); m.face_normal_y[0] = 0.1;
     }
@@ -353,7 +355,7 @@ void rejection(const Exec& exec, std::string_view name)
     bc::Manager<Exec, Calc, NegativeBoundary> boundary{m, mesh.view(), exec}; insulated(boundary);
     if (name != "pure_neumann") boundary.set(0, bc::FixedValue<Calc>{0});
     if (name == "negative_boundary") boundary.set(1, NegativeBoundary{});
-    ts::DiffusionOperator<> op{m, mesh.view(), MPI_COMM_WORLD, exec};
+    ts::DiffusionOperator<> op{m, mesh.view(), comm, exec};
     if (name == "negative_diffusion") op.assemble_async(boundary, ts::UniformSource<Calc>{0}, bc::UniformDiffusivity<Calc>{-1});
     else if (name == "bad_source") op.assemble_async(boundary, ts::UniformSource<Calc>{std::numeric_limits<Calc>::quiet_NaN()});
     else if (name == "source_extent") {
