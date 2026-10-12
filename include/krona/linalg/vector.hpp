@@ -24,7 +24,7 @@ public:
     using native_type = typename Types<Scalar, Exec>::vector_type;
     explicit Vector(const Distribution<Exec>& distribution) : distribution_(distribution)
     {
-        detail::guarded([&] {
+        mpi::guarded([&] {
             vector_ = Teuchos::rcp(new native_type(distribution_.native(), true));
             Kokkos::fence("Linalg: vector initialization complete");
         });
@@ -40,12 +40,12 @@ public:
     {
         require_committed();
         pending_exec_ = exec; pending_ = true;
-        return detail::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::ReadWrite); });
+        return mpi::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::ReadWrite); });
     }
     [[nodiscard]] auto read() const
     {
         require_committed();
-        return detail::guarded([&] { return std::as_const(*vector_).getLocalViewDevice(Tpetra::Access::ReadOnly); });
+        return mpi::guarded([&] { return std::as_const(*vector_).getLocalViewDevice(Tpetra::Access::ReadOnly); });
     }
     /// @brief Completes the custom execution-space write batch.
     void commit()
@@ -53,13 +53,13 @@ public:
         if (pending_) { pending_exec_.fence("Linalg: vector writes committed"); pending_ = false; }
     }
     void require_committed() const
-    { detail::require(!pending_, "Linalg: vector has pending writes; call commit()"); }
+    { mpi::require(!pending_, "Linalg: vector has pending writes; call commit()"); }
 
     /// @brief Blocking native operation; accepts a nonzero initial guess.
     void fill(Scalar value)
     {
         require_committed();
-        detail::guarded([&] { vector_->putScalar(value); Kokkos::fence("Linalg: vector fill complete"); });
+        mpi::guarded([&] { vector_->putScalar(value); Kokkos::fence("Linalg: vector fill complete"); });
     }
 
     /// @brief Copies an owned prefix asynchronously; component strides are respected.
@@ -68,7 +68,7 @@ public:
     {
         static_assert(Component::rank == 1);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Component::memory_space>::accessible);
-        detail::require(component.extent(0) >= local_size(), "Linalg: component is shorter than the owned vector");
+        mpi::require(component.extent(0) >= local_size(), "Linalg: component is shorter than the owned vector");
         auto target = edit(exec);
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
         Kokkos::parallel_for("linalg/component_to_vector", Policy(exec, 0, local_size()),
@@ -81,7 +81,7 @@ public:
     {
         static_assert(Component::rank == 1 && !std::is_const_v<typename Component::value_type>);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Component::memory_space>::accessible);
-        detail::require(component.extent(0) >= local_size(), "Linalg: component is shorter than the owned vector");
+        mpi::require(component.extent(0) >= local_size(), "Linalg: component is shorter than the owned vector");
         auto source = read();
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
         Kokkos::parallel_for("linalg/vector_to_component", Policy(exec, 0, local_size()),

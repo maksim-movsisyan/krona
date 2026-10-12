@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/mpi/error.hpp>
+#include <krona/mpi/communicator.hpp>
 #include <krona/boundary/scalar/conditions.hpp>
 #include <krona/linalg/mesh_adapter.hpp>
 #include <krona/mesh/compute/mesh_view.hpp>
@@ -110,7 +111,7 @@ struct Prepared {
 template<class Exec, class Real>
 Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
     mesh::compute::MeshView<typename Exec::memory_space> mesh,
-    MPI_Comm comm, const Exec& exec, DiffusionOptions options)
+    mpi::CommView comm, const Exec& exec, DiffusionOptions options)
 {
     return mpi::guarded([&] {
         mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Scalar diffusion requires active Kokkos");
@@ -135,7 +136,7 @@ Prepared<Exec, Real> prepare(const mesh::MeshPart& host,
             mesh.geometry.face_normal_y.extent(0) == nf && mesh.geometry.face_normal_z.extent(0) == nf &&
             mesh.geometry.face_area.extent(0) == nf, "Scalar diffusion: invalid mesh array extents");
 
-        const auto numbering = linalg::build_cell_numbering(host, comm);
+        const auto numbering = linalg::build_cell_numbering(host, comm.native());
         const auto input = linalg::make_face_csr(host, numbering);
         for (std::size_t f = 0; f < nf; ++f) {
             const auto neighbour = host.face_neigh[f];

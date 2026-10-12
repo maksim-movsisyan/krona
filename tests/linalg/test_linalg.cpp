@@ -1,4 +1,5 @@
 #include "common/test_support.hpp"
+#include "krona/mpi/communicator.hpp"
 
 #include <krona/linalg/field_transfer.hpp>
 #include <krona/linalg/mesh_adapter.hpp>
@@ -7,7 +8,6 @@
 
 #include <array>
 #include <iostream>
-#include <numeric>
 #include <string>
 #include <vector>
 
@@ -95,8 +95,9 @@ std::vector<T> coefficients(const Chain& data, double shift = 0)
 template<class T>
 void solve_chain(const Exec& exec, bool empty = false, bool update = false, bool device = false)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto data = chain(4, empty);
-    la::Distribution<> distribution(data.owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(data.owned, comm);
     la::CsrPattern<> pattern(distribution, data.input, exec);
     la::CsrMatrix<T> matrix(pattern);
     auto values = coefficients<T>(data);
@@ -161,9 +162,10 @@ void solve_chain(const Exec& exec, bool empty = false, bool update = false, bool
 
 void distribution_case(const Exec&)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world();
     std::array<GO, 2> gids{101+10*static_cast<GO>(rank), 100+10*static_cast<GO>(rank)};
-    la::Distribution<> distribution(gids, MPI_COMM_WORLD);
+    la::Distribution<> distribution(gids, comm);
     equal(distribution.local_size(), std::size_t{2}, "Owned count");
     equal(distribution.global_size(), static_cast<Tpetra::global_size_t>(2*ranks), "Global count");
     equal(distribution.global_id(0), gids[0], "Arbitrary GID order is preserved");
@@ -172,6 +174,7 @@ void distribution_case(const Exec&)
 
 void numbering_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); equal(ranks, 2, "Two ranks for numbering");
     krona::mesh::MeshPart mesh;
     mesh.rank = rank; mesh.nprocs = ranks; mesh.n_own = 2; mesh.n_cells = 4;
@@ -179,7 +182,7 @@ void numbering_case(const Exec& exec)
     mesh.send_owned_local = {0, 1}; mesh.recv_ghost_local = {3, 2};
     mesh.cell_gid = {991, 17, 602, 1003};
     mesh.n_faces = 4; mesh.face_owner = {0, 0, 1, 0}; mesh.face_neigh = {1, 2, 3, -1};
-    auto numbering = la::build_cell_numbering(mesh, MPI_COMM_WORLD);
+    auto numbering = la::build_cell_numbering(mesh, comm.native());
     equal(numbering.cell_to_global[0], static_cast<GO>(2*rank), "Owned contiguous GID");
     equal(numbering.cell_to_global[2], static_cast<GO>(2*(1-rank)+1), "Permuted ghost index maps to its donor");
     equal(numbering.cell_to_global[3], static_cast<GO>(2*(1-rank)), "Ghost order is not sorted away");
@@ -188,7 +191,7 @@ void numbering_case(const Exec& exec)
     auto input = la::make_face_csr(mesh, numbering);
     equal(input.row_offsets.size(), std::size_t{3}, "Owned-only CSR rows");
     equal(input.column_gids.size(), std::size_t{6}, "Diagonal and real-cell neighbours; no boundary unknown");
-    la::Distribution<> distribution(numbering.owned_gids(), MPI_COMM_WORLD);
+    la::Distribution<> distribution(numbering.owned_gids(), comm);
     la::CsrPattern<> pattern(distribution, input, exec);
     la::CsrMatrix<double> matrix(pattern);
     std::vector<double> values(input.column_gids.size(), 1);
@@ -219,12 +222,13 @@ void subcomm_case(const Exec& exec)
     MPI_Comm comm = MPI_COMM_NULL;
     krona::mpi::check(MPI_Comm_split(MPI_COMM_WORLD, rank, 0, &comm), "MPI_Comm_split(test)");
     {
+        krona::mpi::CommView comm_view(comm);
         krona::mesh::MeshPart mesh;
         mesh.rank = 0; mesh.nprocs = 1; mesh.n_own = 2; mesh.n_cells = 2;
         mesh.n_faces = 1; mesh.face_owner = {0}; mesh.face_neigh = {1};
-        const auto numbering = la::build_cell_numbering(mesh, comm);
+        const auto numbering = la::build_cell_numbering(mesh, comm_view.native());
         equal(numbering.global_cells, GO{2}, "Numbering is relative to the supplied subcommunicator");
-        la::Distribution<> distribution(numbering.owned_gids(), comm);
+        la::Distribution<> distribution(numbering.owned_gids(), comm_view);
         auto input = la::make_face_csr(mesh, numbering);
         la::CsrPattern<> pattern(distribution, input, exec);
         la::CsrMatrix<double> matrix(pattern);
@@ -250,10 +254,11 @@ void precision_case(const Exec& exec) { solve_chain<float>(exec); solve_chain<do
 template<class Layout>
 void fields(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); (void)ranks;
     std::array<GO, 6> gids{};
     for (std::size_t i = 0; i < gids.size(); ++i) gids[i] = 6*static_cast<GO>(rank)+static_cast<GO>(i);
-    la::Distribution<> distribution(gids, MPI_COMM_WORLD);
+    la::Distribution<> distribution(gids, comm);
     la::Vector<double> vector(distribution);
     krona::fields::FieldStorage<float, 3, Exec, Layout> input("input", 5, krona::fields::FieldLocation::Custom, exec);
     krona::fields::FieldStorage<float, 3, Exec, Layout> output("output", 5, krona::fields::FieldLocation::Custom, exec);
@@ -268,7 +273,7 @@ void fields(const Exec& exec)
     for (std::size_t i = 0; i < 5; ++i) for (int c = 0; c < 3; ++c)
         equal(result(i, c), i < 2 ? host(i, c) : -999.0F, "Field packing respects layout, mixed precision and extended tails");
     std::array<GO, 2> scalar_gids{2*static_cast<GO>(rank), 2*static_cast<GO>(rank)+1};
-    la::Distribution<> scalar_distribution(scalar_gids, MPI_COMM_WORLD);
+    la::Distribution<> scalar_distribution(scalar_gids, comm);
     la::Vector<double> scalar(scalar_distribution);
     scalar.copy_from_component(input.view().component(2), exec); scalar.commit();
     scalar.copy_to_component(output.view().component(1), exec); exec.fence();
@@ -280,8 +285,9 @@ void fields_case(const Exec& exec) { fields<Kokkos::LayoutLeft>(exec); fields<Ko
 
 void shared_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto data = chain();
-    la::Distribution<> distribution(data.owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(data.owned, comm);
     la::CsrPattern<> pattern(distribution, data.input, exec);
     la::CsrMatrix<double> a(pattern), b(pattern);
     equal(a.native()->getCrsGraph().getRawPtr(), b.native()->getCrsGraph().getRawPtr(), "Matrices share the graph");
@@ -304,9 +310,10 @@ struct NativeDiagonal {
 };
 void native_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); (void)ranks;
     std::array<GO, 2> gids{2*static_cast<GO>(rank), 2*static_cast<GO>(rank)+1};
-    la::Distribution<> distribution(gids, MPI_COMM_WORLD);
+    la::Distribution<> distribution(gids, comm);
     la::CsrInput input{{0, 1, 2}, {gids[0], gids[1]}};
     la::CsrPattern<> pattern(distribution, input, exec, false);
     check(!pattern.has_input_mapping(), "Native assembly omits coefficient permutation storage");
@@ -325,8 +332,9 @@ void native_case(const Exec& exec)
 
 void nonconvergence_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto data = chain(20);
-    la::Distribution<> distribution(data.owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(data.owned, comm);
     la::CsrPattern<> pattern(distribution, data.input, exec);
     la::CsrMatrix<double> matrix(pattern); matrix.set_values(coefficients<double>(data));
     la::Vector<double> rhs(distribution), x(distribution);
@@ -343,8 +351,9 @@ void nonconvergence_case(const Exec& exec)
 
 void zero_rhs_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto data = chain();
-    la::Distribution<> distribution(data.owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(data.owned, comm);
     la::CsrPattern<> pattern(distribution, data.input, exec);
     la::CsrMatrix<double> matrix(pattern); matrix.set_values(coefficients<double>(data));
     la::Vector<double> rhs(distribution), x(distribution);
@@ -363,7 +372,8 @@ void zero_rhs_case(const Exec& exec)
 
 void all_empty_case(const Exec& exec)
 {
-    la::Distribution<> distribution(std::span<const GO>{}, MPI_COMM_WORLD);
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
+    la::Distribution<> distribution(std::span<const GO>{}, comm);
     la::CsrInput input{{0}, {}};
     la::CsrPattern<> pattern(distribution, input, exec);
     la::CsrMatrix<double> matrix(pattern);
@@ -375,17 +385,19 @@ void all_empty_case(const Exec& exec)
 
 void duplicate_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); (void)ranks;
     const std::array<GO, 1> owned{static_cast<GO>(rank)};
-    la::Distribution<> distribution(owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(owned, comm);
     la::CsrInput input{{0, 2}, {rank, rank}};
     la::CsrPattern<> pattern(distribution, input, exec);
     (void)pattern;
 }
 void pending_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto data = chain();
-    la::Distribution<> distribution(data.owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(data.owned, comm);
     la::CsrPattern<> pattern(distribution, data.input, exec);
     la::CsrMatrix<double> matrix(pattern);
     auto values = matrix.edit_values(exec); (void)values;
@@ -394,17 +406,19 @@ void pending_case(const Exec& exec)
 }
 void missing_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); (void)ranks;
     const std::array<GO, 1> owned{static_cast<GO>(rank)};
-    la::Distribution<> distribution(owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(owned, comm);
     la::CsrInput input{{0, 1}, {GO{1000000}}};
     la::CsrPattern<> pattern(distribution, input, exec); (void)pattern;
 }
 void offsets_case(const Exec& exec)
 {
+    krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto [rank, ranks] = world(); (void)ranks;
     const std::array<GO, 2> owned{2*static_cast<GO>(rank), 2*static_cast<GO>(rank)+1};
-    la::Distribution<> distribution(owned, MPI_COMM_WORLD);
+    la::Distribution<> distribution(owned, comm);
     la::CsrInput input{{0, 100, 1}, {owned[0]}};
     la::CsrPattern<> pattern(distribution, input, exec); (void)pattern;
 }

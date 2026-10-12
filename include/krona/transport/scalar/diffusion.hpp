@@ -26,7 +26,7 @@ class DiffusionOperator {
 public:
     DiffusionOperator(const mesh::MeshPart& host, Mesh mesh_view, mpi::CommView comm, Exec exec, DiffusionOptions options = {})
         : exec_(exec), mesh_(mesh_view), comm_(comm),
-          prepared_(detail::prepare<Exec, Real>(host, mesh_view, comm.native(), exec, options)),
+          prepared_(detail::prepare<Exec, Real>(host, mesh_view, comm, exec, options)),
           matrix_(prepared_.pattern), rhs_(prepared_.pattern.distribution()),
           flags_("diffusion/status", detail::StatusCount), host_flags_(Kokkos::create_mirror(flags_)) {}
 

@@ -25,7 +25,7 @@ template<class Scalar, class Exec, class T, int N, class Space, class Layout>
 void copy_from_field(Vector<Scalar, Exec>& vector, fields::FieldView<T, N, Space, Layout> field, const Exec& exec = {})
 {
     static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible);
-    detail::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
+    mpi::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
                     field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
     auto values = vector.edit(exec);
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
@@ -38,7 +38,7 @@ template<class Scalar, class Exec, class T, int N, class Space, class Layout>
 void copy_to_field(const Vector<Scalar, Exec>& vector, fields::FieldView<T, N, Space, Layout> field, const Exec& exec = {})
 {
     static_assert(!std::is_const_v<T> && Kokkos::SpaceAccessibility<Exec, Space>::accessible);
-    detail::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
+    mpi::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
                     field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
     auto values = vector.read();
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;

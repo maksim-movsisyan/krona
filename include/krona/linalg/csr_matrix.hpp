@@ -26,7 +26,7 @@ public:
 
     explicit CsrMatrix(const CsrPattern<Exec>& pattern) : pattern_(pattern)
     {
-        detail::guarded([&] {
+        mpi::guarded([&] {
             matrix_ = Teuchos::rcp(new native_type(pattern_.native()));
             matrix_->setAllToScalar(Scalar{0});
             matrix_->fillComplete(pattern_.distribution().native(), pattern_.distribution().native());
@@ -44,21 +44,21 @@ public:
     {
         require_committed();
         pending_exec_ = exec; pending_ = true; ++revision_;
-        return detail::guarded([&] { return matrix_->getLocalMatrixDevice().values; });
+        return mpi::guarded([&] { return matrix_->getLocalMatrixDevice().values; });
     }
     void commit()
     {
         if (pending_) { pending_exec_.fence("Linalg: matrix writes committed"); pending_ = false; }
     }
     void require_committed() const
-    { detail::require(!pending_, "Linalg: matrix has pending writes; call commit()"); }
+    { mpi::require(!pending_, "Linalg: matrix has pending writes; call commit()"); }
 
     /// @brief Blocking host assembly in the original CSR input order.
     void set_values(std::span<const Scalar> input)
     {
         require_committed();
-        detail::require(input.size() == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
-        detail::guarded([&] {
+        mpi::require(input.size() == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
+        mpi::guarded([&] {
             auto values = matrix_->getLocalMatrixHost().values;
             auto permutation = pattern_.host_input_to_entry();
             for (std::size_t i = 0; i < input.size(); ++i) values(permutation[i]) = input[i];
@@ -72,7 +72,7 @@ public:
     {
         static_assert(Input::rank == 1);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Input::memory_space>::accessible);
-        detail::require(input.extent(0) == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
+        mpi::require(input.extent(0) == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
         auto values = edit_values(exec);
         auto permutation = pattern_.input_to_entry();
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
@@ -86,10 +86,10 @@ public:
     {
         require_committed(); x.require_committed(); y.require_committed();
         const auto* map = pattern_.distribution().native().getRawPtr();
-        detail::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
+        mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
                         "Linalg: vectors must share the matrix distribution");
-        detail::require(x.native().getRawPtr() != y.native().getRawPtr(), "Linalg: in-place matrix apply is unsupported");
-        detail::guarded([&] {
+        mpi::require(x.native().getRawPtr() != y.native().getRawPtr(), "Linalg: in-place matrix apply is unsupported");
+        mpi::guarded([&] {
             matrix_->apply(*x.native(), *y.native(), Teuchos::NO_TRANS, alpha, beta);
             Kokkos::fence("Linalg: matrix apply complete");
         });

@@ -26,23 +26,23 @@ public:
                std::span<const GlobalOrdinal> column_gids, const Exec& exec = {}, bool keep_input_mapping = true)
         : distribution_(distribution), has_input_mapping_(keep_input_mapping)
     {
-        detail::guarded([&] {
+        mpi::guarded([&] {
             const auto rows = distribution_.local_size();
-            detail::require(row_offsets.size() == rows+1 && row_offsets.front() == 0 &&
+            mpi::require(row_offsets.size() == rows+1 && row_offsets.front() == 0 &&
                             row_offsets.back() == column_gids.size(), "Linalg: invalid CSR offsets/extents");
             std::vector<std::size_t> counts(rows);
             std::vector<GlobalOrdinal> sorted;
             for (std::size_t row = 0; row < rows; ++row) {
-                detail::require(row_offsets[row] <= row_offsets[row+1] && row_offsets[row+1] <= column_gids.size(),
+                mpi::require(row_offsets[row] <= row_offsets[row+1] && row_offsets[row+1] <= column_gids.size(),
                                 "Linalg: nonmonotone/out-of-range CSR offsets");
                 counts[row] = row_offsets[row+1]-row_offsets[row];
                 static_cast<void>(detail::local_count(counts[row]));
                 sorted.assign(column_gids.begin()+static_cast<std::ptrdiff_t>(row_offsets[row]),
                     column_gids.begin()+static_cast<std::ptrdiff_t>(row_offsets[row+1]));
                 std::sort(sorted.begin(), sorted.end());
-                detail::require(sorted.empty() || (sorted.front() >= 0 && sorted.back() < std::numeric_limits<GlobalOrdinal>::max()),
+                mpi::require(sorted.empty() || (sorted.front() >= 0 && sorted.back() < std::numeric_limits<GlobalOrdinal>::max()),
                                 "Linalg: invalid column GID");
-                detail::require(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(),
+                mpi::require(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(),
                                 "Linalg: duplicate column in a CSR row");
             }
             // Release Tpetra builds need not diagnose unowned column GIDs themselves.
@@ -59,7 +59,7 @@ public:
                 const auto status = distribution_.native()->getRemoteIndexList(
                     Teuchos::ArrayView<const GlobalOrdinal>(remote.data(), count),
                     Teuchos::ArrayView<int>(owners.data(), count));
-                detail::require(status == Tpetra::AllIDsPresent, "Linalg: column has no owner in the domain map");
+                mpi::require(status == Tpetra::AllIDsPresent, "Linalg: column has no owner in the domain map");
             }
             auto graph = Teuchos::rcp(new graph_type(distribution_.native(),
                 Teuchos::ArrayView<const std::size_t>(counts.data(), detail::local_count(rows))));
@@ -84,7 +84,7 @@ public:
                 const auto begin = native_graph.row_map(row), end = native_graph.row_map(row+1);
                 for (std::size_t input = row_offsets[row]; input < row_offsets[row+1]; ++input) {
                     const auto local = graph_->getColMap()->getLocalElement(column_gids[input]);
-                    detail::require(local != Teuchos::OrdinalTraits<LocalOrdinal>::invalid(),
+                    mpi::require(local != Teuchos::OrdinalTraits<LocalOrdinal>::invalid(),
                                     "Linalg: column has no owner in the domain map");
                     auto pos = begin, upper = end;
                     while (pos < upper) {
@@ -92,7 +92,7 @@ public:
                         if (native_graph.entries(middle) < local) pos = middle+1;
                         else upper = middle;
                     }
-                    detail::require(pos < end && native_graph.entries(pos) == local,
+                    mpi::require(pos < end && native_graph.entries(pos) == local,
                                     "Linalg: CSR entry disappeared during graph finalization");
                     permutation[input] = pos;
                 }
@@ -116,12 +116,12 @@ public:
     [[nodiscard]] const Teuchos::RCP<const graph_type>& native() const noexcept { return graph_; }
     [[nodiscard]] permutation_type input_to_entry() const
     {
-        detail::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
+        mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return input_to_entry_;
     }
     [[nodiscard]] std::span<const std::size_t> host_input_to_entry() const
     {
-        detail::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
+        mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return {host_input_to_entry_.data(), host_input_to_entry_.extent(0)};
     }
 

@@ -10,11 +10,9 @@
 #include <Tpetra_Vector.hpp>
 #include <Teuchos_DefaultMpiComm.hpp>
 
-#include <exception>
 #include <limits>
 #include <string_view>
 #include <type_traits>
-#include <utility>
 
 #ifndef HAVE_TPETRA_INST_INT_LONG_LONG
 #error "KRONA linalg requires Tpetra ETI for int/long long ordinals"
@@ -51,22 +49,10 @@ struct Types {
 
 namespace detail {
 
-inline void require(bool condition, std::string_view message)
-{ if (!condition) mpi::fatal(message); }
-
-/// @brief Converts library exceptions to the project's fatal MPI error policy.
-template<class Function>
-decltype(auto) guarded(Function&& function)
-{
-    try { return std::forward<Function>(function)(); }
-    catch (const std::exception& error) { mpi::fatal(error.what()); }
-    catch (...) { mpi::fatal("Linalg: unhandled library exception"); }
-}
-
 inline LocalOrdinal local_count(std::size_t value)
 {
-    require(value <= static_cast<std::size_t>(std::numeric_limits<LocalOrdinal>::max()),
-            "Linalg: local count exceeds Tpetra int ordinals");
+    mpi::require(value <= static_cast<std::size_t>(std::numeric_limits<LocalOrdinal>::max()),
+                 "Linalg: local count exceeds Tpetra int ordinals");
     return static_cast<LocalOrdinal>(value);
 }
 
