@@ -446,6 +446,27 @@ if(KRONA_ENABLE_PARTITIONING)
 endif()
 
 #==================================================================
+#==== TOML++ (AUX PARSING LIBRARY) ================================
+#==================================================================
+if(NOT TARGET tomlplusplus::tomlplusplus)
+    find_package(tomlplusplus 3 CONFIG QUIET)
+endif()
+add_library(krona_tomlplusplus INTERFACE)
+add_library(krona::tomlplusplus ALIAS krona_tomlplusplus)
+if(TARGET tomlplusplus::tomlplusplus)
+    target_link_libraries(krona_tomlplusplus INTERFACE tomlplusplus::tomlplusplus)
+else()
+    find_path(KRONA_TOMLPLUSPLUS_INCLUDE_DIR
+        NAMES toml++/toml.hpp toml++/toml.h toml.hpp
+        HINTS "${PROJECT_SOURCE_DIR}/external/tomlplusplus/include")
+        
+    if(NOT KRONA_TOMLPLUSPLUS_INCLUDE_DIR)
+        message(FATAL_ERROR "toml++ not found: install it, keep external/tomlplusplus/include, or set KRONA_TOMLPLUSPLUS_INCLUDE_DIR")
+    endif()
+    target_include_directories(krona_tomlplusplus SYSTEM INTERFACE "${KRONA_TOMLPLUSPLUS_INCLUDE_DIR}")
+endif()
+
+#==================================================================
 #==== DISTRIBUTED ALGEBRA: TPETRA EXPLICIT INSTANTIATION CHECK ====
 #==================================================================
 if(KRONA_ENABLE_TRILINOS)
@@ -519,11 +540,9 @@ if(KRONA_ENABLE_CGNS)
         src/mesh_generation/writer.cpp)
     add_library(krona::mesh_generation ALIAS krona_mesh_generation)
     krona_public_headers(krona_mesh_generation PUBLIC)
-    target_include_directories(krona_mesh_generation PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/tomlplusplus/include")
     target_link_libraries(krona_mesh_generation
         PUBLIC krona::build_config krona::mpi krona::cgns
-        PRIVATE krona::warnings)
+        PRIVATE krona::warnings krona::tomlplusplus)
 endif()
 
 
@@ -598,32 +617,33 @@ if(KRONA_ENABLE_TRILINOS)
         PRIVATE krona::warnings)
 endif()
 
+    #========================
+    #=== SCALAR TRANSPORT ===
+    #========================   
+krona_interface(thermodynamics krona::execution)
 
-    #===========================
-    #=== BOUNDARY CONDITIONS ===
-    #===========================
+    #==================================
+    #=== SCALAR BOUNDARY CONDITIONS ===
+    #==================================
 add_library(krona_boundary_scalar STATIC src/boundary/scalar/config.cpp)
 add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
 target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_scalar PUBLIC)
 target_link_libraries(krona_boundary_scalar
     PUBLIC krona::mesh_compute krona::fields krona::mpi
-    PRIVATE krona::warnings)
+    PRIVATE krona::warnings krona::tomlplusplus)
 
-if(NOT TARGET tomlplusplus::tomlplusplus)
-    find_package(tomlplusplus 3 CONFIG QUIET)
-endif()
-if(TARGET tomlplusplus::tomlplusplus)
-    target_link_libraries(krona_boundary_scalar PRIVATE tomlplusplus::tomlplusplus)
-else()
-    find_path(KRONA_TOMLPLUSPLUS_INCLUDE_DIR
-        NAMES toml++/toml.hpp toml++/toml.h toml.hpp
-        HINTS "${PROJECT_SOURCE_DIR}/external/tomlplusplus/include")
-    if(NOT KRONA_TOMLPLUSPLUS_INCLUDE_DIR)
-        message(FATAL_ERROR "boundary_scalar needs toml++: install it, keep external/tomlplusplus/include, or set KRONA_TOMLPLUSPLUS_INCLUDE_DIR")
-    endif()
-    target_include_directories(krona_boundary_scalar SYSTEM PRIVATE "${KRONA_TOMLPLUSPLUS_INCLUDE_DIR}")
-endif()
+    
+    #====================================
+    #=== PHYSICAL BOUNDARY CONDITIONS ===
+    #====================================
+add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
+add_library(krona::boundary_physical ALIAS krona_boundary_physical)
+target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
+krona_public_headers(krona_boundary_physical PUBLIC)
+target_link_libraries(krona_boundary_physical
+    PUBLIC krona::boundary_scalar
+    PRIVATE krona::warnings krona::tomlplusplus)
 
 
     #========================
