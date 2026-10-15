@@ -1,7 +1,8 @@
 add_executable(krona_test_mesh test_mesh.cpp)
 target_link_libraries(krona_test_mesh PRIVATE krona_test_support krona::mesh_compute)
 
-foreach(case IN ITEMS selection geometry ownership halo_plan auxiliary empty)
+foreach(case IN ITEMS selection geometry ownership halo_plan auxiliary empty
+                      transfer auxiliary_contracts validation halo_validation)
     add_test(
     NAME "mesh.${case}"
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1

@@ -18,6 +18,7 @@ public:
         execution::require_kokkos();
         mpi::require(sizes_.own_cells <= sizes_.cells, "Fields: owned cells exceed total cells");
     }
+
     FieldsManager(const FieldsManager&) = delete;
     FieldsManager& operator=(const FieldsManager&) = delete;
     FieldsManager(FieldsManager&&) = delete;
@@ -45,8 +46,7 @@ public:
         if (location != FieldLocation::Custom && count != entity_count(location))
             detail::field_error(name, "size does not match field location");
         mpi::require(initialization == FieldInitialization::Zero ||
-                        initialization == FieldInitialization::Uninitialized,
-                        "Fields: invalid initialization mode");
+                     initialization == FieldInitialization::Uninitialized, "Fields: invalid initialization mode");
         using Storage = FieldStorage<T, Components, Exec, Layout>;
         auto field = std::make_unique<Storage>(name, count, location, exec_);
         auto* storage = field.get();
@@ -94,7 +94,7 @@ public:
 
     /// @brief Enqueues a uniform fill of all entities and components.
     template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft>
-    void fill_field(const std::string& name, const T& value)
+    void fill_field(const std::string& name, const std::type_identity_t<T>& value)
     {
         auto* field = find_field<T, Components, Layout>(name);
         if (!field) detail::field_error(name, "invalid fill field or type/components/layout mismatch");
@@ -135,8 +135,7 @@ public:
     }
 
     /// @brief Enqueues an upload; source must stay alive and unchanged until completion.
-    template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft,
-             class HostView>
+    template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft, class HostView>
     void copy_from_host_async(const std::string& name, const HostView& source)
     {
         static_assert(Kokkos::is_view<HostView>::value);

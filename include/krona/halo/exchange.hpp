@@ -17,7 +17,6 @@ namespace krona::halo {
 
 namespace detail {
 
-// Named functors avoid NVCC's access and first-capture restrictions on extended lambdas.
 template<bool Packing, bool UnitStride, class ComponentView, class MapView,
          class PeerView, class SegmentView, class BufferView>
 struct TransferKernel {
@@ -51,18 +50,19 @@ enum class Transfer { HostStaged, DeviceDirect };
 template<class T = StorageReal, class Exec = execution::ExecutionSpace>
 class Exchange {
     static_assert(!std::is_const_v<T>);
-    using Memory = typename Exec::memory_space;
-    using Device = Kokkos::Device<Exec, Memory>;
-    using Buffer = Kokkos::View<T*, Kokkos::LayoutRight, Device>;
-    using HostBuffer = Kokkos::View<T*, Kokkos::LayoutRight, typename detail::StagingSpace<Exec>::type>;
-    using Components = Kokkos::View<detail::Component<T>*, Device>;
-    using Segments = Kokkos::View<detail::Segment*, Device>;
-    using Peers = Kokkos::View<int*, Device>;
-    using Map = mesh::compute::detail::MeshArray<LocalIndex, Memory, false>;
-    using Policy = Kokkos::MDRangePolicy<Exec,
-        Kokkos::Rank<2, Kokkos::Iterate::Right, Kokkos::Iterate::Right>,
-        Kokkos::IndexType<std::size_t>>;
-    static constexpr bool host_memory = std::is_same_v<Memory, Kokkos::HostSpace>;
+    using value_type = T;
+    using memory_space = typename Exec::memory_space;
+    using device_type = Kokkos::Device<Exec, memory_space>;
+    using buffer_type = Kokkos::View<T*, Kokkos::LayoutRight, device_type>;
+    using host_buffer_type = Kokkos::View<T*, Kokkos::LayoutRight, typename detail::StagingSpace<Exec>::type>;
+    using components_type = Kokkos::View<detail::Component<T>*, device_type>;
+    using segments_type = Kokkos::View<detail::Segment*, device_type>;
+    using peers_type = Kokkos::View<int*, device_type>;
+    using map_type = mesh::compute::detail::MeshArray<LocalIndex, memory_space, false>;
+    using policy_type = Kokkos::MDRangePolicy<Exec,
+                        Kokkos::Rank<2, Kokkos::Iterate::Right, Kokkos::Iterate::Right>,
+                        Kokkos::IndexType<std::size_t>>;
+    static constexpr bool host_memory = std::is_same_v<memory_space, Kokkos::HostSpace>;
 
     enum class State { Idle, Communicating, Unpacking };
     struct Peer {
@@ -72,31 +72,31 @@ class Exchange {
     };
 
 public:
-    Exchange(mesh::compute::MeshView<Memory> mesh, mesh::compute::HaloPlanView plan,
+    Exchange(mesh::compute::MeshView<memory_space> mesh, mesh::compute::HaloPlanView plan,
              mpi::CommView comm, int tag, Exec exec, Transfer transfer = Transfer::HostStaged)
         : exec_(exec), comm_(comm), tag_(tag), transfer_(transfer),
           n_own_(mesh.sizes.n_own), n_cells_(mesh.sizes.n_cells),
           send_map_(mesh.halo.send_owned_local), recv_map_(mesh.halo.recv_ghost_local)
     {
-        mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(), "Halo requires active Kokkos");
+        execution::require_kokkos();
         mpi::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
         mpi::require(mesh.has(mesh::compute::MeshData::Halo), "Halo maps were not selected");
         mpi::require(n_own_ >= 0 && n_cells_ >= n_own_, "Halo: invalid cell counts");
         mpi::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect, "Halo: invalid transfer mode");
 
-        int size = 0, flag = 0;
+        int size = comm_.size(), flag = 0;
         int* tag_limit = nullptr;
-        size = comm_.size();
         mpi::check(MPI_Comm_get_attr(comm_.native(), MPI_TAG_UB, &tag_limit, &flag), "MPI_Comm_get_attr");
         // In the MPI world model, predefined environmental attributes are guaranteed on WORLD.
         if (flag == 0)
             mpi::check(MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &tag_limit, &flag),
                        "MPI_Comm_get_attr(MPI_COMM_WORLD)");
         mpi::require(flag != 0 && tag_limit != nullptr && tag >= 0 && tag <= *tag_limit,
-                        "Halo: tag is outside the communicator's valid range");
-        const auto count = plan.n_neighbors();
+                     "Halo: tag is outside the communicator's valid range");
+
+        const std::size_t count = plan.n_neighbors();
         mpi::require(count <= static_cast<std::size_t>(std::numeric_limits<int>::max() / 2),
-                        "Halo: too many MPI requests");
+                     "Halo: too many MPI requests");
         mpi::require_offsets(plan.send_offsets, count, send_map_.extent(0));
         mpi::require_offsets(plan.recv_offsets, count, recv_map_.extent(0));
         peers_.reserve(count);
@@ -130,7 +130,7 @@ public:
                       "Execution space cannot access this field");
         mpi::require(!prepared_, "Halo: registration is closed after prepare");
         mpi::require(field.size() >= static_cast<std::size_t>(n_cells_),
-                        "Halo fields must contain all owned and ghost cells");
+                     "Halo fields must contain all owned and ghost cells");
         for (int c = 0; c < N; ++c) add_component(field.component(c));
     }
 
@@ -143,11 +143,11 @@ public:
         static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
         mpi::require(!prepared_, "Halo: registration is closed after prepare");
         mpi::require(component.extent(0) >= static_cast<std::size_t>(n_cells_),
-                        "Halo components must contain all owned and ghost cells");
+                     "Halo components must contain all owned and ghost cells");
         const detail::Component<T> descriptor{component.data(), component.stride(0)};
         if (component.extent(0) != 0) {
             mpi::require(descriptor.data != nullptr && descriptor.stride != 0,
-                            "Halo: component requires valid storage and a positive stride");
+                         "Halo: component requires valid storage and a positive stride");
             for (const auto& previous : registered_)
                 mpi::require(previous.data != descriptor.data, "Halo: duplicate field component");
         }
@@ -170,10 +170,11 @@ public:
             const auto recv = mpi::checked_product(peer.recv.count, width);
             const std::size_t limit = static_cast<std::size_t>(std::numeric_limits<int>::max());
             mpi::require(send <= limit && recv <= limit,
-                            "Halo: peer payload exceeds MPI-3 int count; split the group");
+                         "Halo: peer payload exceeds MPI-3 int count; split the group");
             peer.send_values = static_cast<int>(send);
             peer.recv_values = static_cast<int>(recv);
         }
+
         // Validate once on host. CPU mirrors alias the maps; GPU mirrors are temporary copies.
         auto send_host = [&] {
             if constexpr (host_memory) return send_map_;
@@ -191,30 +192,30 @@ public:
         });
         for (std::size_t i = 0; i < send_host.extent(0); ++i)
             mpi::require(send_host(i) >= 0 && send_host(i) < n_own_,
-                            "Halo: send map must reference owned cells");
+                         "Halo: send map must reference owned cells");
         std::vector<LocalIndex> destinations;
         destinations.reserve(recv_host.extent(0));
         for (std::size_t i = 0; i < recv_host.extent(0); ++i) {
             mpi::require(recv_host(i) >= n_own_ && recv_host(i) < n_cells_,
-                            "Halo: receive map must reference ghost cells");
+                         "Halo: receive map must reference ghost cells");
             destinations.push_back(recv_host(i));
         }
         std::sort(destinations.begin(), destinations.end());
         mpi::require(std::adjacent_find(destinations.begin(), destinations.end()) == destinations.end(),
-                        "Halo: receive map contains duplicate ghost cells");
+                     "Halo: receive map contains duplicate ghost cells");
 
-        send_ = Buffer(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/send"), send_values);
-        recv_ = Buffer(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/recv"), recv_values);
+        send_ = buffer_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/send"), send_values);
+        recv_ = buffer_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/recv"), recv_values);
         if constexpr (!host_memory) {
             if (transfer_ == Transfer::HostStaged) {
-                send_host_ = HostBuffer(Kokkos::view_alloc(Kokkos::WithoutInitializing,
-                                                       "halo/send_host"), send_values);
-                recv_host_ = HostBuffer(Kokkos::view_alloc(Kokkos::WithoutInitializing,
-                                                       "halo/recv_host"), recv_values);
+                send_host_ = host_buffer_type(Kokkos::view_alloc(Kokkos::WithoutInitializing,
+                                              "halo/send_host"), send_values);
+                recv_host_ = host_buffer_type(Kokkos::view_alloc(Kokkos::WithoutInitializing,
+                                              "halo/recv_host"), recv_values);
             }
         }
-        components_ = Components(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
-                                                   "halo/components"), width);
+        components_ = components_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
+                                      "halo/components"), width);
         auto components_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, components_);
         for (std::size_t c = 0; c < width; ++c) components_host(c) = registered_[c];
         execution::complete(exec_, [&] {
@@ -253,7 +254,7 @@ public:
                 const auto& peer = peers_[p];
                 if (peer.send_values == 0) continue;
                 mpi::check(MPI_Isend(send_pointer() + peer.send.offset * registered_.size(),
-                    peer.send_values, datatype_, peer.rank, tag_,
+                     peer.send_values, datatype_, peer.rank, tag_,
                      comm_.native(), &requests_[peers_.size() + p]), "MPI_Isend");
             }
         });
@@ -267,7 +268,7 @@ public:
         mpi::guarded([&](){
             if (!requests_.empty())
                 mpi::check(MPI_Waitall(static_cast<int>(requests_.size()), requests_.data(),
-                                       MPI_STATUSES_IGNORE), "MPI_Waitall");
+                           MPI_STATUSES_IGNORE), "MPI_Waitall");
             if (recv_.extent(0) != 0) {
                 state_ = State::Unpacking;
                 if constexpr (!host_memory)
@@ -301,24 +302,24 @@ private:
     Transfer transfer_;
     MPI_Datatype datatype_ = MPI_DATATYPE_NULL;
     LocalIndex n_own_, n_cells_;
-    Map send_map_, recv_map_;
+    map_type send_map_, recv_map_;
     std::vector<Peer> peers_;
     std::vector<detail::Component<T>> registered_;
     std::vector<MPI_Request> requests_;
-    Components components_;
-    Segments send_segments_, recv_segments_;
-    Peers send_peers_, recv_peers_;
-    Buffer send_, recv_;
-    HostBuffer send_host_, recv_host_;
+    components_type components_;
+    segments_type send_segments_, recv_segments_;
+    peers_type send_peers_, recv_peers_;
+    buffer_type send_, recv_;
+    host_buffer_type send_host_, recv_host_;
     bool prepared_ = false, unit_stride_ = true;
     State state_ = State::Idle;
 
-    void make_segments(Segments& segments, Peers& lookup, bool sending)
+    void make_segments(segments_type& segments, peers_type& lookup, bool sending)
     {
-        segments = Segments(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
-                                               "halo/segments"), peers_.size());
-        lookup = Peers(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/slot_peers"),
-                       sending ? send_map_.extent(0) : recv_map_.extent(0));
+        segments = segments_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
+                                 "halo/segments"), peers_.size());
+        lookup = peers_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/slot_peers"),
+                            sending ? send_map_.extent(0) : recv_map_.extent(0));
         auto segment_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, segments);
         auto lookup_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, lookup);
         for (std::size_t p = 0; p < peers_.size(); ++p) {
@@ -348,9 +349,9 @@ private:
     void pack()
     {
         const auto width = registered_.size();
-        using Kernel = detail::TransferKernel<true, UnitStride, Components, Map, Peers, Segments, Buffer>;
+        using Kernel = detail::TransferKernel<true, UnitStride, components_type, map_type, peers_type, segments_type, buffer_type>;
         // Neighboring lanes process neighboring map slots within one component.
-        Kokkos::parallel_for("halo/pack", Policy(exec_, {0, 0}, {width, send_map_.extent(0)}, {1, 128}),
+        Kokkos::parallel_for("halo/pack", policy_type(exec_, {0, 0}, {width, send_map_.extent(0)}, {1, 128}),
             Kernel{components_, send_map_, send_peers_, send_segments_, send_, width});
     }
 
@@ -358,8 +359,8 @@ private:
     void unpack()
     {
         const auto width = registered_.size();
-        using Kernel = detail::TransferKernel<false, UnitStride, Components, Map, Peers, Segments, Buffer>;
-        Kokkos::parallel_for("halo/unpack", Policy(exec_, {0, 0}, {width, recv_map_.extent(0)}, {1, 128}),
+        using Kernel = detail::TransferKernel<false, UnitStride, components_type, map_type, peers_type, segments_type, buffer_type>;
+        Kokkos::parallel_for("halo/unpack", policy_type(exec_, {0, 0}, {width, recv_map_.extent(0)}, {1, 128}),
             Kernel{components_, recv_map_, recv_peers_, recv_segments_, recv_, width});
     }
 };

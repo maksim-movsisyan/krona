@@ -20,16 +20,17 @@ namespace krona::numerics::gradient {
 template<class Exec = execution::ExecutionSpace, class Coefficient = GeometryReal, class Accumulator = AccumulationReal>
 class GradientOperator {
     static_assert(std::is_floating_point_v<Coefficient> && std::is_floating_point_v<Accumulator>);
-    using Space = typename Exec::memory_space;
-    using Mesh = mesh::compute::MeshView<Space>;
-    using Connectivity = mesh::compute::AuxConnectivityView<Space>;
-    using Geometry = mesh::compute::AuxGeometryView<Space>;
-    using Coefficients = Kokkos::View<Coefficient*[3], Kokkos::LayoutLeft, Kokkos::Device<Exec, Space>>;
-    using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
+    using memory_space = typename Exec::memory_space;
+    using mesh_view_type = mesh::compute::MeshView<memory_space>;
+    using connectivity_view_type = mesh::compute::AuxConnectivityView<memory_space>;
+    using geometry_view_type = mesh::compute::AuxGeometryView<memory_space>;
+    using coefficients_type = Kokkos::View<Coefficient*[3], Kokkos::LayoutLeft, Kokkos::Device<Exec, memory_space>>;
+    using policy_type = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
 
 public:
     /// @brief Uses already attached mesh and optional caches; never builds topology or performs MPI.
-    GradientOperator(Mesh mesh_view, Connectivity connectivity, Geometry geometry, Options options, Exec exec = {})
+    GradientOperator(mesh_view_type mesh_view, connectivity_view_type connectivity, 
+                     geometry_view_type geometry, Options options, Exec exec = {})
         : metrics_{mesh_view, connectivity, geometry, options}, exec_(exec)
     {
         validate_descriptors();
@@ -40,10 +41,10 @@ public:
             if (least_squares) {
                 const auto count = connectivity.cell_faces.extent(0);
                 mpi::require(count <= std::numeric_limits<std::size_t>::max() / (3 * sizeof(Coefficient)),
-                        "Gradient: coefficient allocation overflows size_t");
-                coefficients_ = Coefficients(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"), count);
-                Kokkos::parallel_reduce("gradient/prepare_least_squares", Policy(exec_, 0, mesh_view.sizes.n_own),
-                    detail::PrepareLeastSquares<Space, Coefficients, double>{metrics_, coefficients_}, bad);
+                             "Gradient: coefficient allocation overflows size_t");
+                coefficients_ = coefficients_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"), count);
+                Kokkos::parallel_reduce("gradient/prepare_least_squares", policy_type(exec_, 0, mesh_view.sizes.n_own),
+                    detail::PrepareLeastSquares<memory_space, coefficients_type, double>{metrics_, coefficients_}, bad);
                 mpi::require(bad == 0, "Gradient: singular/ill-conditioned 3-D LS stencil or invalid sample displacement");
             }
         });
@@ -65,7 +66,7 @@ public:
                       Kokkos::SpaceAccessibility<Exec, OutputSpace>::accessible);
         detail::Batch<Value, static_cast<std::size_t>(N)> batch;
         for (int c = 0; c < N; ++c) {
-            const auto index = static_cast<std::size_t>(c);
+            const std::size_t index = static_cast<std::size_t>(c);
             batch.input[index] = input_component<Value>(input.component(c));
             batch.x[index] = output_component<Value>(output.component(3*c));
             batch.y[index] = output_component<Value>(output.component(3*c+1));
@@ -114,13 +115,13 @@ public:
     }
 
 private:
-    detail::Metrics<Space> metrics_;
+    detail::Metrics<memory_space> metrics_;
     Exec exec_;
-    Coefficients coefficients_;
+    coefficients_type coefficients_;
     std::size_t input_size_ = 0;
 
     template<mesh::compute::MeshData Data, mesh::AuxConnType ConnectivityMask, mesh::AuxGeomType GeometryMask>
-    void validate_selected(Mesh mesh_view, Connectivity connectivity, Geometry geometry) const
+    void validate_selected(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
     {
         namespace validation = mesh::compute::validation;
         // Compare checks CSR incidence here; CellGeometry is checked separately on owned cells.
@@ -132,7 +133,7 @@ private:
                      "Gradient: invalid cell-to-face CSR or incidence");
     }
 
-    void validate_mesh(Mesh mesh_view, Connectivity connectivity, Geometry geometry) const
+    void validate_mesh(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
     {
         using MeshData = mesh::compute::MeshData;
         using mesh::AuxConnType;
@@ -157,8 +158,8 @@ private:
 
         // Ghost volumes are not used; preserve the owned-only output contract.
         std::size_t bad = 0;
-        Kokkos::parallel_reduce("gradient/validate_owned_geometry", Policy(exec_, 0, mesh_view.sizes.n_own),
-            validation::ValidateCells<MeshData::CellGeometry, AuxGeomType::None, Space>{mesh_view, {}}, bad);
+        Kokkos::parallel_reduce("gradient/validate_owned_geometry", policy_type(exec_, 0, mesh_view.sizes.n_own),
+            validation::ValidateCells<MeshData::CellGeometry, AuxGeomType::None, memory_space>{mesh_view, {}}, bad);
         mpi::require(bad == 0, "Gradient: owned centres must be finite and volumes positive");
     }
 
@@ -193,7 +194,7 @@ private:
     {
         if (range.end == -1) range.end = metrics_.mesh.sizes.n_own;
         mpi::require(range.begin >= 0 && range.begin <= range.end && range.end <= metrics_.mesh.sizes.n_own,
-                "Gradient: range must be an owned-cell interval");
+                     "Gradient: range must be an owned-cell interval");
         return range;
     }
 
@@ -201,20 +202,20 @@ private:
     void submit(detail::Batch<T, N> batch, CellRange range) const
     {
         if (range.begin == range.end) return;
-        const Policy policy(exec_, range.begin, range.end);
+        const policy_type policy(exec_, range.begin, range.end);
         switch (scheme()) {
             case Scheme::GreenGaussCell:
                 Kokkos::parallel_for("gradient/green_gauss_cell", policy,
-                    detail::CellKernel<false, Space, Coefficients, T, N, Accumulator>{metrics_, coefficients_, batch});
+                    detail::CellKernel<false, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
                 break;
             case Scheme::LeastSquaresFace:
                 Kokkos::parallel_for("gradient/least_squares_face", policy,
-                    detail::CellKernel<true, Space, Coefficients, T, N, Accumulator>{metrics_, coefficients_, batch});
+                    detail::CellKernel<true, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
                 break;
             case Scheme::GreenGaussFace:
                 Kokkos::parallel_for("gradient/clear_owned", policy, detail::ClearKernel<T, N>{batch});
-                Kokkos::parallel_for("gradient/green_gauss_face", Policy(exec_, 0, metrics_.mesh.sizes.n_faces),
-                    detail::FaceKernel<Space, T, N, Accumulator>{metrics_, batch, range});
+                Kokkos::parallel_for("gradient/green_gauss_face", policy_type(exec_, 0, metrics_.mesh.sizes.n_faces),
+                    detail::FaceKernel<memory_space, T, N, Accumulator>{metrics_, batch, range});
                 break;
         }
     }

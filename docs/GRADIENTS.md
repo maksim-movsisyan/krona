@@ -1,87 +1,329 @@
-# Finite-volume gradients
+# Gradients
 
-`krona::numerics::gradient::GradientOperator` evaluates cell-centred gradients on a static 3-D mesh. It is independent of equations, boundary-condition types and MPI scheduling.
+Header: `<krona/numerics/gradient/gradient_operator.hpp>`
 
-## Data contract
+The module reconstructs three-dimensional cell gradients on a static local
+mesh. It reads owned cells, MPI ghost cells and physical boundary values,
+and writes gradients only for owned cells.
 
-- Faces are grouped: owned-owned, owned-ghost, physical boundary. Normals are unit vectors pointing outward from the owner; volumes and areas are positive.
-- The input has at least `n_cells + n_faces - n_inner_faces` entries. `[0,n_own)` contains owned values, `[n_own,n_cells)` MPI ghosts, and entry `n_cells + f - n_inner_faces` the value at the centroid of physical boundary face `f`. The boundary block contains face values, not virtual cell values.
-- Input ghosts and physical boundary values must be ready before use. The operator performs no exchange and imposes no physical BC.
-- The output needs at least `n_own` entries. Only `[0,n_own)` is written; optional `CellRange{begin,end}` restricts it further. All entries outside the requested range remain untouched. MPI ghost gradients, if needed, are filled by a separate exchange. No physical boundary output block is required.
-- Input and output storage must not overlap. Output components must not overlap each other. All participating views must be accessible to `Exec` and have the same scalar value type.
-- A field with `N` input components has `3*N` output components: `3*c+0`, `3*c+1`, `3*c+2` are the x, y, z derivatives of component `c`. Thus a vector gradient uses tensor order `xx,xy,xz,yx,yy,yz,zx,zy,zz`, with the first index denoting the input component.
-- `FieldView::size()` and rank-one component extents may exceed the minimum. LayoutLeft, LayoutRight and strided component subviews are supported.
+`GradientOperator` is an immutable plan bound to one execution-space instance.
+Construction validates the selected inputs and prepares any persistent
+coefficients. Application calls reuse that plan without allocating working
+buffers or performing MPI communication.
 
-## Boundary location and interpolation
+## Schemes and requirements
 
-Physical boundary input values are always located at the face centroid `F`. GG uses `q_face=q_boundary` directly, and LS uses the displacement `F-C_owner`. There is no boundary-location option and no mirrored physical boundary cell.
+All schemes currently require
+`MeshData::FaceCells | MeshData::Geometry`.
+Use `requirements(options)` to obtain the required storage groups before
+constructing the plan.
 
-The BC module must supply the face value before applying the gradient. A Neumann condition must first be converted to a face value using the BC module's reconstruction; the gradient operator does not consume normal derivatives directly.
+| Scheme | Auxiliary connectivity | Auxiliary geometry | Application |
+| --- | --- | --- | --- |
+| `GreenGaussCell` | `CellFaces` | Interpolation weights when selected | One kernel over owned cells; no atomics |
+| `GreenGaussFace` | None | Interpolation weights when selected | Clear selected outputs, then traverse faces with atomic updates |
+| `LeastSquaresFace` | `CellFaces` | Optional displacement vectors | One kernel over owned cells using prepared coefficients |
 
-Interior GG interpolation is arithmetic by default. `Interpolation::AuxiliaryWeights` uses the existing owner weight: `q_face=w*q_owner+(1-w)*q_neighbour`. Physical boundaries use the supplied face value under either setting; the auxiliary boundary weight is `0`. These weights do not correct tangential skewness by themselves.
-
-LS uses inverse-distance-squared weighting. It includes all face neighbours **and physical boundary samples**, obtained from `CellFaces` CSR. It does not use `CellCellsByFace`, whose entries describe real cells only. Optional auxiliary displacement vectors are reused with the common geometry convention: interior and MPI-interface vectors are `C_neighbour-C_owner`, and physical boundary vectors are `F-C_owner`. Without the cache, LS computes these vectors from centroids. The interpolation option does not affect LS.
-
-## Schemes and preparation
-
-| Scheme | Required auxiliary data | Apply organization | Additional persistent memory |
-|---|---|---|---|
-| `GreenGaussCell` | `CellFaces` | One owned cell per work item; local accumulation | None |
-| `GreenGaussFace` | None | Clear requested owned output, then scatter faces with atomics | None |
-| `LeastSquaresFace` | `CellFaces` | One owned cell per work item; cached weighted differences | Three coefficients per CSR entry, plus possible layout padding |
-
-All schemes borrow face connectivity and cell/face geometry from `MeshView`. GG auxiliary interpolation needs `FaceInterpolationWeights`. LS optionally reuses `FaceCellDistanceVector`.
-
-GG is evaluated using `q_face-q_cell`, exploiting closed-cell surface-vector cancellation. This makes constant fields produce zero directly and reduces cancellation from large constant offsets. The mesh must contain a complete, correctly oriented face set for every owned cell.
-
-LS setup uses double intermediates, a cell-local length scale and relative Cholesky pivot checks. It stores coefficients in `Coefficient` (default `GeometryReal`). Singular or severely ill-conditioned 3-D stencils cause a diagnosed `mpi::fatal`, not a silent zero gradient. There is no fixed neighbour-count limit and no hidden regularization. This is a normal-equations method, not a QR/SVD solver for arbitrarily ill-conditioned stencils.
-
-The local constructor validates and prepares once, then fences the supplied execution-space instance. It is not collective. No preparation is repeated by `apply`.
-
-## Storage requirements
-
-The free function `krona::numerics::gradient::requirements(Options)` returns the mandatory groups before creating any gradient operator:
+The defaults are:
 
 ```cpp
+gradient::Options options{
+    .scheme = gradient::Scheme::LeastSquaresFace,
+    .interpolation = gradient::Interpolation::Arithmetic,
+    .pivot_tolerance = 1.0e-12
+};
+```
+
+Green–Gauss uses arithmetic interpolation unless `AuxiliaryWeights` is selected.
+For an internal face, the auxiliary weight belongs to the owner:
+
+```text
+q_face = w_owner * q_owner + (1 - w_owner) * q_neighbour
+```
+
+Physical boundary values are used directly, without owner–neighbour
+interpolation.
+
+Least squares uses inverse-distance-squared weighting. Its coefficients are
+prepared once for every owned-cell-to-face CSR entry. Preparation uses
+`double`, scales each stencil before forming the normal matrix, and applies
+relative Cholesky pivot checks. Singular or insufficiently three-dimensional
+stencils are rejected; there is no pseudoinverse fallback.
+
+`Interpolation` does not affect least squares. If displacement vectors are
+attached, preparation uses them; otherwise it computes displacements from
+cell and face centroids.
+
+## Data contracts
+
+Faces must follow the mesh module's grouped ordering:
+
+- `[0, n_internal_faces)`: owned–owned;
+- `[n_internal_faces, n_inner_faces)`: owned–ghost;
+- `[n_inner_faces, n_faces)`: physical boundaries.
+
+Each input component must contain at least:
+
+```text
+n_cells + (n_faces - n_inner_faces)
+```
+
+entries. Physical boundary face `f` reads its value at:
+
+```text
+n_cells + (f - n_inner_faces)
+```
+
+These entries represent values at boundary face centroids, not values at
+additional ghost-cell centres. Boundary conditions must populate them before
+the gradient reads them.
+
+Each output component must contain at least `n_own` entries. Ghost and boundary
+output entries, when present, are preserved.
+
+Input and output use the same floating-point value type. Inputs may be
+read-only; outputs must be mutable. Their memory spaces must be accessible
+from `Exec`. Component views may have non-unit strides.
+
+Input storage must not overlap output locations being written. Output
+components must not overlap one another. The operator does not detect aliasing.
+
+## Construction and fields
+
+The following example assumes initialized runtimes, a ready `host_mesh`, and
+`host_connectivity` containing the owned-cell `CellFaces` cache.
+
+```cpp
+#include <krona/fields/fields_manager.hpp>
+#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/numerics/gradient/gradient_operator.hpp>
+
+namespace mc = krona::mesh::compute;
+namespace fields = krona::fields;
 namespace gradient = krona::numerics::gradient;
 
-const gradient::Options options{
+using Exec = krona::execution::ExecutionSpace;
+Exec exec;
+
+gradient::Options options{};
+const auto needed = gradient::requirements(options);
+
+mc::MeshStorage<Exec> mesh(
+    host_mesh, {.data = needed.mesh}, exec);
+
+mc::AuxConnectivityStorage<Exec> connectivity(
+    host_mesh, host_connectivity, needed.connectivity, exec);
+
+gradient::GradientOperator<Exec> op(
+    mesh.view(), connectivity.view(), {}, options, exec);
+
+fields::FieldSizes sizes{
+    .own_cells = static_cast<std::size_t>(host_mesh.n_own),
+    .cells = static_cast<std::size_t>(host_mesh.n_cells),
+    .faces = static_cast<std::size_t>(host_mesh.n_faces),
+    .bfaces = static_cast<std::size_t>(
+        host_mesh.n_faces - host_mesh.n_inner_faces),
+    .nodes = static_cast<std::size_t>(host_mesh.n_nodes)
+};
+
+fields::FieldsManager<Exec> registry(sizes, exec);
+
+auto q = registry.add_field<krona::StorageReal>(
+    "q", fields::FieldLocation::CellExtnd);
+
+auto dq = registry.add_field<krona::StorageReal, 3>(
+    "grad_q", fields::FieldLocation::OwnCell,
+    fields::FieldInitialization::Uninitialized);
+
+// q starts at zero. For a calculation, populate owned values,
+// exchange MPI ghosts and impose physical boundary values.
+op.apply(q.as_const(), dq);
+
+exec.fence("gradient example complete");
+```
+
+The final fence closes this example. It is not required between correctly
+ordered operations submitted to the same execution-space instance.
+
+To use auxiliary Green–Gauss interpolation weights, attach a ready host cache:
+
+```cpp
+gradient::Options weighted_options{
     .scheme = gradient::Scheme::GreenGaussCell,
     .interpolation = gradient::Interpolation::AuxiliaryWeights
 };
-const auto needed = gradient::requirements(options);
-// needed.mesh, needed.connectivity, needed.geometry
+
+mc::AuxGeometryStorage<Exec> geometry(
+    host_mesh, host_geometry,
+    krona::mesh::AuxGeomType::FaceInterpolationWeights, exec);
+
+gradient::GradientOperator<Exec> weighted(
+    mesh.view(), connectivity.view(), geometry.view(),
+    weighted_options, exec);
 ```
 
-The result is a `gradient::Requirements` with `MeshData`, `AuxConnType` and `AuxGeomType` masks. The function is `constexpr`; for valid options it creates no plan, allocates no data and performs no preparation. It is a free function, not a `GradientOperator` method.
+The gradient module consumes existing mesh caches; it does not build
+connectivity or auxiliary geometry.
 
-| Scheme | `needed.mesh` | `needed.connectivity` | `needed.geometry` |
-|---|---|---|---|
-| `GreenGaussCell` | `FaceCells \| Geometry` | `CellFaces` | `FaceInterpolationWeights` for auxiliary interpolation; otherwise `None` |
-| `GreenGaussFace` | `FaceCells \| Geometry` | `None` | `FaceInterpolationWeights` for auxiliary interpolation; otherwise `None` |
-| `LeastSquaresFace` | `FaceCells \| Geometry` | `CellFaces` | `None` |
+## Applying the plan
 
-Current `MeshData` groups are coarse: LS requires attached cell/face geometry groups, although it does not use volumes, areas or normals. `FaceCellDistanceVector` is an optional LS cache and is not included in the mandatory geometry mask.
+### Whole fields
 
-A solver can combine these masks with those of other operators using `|`, build the shared host caches, and create storage once for the whole configuration. MPI halo maps are requirements of the exchange module and must be selected separately when exchanges are used.
+For `N` input components, provide `3*N` output components:
 
-The query does not replace constructor validation. The operator still checks the supplied descriptors, validates the selected arrays through `mesh/compute/validation.hpp`, and prepares its own LS coefficients. GG checks owned-cell volumes; LS retains its stencil conditioning checks. Missing mandatory data causes a diagnosed failure; the operator does not build shared mesh connectivity or geometry.
+```cpp
+auto velocity = registry.add_field<krona::StorageReal, 3>(
+    "velocity", fields::FieldLocation::CellExtnd);
+
+auto velocity_gradient =
+    registry.add_field<krona::StorageReal, 9>(
+        "velocity_gradient", fields::FieldLocation::OwnCell,
+        fields::FieldInitialization::Uninitialized);
+
+op.apply(velocity.as_const(), velocity_gradient);
+```
+
+Output component `3*c + axis` stores the derivative of input component `c`
+along `x`, `y` or `z`.
+
+### Individual components and batches
+
+`apply_component` accepts four rank-one Kokkos Views, including strided subviews:
+
+```cpp
+op.apply_component(
+    q.as_const().component(0),
+    dq.component(0), dq.component(1), dq.component(2));
+```
+
+`apply_set` fuses a compile-time batch of scalar components. Each `std::array`
+must contain a homogeneous View type; all inputs and outputs use the same
+scalar value type.
+
+```cpp
+auto temperature = registry.add_field<krona::StorageReal>(
+    "temperature", fields::FieldLocation::CellExtnd);
+
+auto dt = registry.add_field<krona::StorageReal, 3>(
+    "grad_temperature", fields::FieldLocation::OwnCell,
+    fields::FieldInitialization::Uninitialized);
+
+op.apply_set(
+    std::array{q.component(0), temperature.component(0)},
+    std::array{dq.component(0), dt.component(0)},
+    std::array{dq.component(1), dt.component(1)},
+    std::array{dq.component(2), dt.component(2)});
+```
+
+The batch passes component pointers and strides directly in the kernel
+descriptor; it does not allocate a device pointer table.
+
+### Owned-cell ranges
+
+All three entry points accept a half-open `CellRange`:
+
+```cpp
+// split is an owned-cell index chosen by the caller.
+op.apply(q, dq, {0, split});
+op.apply(q, dq, {split, host_mesh.n_own});
+```
+
+The default `{0, -1}` selects all owned cells. An empty range submits no work.
+Full input and owned-output extents are still required for partial ranges.
 
 ## Execution and lifetime
 
-- Every apply call uses the constructor's `Exec` instance. It allocates no application buffers, performs no MPI calls and inserts no fence. Backend execution may still be synchronous on CPU.
-- A subsequent kernel on the same instance sees the result in order. Before external access, another execution-space instance or destruction, synchronize explicitly.
-- The plan and all borrowed mesh/auxiliary/field owners must outlive submitted work. Destruction does not fence. Recreate the plan after motion, reordering, migration or adaptation; changing counts alone is not a sufficient validity check.
-- Cell GG and LS sum in `Accumulator` (default `AccumulationReal`) and convert when storing. Face GG atomically accumulates in the **output value type**; addition order and rounding can vary.
-- Runtime scheme selection is one host-side switch per apply. Device functors contain no virtual calls or factory lookup. `apply_set` fuses a compile-time batch of components; large batches may increase register pressure.
-- A restricted range requires readiness only for the samples actually used by its cells. Face GG skips unrelated faces before reading field values. The caller identifies independent ranges; the operator does not classify interior cells automatically.
+Construction is synchronous: validation uses host-result reductions, LS
+preparation runs on the supplied `Exec`, and construction fences that instance
+before returning. Construct the plan during setup, not inside the time loop.
 
-## Verification and limits
+Application calls perform descriptor checks and enqueue kernels without an
+explicit fence. Actual host blocking depends on the execution backend.
 
-Tests cover constant and affine fields, skewed/unequal-width cells, boundary face values, auxiliary and computed displacements, layouts/strides, batches, partial ranges, untouched tails, precision choices, rescaled meshes, degree 90, empty partitions, diagnosed singularity and actual two-rank field/gradient exchange.
+Use the same execution-space instance for dependent field updates, halo
+unpacking, gradient evaluation and consumers. Work submitted through another
+instance requires explicit ordering.
 
-Manufactured constant/affine checks use `64*epsilon*max(1,abs(expected))`, where epsilon is the largest machine epsilon of the field, coefficients, accumulator and geometry types. This rounding-level tolerance applies to the well-conditioned test stencils.
+The operator performs no halo exchange. Input ghosts and boundary entries must
+be ready before the corresponding reads. A halo `finish_async()` submitted on
+the same instance can precede `apply()` without an intervening fence; that halo
+operation still waits for MPI completion on the host.
 
-Affine exactness for GG depends on face interpolation reproducing affine face values. Arithmetic averaging is not generally affine-exact on arbitrary meshes. These tests do not prove convergence on every mesh family or performance within a fixed percentage of hand-written CUDA.
+If gradient ghosts are needed later, allocate an output with cell or extended
+cell storage and exchange its owned results separately.
 
-Vertex-neighbour LS is intentionally excluded: the current one-layer face halo does not guarantee all remote vertex-only neighbours. A complete node stencil requires a matching expanded halo before it can be decomposition-independent.
+The operator borrows mesh, auxiliary and field storage. Keep their owners and
+the plan alive until submitted work finishes. The plan cannot be copied or
+moved, and destruction does not provide a completion fence.
+
+## Validation
+
+Construction checks counts, grouped faces, selected storage shapes, face
+topology and the required CSR structure and incidence.
+
+Green–Gauss additionally validates face metrics, owned-cell geometry and any
+selected interpolation weights. Ghost-cell volumes are not used.
+
+LS validates any attached displacement vectors and rejects invalid, singular
+or ill-conditioned preparation stencils. Volumes, areas and normals are not
+used by the LS reconstruction, although the current storage requirements
+include their groups.
+
+`pivot_tolerance` must be finite and strictly between zero and one. It is
+validated for every scheme and used by LS preparation.
+
+Validation is local and synchronous. It does not establish MPI message
+agreement, verify field values or boundary conditions, detect storage
+aliasing, or prove mesh closure and numerical consistency. Attached caches
+must correspond to the current mesh. Application calls do not repeat mesh
+validation.
+
+## Precision
+
+The template parameters are:
+
+```cpp
+GradientOperator<Exec, Coefficient, Accumulator>
+```
+
+`Coefficient` controls persistent LS coefficient storage and defaults to
+`GeometryReal`. `Accumulator` defaults to `AccumulationReal`.
+
+Their application semantics differ by scheme:
+
+| Scheme | Contribution arithmetic | Sum accumulation | Final output |
+| --- | --- | --- | --- |
+| `GreenGaussCell` | `Accumulator` | `Accumulator` | Converted once to the field type |
+| `LeastSquaresFace` | `Accumulator` | `Accumulator` | Converted once to the field type |
+| `GreenGaussFace` | `Accumulator` | Field type, through atomics | Updated directly |
+
+Consequently, `Accumulator=double` does not provide double-precision summation
+for `GreenGaussFace` with `float` output. Each contribution is converted to
+`float` before addition. Cancellation can therefore produce larger errors
+than in the cell-based schemes. Atomic update order also prevents a general
+bitwise reproducibility guarantee.
+
+This is the current intentional contract; the face scheme does not allocate
+a separate accumulation buffer.
+
+## Known limitations and possible improvements
+
+- The plan targets static three-dimensional stencils. Moving meshes,
+  adaptation and renumbering require rebuilding affected caches and plans;
+  there is no refresh or revision-tracking API.
+- LS currently requests complete geometry storage groups, including metrics
+  it does not use. Finer storage selection could reduce this requirement.
+- Green–Gauss has no skewness-correction iteration and is not generally
+  affine-exact on arbitrary skewed meshes.
+- `GreenGaussFace` traverses all local faces even for a partial owned range.
+  Range-specific face lists could be considered if profiling justifies them.
+- Optional wider accumulation for the face scheme would require an explicit
+  workspace or another accumulation strategy, with additional memory and
+  execution costs.
+- Large fused batches increase per-thread working storage. Choose batch sizes
+  through profiling rather than assuming that larger batches are always faster.
+
+`required_input_size()` reports the extended input extent.
+`coefficient_bytes()` reports allocated LS coefficient bytes; Green–Gauss
+plans have no coefficient allocation.

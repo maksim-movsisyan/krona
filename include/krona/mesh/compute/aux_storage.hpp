@@ -10,8 +10,8 @@ namespace krona::mesh::compute {
 template<class Exec = execution::ExecutionSpace>
 class AuxConnectivityStorage {
 public:
-    using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
+    using buffer_type = detail::AuxConnectivityArrays<memory_space, true>;
     using view_type = AuxConnectivityView<memory_space>;
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
@@ -81,12 +81,12 @@ public:
 
 private:
     // These managed descriptors remain empty on HostSpace.
-    detail::AuxConnectivityArrays<memory_space, true> buffers_;
+    buffer_type buffers_;
     view_type view_;
 
     [[nodiscard]] static bool has(AuxConnType mask, AuxConnType flags) noexcept
     {
-        const auto bits = static_cast<std::uint64_t>(flags);
+        const std::uint64_t bits = static_cast<std::uint64_t>(flags);
         return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
 
@@ -124,8 +124,8 @@ private:
 template<class Exec = execution::ExecutionSpace>
 class AuxGeometryStorage {
 public:
-    using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
+    using buffer_type = detail::AuxGeometryArrays<memory_space, true>;
     using view_type = AuxGeometryView<memory_space>;
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
@@ -209,12 +209,12 @@ public:
 
 private:
     // These managed descriptors remain empty on HostSpace.
-    detail::AuxGeometryArrays<memory_space, true> buffers_;
+    buffer_type buffers_;
     view_type view_;
 
     [[nodiscard]] static bool has(AuxGeomType mask, AuxGeomType flags) noexcept
     {
-        const auto bits = static_cast<std::uint64_t>(flags);
+        const std::uint64_t bits = static_cast<std::uint64_t>(flags);
         return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
  

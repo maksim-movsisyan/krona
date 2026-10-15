@@ -5,7 +5,7 @@ if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Halo tests require an MPI launcher")
 endif()
 
-foreach(case IN ITEMS loopback roundtrip multi_peer one_way isolated integer)
+foreach(case IN ITEMS loopback roundtrip multi_peer one_way isolated integer selected)
     set(ranks 2)
     if(case STREQUAL "loopback")
         set(ranks 1)

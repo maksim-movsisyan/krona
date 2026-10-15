@@ -95,7 +95,7 @@ bool csr_shape(Offsets offsets, Values values, std::size_t rows)
 }
 template<class Exec, class Kernel>
 std::size_t reduce(const char* label, const Exec& exec, std::size_t count, Kernel kernel)
-{
+{ 
     std::size_t bad = 0;
     if (count != 0)
         Kokkos::parallel_reduce(label,

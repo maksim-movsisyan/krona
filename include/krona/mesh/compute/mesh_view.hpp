@@ -76,6 +76,8 @@ struct HaloArrays {
 
 template<class Space, bool Owning>
 struct MeshArrays {
+    using memory_space = Space;
+
     MeshSizes sizes;
     MeshData active_mask = MeshData::None;
     ConnectivityArrays<Space, Owning> connectivity;
@@ -93,6 +95,6 @@ struct MeshArrays {
 
 /// @brief Read-only, non-owning descriptors passed by value to Kokkos kernels.
 template<class Space = execution::MemorySpace>
-using MeshView = detail::MeshArrays<Space, false>;
+using MeshView = detail::MeshArrays<Space, false>; 
 
 } // namespace krona::mesh::compute

@@ -28,7 +28,7 @@ struct Component {
     std::size_t stride = 1;
 };
 
-struct Segment {
+struct Segment { 
     std::size_t offset = 0, count = 0;
 };
 

@@ -1,7 +1,7 @@
 add_executable(krona_test_fields test_fields.cpp)
 target_link_libraries(krona_test_fields PRIVATE krona_test_support krona::fields)
 
-foreach(case IN ITEMS registry soa transfers tensor empty)
+foreach(case IN ITEMS registry soa transfers tensor empty fill_types aos extended storage)
     add_test(
     NAME "fields.${case}"
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1

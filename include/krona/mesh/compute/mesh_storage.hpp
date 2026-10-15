@@ -19,8 +19,8 @@ struct MeshOptions {
 template<class Exec = execution::ExecutionSpace>
 class MeshStorage {
 public:
-    using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
+    using buffer_type = detail::MeshArrays<memory_space, true>;
     using view_type = MeshView<memory_space>;
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
@@ -102,7 +102,7 @@ public:
 
 private:
     // Managed views stay empty on CPU: there is no second host mesh allocation.
-    detail::MeshArrays<memory_space, true> buffers_;
+    buffer_type buffers_;
     view_type view_;
     // Empty on CPU. On GPU the small host plan is owned independently of MeshPart.
     std::vector<int> halo_peers_;
@@ -131,7 +131,7 @@ private:
 
     [[nodiscard]] static bool has(MeshData mask, MeshData flags) noexcept
     {
-        const auto bits = static_cast<std::uint64_t>(flags);
+        const std::uint64_t bits = static_cast<std::uint64_t>(flags);
         return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
 
@@ -140,13 +140,12 @@ private:
     {
         execution::require_kokkos();
         mpi::require((static_cast<std::uint64_t>(selected) & ~static_cast<std::uint64_t>(MeshData::All)) == 0,
-                        "MeshStorage: unknown data flags");
+                     "MeshStorage: unknown data flags");
         mpi::require(m.n_own >= 0 && m.n_cells >= m.n_own && m.n_nodes_own >= 0 &&
-                        m.n_nodes >= m.n_nodes_own && m.n_faces >= 0,
-                        "MeshStorage: invalid cell/node/face counts");
+                     m.n_nodes >= m.n_nodes_own && m.n_faces >= 0, "MeshStorage: invalid cell/node/face counts");
         if (m.faces_grouped)
             mpi::require(m.n_internal_faces >= 0 && m.n_inner_faces >= m.n_internal_faces &&
-                            m.n_faces >= m.n_inner_faces, "MeshStorage: invalid grouped face ranges");
+                         m.n_faces >= m.n_inner_faces, "MeshStorage: invalid grouped face ranges");
         const std::size_t cells = static_cast<std::size_t>(m.n_cells);
         const std::size_t faces = static_cast<std::size_t>(m.n_faces);
         const std::size_t nodes = static_cast<std::size_t>(m.n_nodes);
@@ -173,18 +172,17 @@ private:
             mpi::require_size(m.send_offsets, m.nb_ranks.size() + 1, "send_offsets");
             mpi::require_size(m.recv_offsets, m.nb_ranks.size() + 1, "recv_offsets");
             mpi::require(m.send_offsets.front() == 0 && m.send_offsets.back() == m.send_owned_local.size() &&
-                    m.recv_offsets.front() == 0 && m.recv_offsets.back() == m.recv_ghost_local.size(),
-                    "MeshStorage: invalid halo CSR bounds");
-            mpi::require(m.nprocs > 0 && m.rank >= 0 && m.rank < m.nprocs,
-                            "MeshStorage: invalid halo rank metadata");
+                         m.recv_offsets.front() == 0 && m.recv_offsets.back() == m.recv_ghost_local.size(),
+                         "MeshStorage: invalid halo CSR bounds");
+            mpi::require(m.nprocs > 0 && m.rank >= 0 && m.rank < m.nprocs, "MeshStorage: invalid halo rank metadata");
             int previous = -1;
             for (std::size_t peer = 0; peer < m.nb_ranks.size(); ++peer) {
                 const int rank = m.nb_ranks[peer];
                 mpi::require(rank > previous && rank < m.nprocs && rank != m.rank,
-                                "MeshStorage: halo peers must be sorted, unique and valid");
+                             "MeshStorage: halo peers must be sorted, unique and valid");
                 mpi::require(m.send_offsets[peer] <= m.send_offsets[peer + 1] &&
-                                m.recv_offsets[peer] <= m.recv_offsets[peer + 1],
-                                "MeshStorage: halo offsets must be nondecreasing");
+                             m.recv_offsets[peer] <= m.recv_offsets[peer + 1],
+                             "MeshStorage: halo offsets must be nondecreasing");
                 previous = rank;
             }
         }

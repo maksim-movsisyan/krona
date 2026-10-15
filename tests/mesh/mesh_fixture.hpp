@@ -61,9 +61,9 @@ inline mesh::MeshPart make_mesh()
 
     // Metrics follow the oriented triangular loops; no production builder is called.
     for (std::size_t f = 0; f < 7; ++f) {
-        const auto a = static_cast<std::size_t>(m.face_nodes[3 * f]);
-        const auto b = static_cast<std::size_t>(m.face_nodes[3 * f + 1]);
-        const auto c = static_cast<std::size_t>(m.face_nodes[3 * f + 2]);
+        const std::size_t a = static_cast<std::size_t>(m.face_nodes[3 * f]);
+        const std::size_t b = static_cast<std::size_t>(m.face_nodes[3 * f + 1]);
+        const std::size_t c = static_cast<std::size_t>(m.face_nodes[3 * f + 2]);
         const auto ux = m.node_x[b] - m.node_x[a], uy = m.node_y[b] - m.node_y[a], uz = m.node_z[b] - m.node_z[a];
         const auto vx = m.node_x[c] - m.node_x[a], vy = m.node_y[c] - m.node_y[a], vz = m.node_z[c] - m.node_z[a];
         const auto nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;

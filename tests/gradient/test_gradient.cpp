@@ -210,24 +210,113 @@ void weighted_case(const Exec& exec)
 void layouts_case(const Exec& exec)
 {
     for (const auto scheme : schemes)
-        numerical<krona::StorageReal, 3, Kokkos::LayoutRight>(exec, fixture(), {.scheme=scheme});
-    auto data = fixture();
-    MeshStorage<> mesh(data.mesh, {}, exec);
-    AuxConnectivityStorage<> connectivity(data.mesh, data.connectivity, exec);
-    gradient::GradientOperator<> op(mesh.view(), connectivity.view(), {}, {}, exec);
+        numerical<krona::StorageReal, 3, Kokkos::LayoutRight>(
+            exec, fixture(), {.scheme = scheme});
+
+    auto data = fixture(0, 1, true, true);
+    const auto& m = data.mesh;
+
+    MeshStorage<> mesh(m, {}, exec);
+    AuxConnectivityStorage<> connectivity(m, data.connectivity, exec);
+    AuxGeometryStorage<> geometry(m, data.geometry, exec);
+
     using Memory = typename Exec::memory_space;
-    Kokkos::View<double*[2], Kokkos::LayoutRight, Memory> q("batch_q", op.required_input_size());
-    Kokkos::View<double*[6], Kokkos::LayoutRight, Memory> g("batch_g", op.required_input_size());
-    Kokkos::deep_copy(exec, q, 8.0); Kokkos::deep_copy(exec, g, -999.0);
-    op.apply_set(std::array{Kokkos::subview(q, Kokkos::ALL(), 0), Kokkos::subview(q, Kokkos::ALL(), 1)},
-                 std::array{Kokkos::subview(g, Kokkos::ALL(), 0), Kokkos::subview(g, Kokkos::ALL(), 3)},
-                 std::array{Kokkos::subview(g, Kokkos::ALL(), 1), Kokkos::subview(g, Kokkos::ALL(), 4)},
-                 std::array{Kokkos::subview(g, Kokkos::ALL(), 2), Kokkos::subview(g, Kokkos::ALL(), 5)});
-    op.apply_component(Kokkos::subview(q, Kokkos::ALL(), 0), Kokkos::subview(g, Kokkos::ALL(), 0),
-                        Kokkos::subview(g, Kokkos::ALL(), 1), Kokkos::subview(g, Kokkos::ALL(), 2));
-    auto host = Kokkos::create_mirror(g); Kokkos::deep_copy(exec, host, g); exec.fence();
-    for (std::size_t i = 0; i < op.required_input_size(); ++i) for (int c = 0; c < 6; ++c)
-        equal(host(i, c), i < 2 ? 0.0 : -999.0, "Strided component batch and scalar API");
+    const auto owned = static_cast<std::size_t>(m.n_own);
+    const auto cells = static_cast<std::size_t>(m.n_cells);
+    const auto n = cells +
+        static_cast<std::size_t>(m.n_faces - m.n_inner_faces);
+
+    Kokkos::View<double*[2], Kokkos::LayoutRight, Memory> q("batch_q", n);
+    Kokkos::View<double*[8], Kokkos::LayoutRight, Memory> g("batch_g", n);
+
+    auto hq = Kokkos::create_mirror(Kokkos::WithoutInitializing, q);
+    auto hg = Kokkos::create_mirror(Kokkos::WithoutInitializing, g);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        Vec p{};
+        if (i < cells) {
+            p = {m.cell_centroid_x[i], m.cell_centroid_y[i],
+                 m.cell_centroid_z[i]};
+        } else {
+            const auto f =
+                static_cast<std::size_t>(m.n_inner_faces) + i - cells;
+            p = {m.face_centroid_x[f], m.face_centroid_y[f],
+                 m.face_centroid_z[f]};
+        }
+
+        hq(i, 0) = 5.0 + 2.0*p[0] - 3.0*p[1] + 0.75*p[2];
+        hq(i, 1) = -7.0 - p[0] + 4.0*p[1] + 2.0*p[2];
+    }
+    Kokkos::deep_copy(exec, q, hq);
+
+    const Kokkos::View<const double*[2], Kokkos::LayoutRight, Memory>
+        input = q;
+
+    const auto column = [](const auto& view, int c) {
+        return Kokkos::subview(view, Kokkos::ALL(), c);
+    };
+
+    constexpr double epsilon = std::max({
+        std::numeric_limits<double>::epsilon(),
+        static_cast<double>(
+            std::numeric_limits<krona::GeometryReal>::epsilon()),
+        static_cast<double>(
+            std::numeric_limits<krona::AccumulationReal>::epsilon())
+    });
+
+    const auto verify = [&](const std::array<double, 8>& expected,
+                            std::size_t first, std::size_t last) {
+        Kokkos::deep_copy(exec, hg, g);
+        exec.fence();
+
+        for (std::size_t i = 0; i < n; ++i) {
+            for (int c = 0; c < 8; ++c) {
+                const double value = i >= first && i < last
+                    ? expected[static_cast<std::size_t>(c)] : -999.0;
+
+                if (value == -999.0) {
+                    equal(hg(i, c), value,
+                          "Unselected output entries remain unchanged");
+                } else {
+                    near(hg(i, c), value,
+                         64*epsilon*std::max(1.0, std::abs(value)),
+                         "Strided component gradient and mapping");
+                }
+            }
+        }
+    };
+
+    for (const auto scheme : schemes) {
+        gradient::GradientOperator<> op(
+            mesh.view(), connectivity.view(), geometry.view(),
+            {.scheme = scheme,
+             .interpolation = gradient::Interpolation::AuxiliaryWeights},
+            exec);
+
+        Kokkos::deep_copy(exec, g, -999.0);
+
+        // Reverse input order and scatter axes into unrelated columns.
+        op.apply_set(
+            std::array{column(input, 1), column(input, 0)},
+            std::array{column(g, 5), column(g, 2)},
+            std::array{column(g, 0), column(g, 7)},
+            std::array{column(g, 3), column(g, 4)});
+
+        verify({4.0, -999.0, 2.0, 2.0, 0.75, -1.0, -999.0, -3.0},
+               0, owned);
+
+        // Verify independently so this call cannot hide a batch error.
+        Kokkos::deep_copy(exec, g, -999.0);
+
+        op.apply_component(
+            column(input, 0),
+            column(g, 6), column(g, 1), column(g, 0),
+            {1, m.n_own});
+
+        verify({0.75, -3.0, -999.0, -999.0,
+                -999.0, -999.0, 2.0, -999.0},
+               1, owned);
+    }
 }
 void range_case(const Exec& exec)
 { for (const auto scheme : schemes) numerical<double, 1, Kokkos::LayoutLeft>(exec, fixture(), {.scheme=scheme}, false, true); }
@@ -239,10 +328,20 @@ void scale_case(const Exec& exec)
 void precision_case(const Exec& exec)
 {
     for (const auto scheme : schemes) {
-        numerical<float, 3, Kokkos::LayoutLeft, float, float>(exec, fixture(0, 1, true, true),
-            {.scheme=scheme, .interpolation=gradient::Interpolation::AuxiliaryWeights});
-        numerical<double, 1, Kokkos::LayoutLeft, float, double>(exec, fixture(0, 1, true, true),
-            {.scheme=scheme, .interpolation=gradient::Interpolation::AuxiliaryWeights});
+        const gradient::Options options{
+            .scheme = scheme,
+            .interpolation = gradient::Interpolation::AuxiliaryWeights
+        };
+
+        numerical<float, 3, Kokkos::LayoutLeft, float, float>(
+            exec, fixture(0, 1, true, true), options);
+
+        numerical<double, 1, Kokkos::LayoutLeft, float, double>(
+            exec, fixture(0, 1, true, true), options);
+
+        // FP32 fields and coefficients with wider contribution arithmetic.
+        numerical<float, 3, Kokkos::LayoutRight, float, double>(
+            exec, fixture(0, 1, true, true), options);
     }
 }
 void degree_case(const Exec& exec)

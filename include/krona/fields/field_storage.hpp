@@ -57,10 +57,12 @@ class FieldStorage final : public AbstractField {
                   std::is_same_v<Layout, Kokkos::LayoutRight>,
                   "Owned fields support LayoutLeft and LayoutRight");
 public:
+    using value_type = T;
     using memory_space = typename Exec::memory_space;
-    using buffer_type = detail::FieldArray<T, Components, Kokkos::Device<Exec, memory_space>, Layout, true>;
-    using view_type = FieldView<T, Components, memory_space, Layout>;
-    using const_view_type = FieldView<const T, Components, memory_space, Layout>;
+    using array_layout = Layout;
+    using buffer_type = detail::FieldArray<value_type, Components, Kokkos::Device<Exec, memory_space>, array_layout, true>;
+    using view_type = FieldView<value_type, Components, memory_space, array_layout>;
+    using const_view_type = FieldView<const value_type, Components, memory_space, array_layout>;
 
     FieldStorage(std::string name, std::size_t count, FieldLocation location, const Exec& exec)
         : AbstractField(std::move(name), location)

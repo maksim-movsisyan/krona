@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/execution/types.hpp>
+#include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 
@@ -11,7 +12,6 @@
 #include <source_location>
 #include <span> 
 #include <string_view>
-#include <utility>
 
 namespace krona::test {
 
@@ -59,14 +59,8 @@ void near(T actual, T expected, T tolerance, std::string_view message,
 /// Allocate referenced buffers outside submit so they outlive its stack unwinding.
 template<class Submit>
 void complete(const Exec& exec, Submit&& submit)
-{
-    try {
-        std::forward<Submit>(submit)();
-        exec.fence("KRONA test: work complete");
-    } catch (...) {
-        exec.fence("KRONA test: drain failed work");
-        throw;
-    }
+{   
+    execution::complete(exec, std::forward<Submit>(submit));
 }
 
 struct Case {
@@ -82,9 +76,7 @@ inline int run(int argc, char** argv, std::string_view suite, std::span<const Ca
     std::cerr << "[test] After MPI initialization\n" << std::flush;
 
     try {
-        std::cerr << "[test] Before Kokkos initialization\n" << std::flush;
         Kokkos::ScopeGuard kokkos{argc, argv};
-        std::cerr << "[test] After Kokkos initialization\n" << std::flush;
         check(argc <= 2, "Expected at most one test-case name");
         const std::string_view selected = argc == 2 ? argv[1] : "";
         Exec exec{};

@@ -9,7 +9,7 @@
 #endif
 
 namespace krona::execution {
-
+ 
 #if defined(KRONA_EXECUTION_SPACE_SERIAL)
 using ExecutionSpace = Kokkos::Serial;
 #elif defined(KRONA_EXECUTION_SPACE_OPENMP)

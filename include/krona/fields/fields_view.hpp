@@ -32,8 +32,7 @@ public:
 
     /// @brief Allows mutable-to-const conversion without copying values.
     template<class U>
-        requires (std::is_const_v<T> && !std::is_const_v<U> &&
-                  std::is_same_v<std::remove_const_t<T>, U>)
+        requires (std::is_const_v<T> && !std::is_const_v<U> && std::is_same_v<std::remove_const_t<T>, U>)
     KOKKOS_INLINE_FUNCTION FieldView(const FieldView<U, Components, Space, Layout>& other)
         : data_(other.kokkos_view()) {}
 
@@ -47,12 +46,13 @@ public:
         else return data_(entity, component);
     }
 
+     /// @brief Scalar accessor
     KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity) const requires (Components == 1)
     { return data_(entity); }
-
     KOKKOS_INLINE_FUNCTION T& operator[](std::size_t entity) const requires (Components == 1)
     { return data_(entity); }
 
+    /// @brief 3D vector components accessor
     KOKKOS_INLINE_FUNCTION T& x(std::size_t entity) const requires (Components == 3)
     { return (*this)(entity, 0); }
     KOKKOS_INLINE_FUNCTION T& y(std::size_t entity) const requires (Components == 3)
@@ -61,8 +61,7 @@ public:
     { return (*this)(entity, 2); }
 
     /// @brief Full 3x3 tensor, ordered xx,xy,xz,yx,yy,yz,zx,zy,zz.
-    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int row, int column) const
-        requires (Components == 9)
+    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int row, int column) const requires (Components == 9)
     {
         KOKKOS_ASSERT(row >= 0 && row < 3 && column >= 0 && column < 3);
         return (*this)(entity, row * 3 + column);

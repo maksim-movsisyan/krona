@@ -247,8 +247,7 @@ struct CellKernel {
             } else {
                 const bool owner = metrics.mesh.connectivity.face_owner(f) == cell;
                 const Real alpha = face >= metrics.mesh.sizes.n_inner_faces
-                    ? Real{1}
-                    : (owner ? Real{1} - metrics.template owner_weight<Real>(f) : metrics.template owner_weight<Real>(f));
+                    ? Real{1} : (owner ? Real{1} - metrics.template owner_weight<Real>(f) : metrics.template owner_weight<Real>(f));
                 const Real factor = (owner ? alpha : -alpha) * static_cast<Real>(metrics.mesh.geometry.face_area(f)) * cell_vol_inv;
                 x = factor * static_cast<Real>(metrics.mesh.geometry.face_normal_x(f));
                 y = factor * static_cast<Real>(metrics.mesh.geometry.face_normal_y(f));
@@ -298,14 +297,11 @@ struct FaceKernel {
         const std::size_t i = static_cast<std::size_t>(owner);
         const auto j = metrics.sample(owner, face);
 
-        const Real w = boundary
-            ? Real{0} : metrics.template owner_weight<Real>(f);
-
+        const Real w = boundary ? Real{0} : metrics.template owner_weight<Real>(f);
         const Real alpha = boundary ? Real{1} : Real{1} - w;
 
         // Read volumes only for owned cells whose gradients are updated.
         const Real owner_factor = write_owner ? alpha / static_cast<Real>(metrics.mesh.geometry.cell_volume(i)) : Real{0};
-
         const Real neigh_factor = write_neigh ? w / static_cast<Real>(metrics.mesh.geometry.cell_volume(j)) : Real{0};
 
         const Real area = static_cast<Real>(metrics.mesh.geometry.face_area(f));

@@ -9,8 +9,8 @@
 #include <vector>
 
 namespace krona::mesh::compute::detail {
-
-// Shared transfer mechanism; no host cache is built or modified here.
+ 
+/// @brief Shared transfer mechanism; no host cache is built or modified here.
 template<class Exec>
 struct ArrayTransfer {
     using memory_space = typename Exec::memory_space;

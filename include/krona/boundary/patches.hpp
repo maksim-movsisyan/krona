@@ -29,13 +29,12 @@ public:
     {
         mpi::guarded([&] {
             mpi::require(m.faces_grouped && m.n_own >= 0 && m.n_cells >= m.n_own &&
-                            m.n_internal_faces >= 0 && m.n_internal_faces <= m.n_inner_faces &&
-                            m.n_inner_faces <= m.n_faces,
-                            "Scalar boundary: requires valid counts and grouped faces");
+                         m.n_internal_faces >= 0 && m.n_internal_faces <= m.n_inner_faces && m.n_inner_faces <= m.n_faces,
+                         "PatchCatalog: requires valid counts and grouped faces");
             mpi::require(m.face_patch.size() == static_cast<std::size_t>(m.n_faces),
-                            "Scalar boundary: face_patch extent mismatch");
+                         "PatchCatalog: face_patch extent mismatch");
             mpi::require(m.patches.size() <= static_cast<std::size_t>(std::numeric_limits<mesh::PatchId>::max()),
-                            "Scalar boundary: too many patch labels");
+                         "PatchCatalog: too many patch labels");
             patches_.reserve(m.patches.size());
             for (std::size_t p = 0; p < m.patches.size(); ++p)
                 patches_.push_back({{static_cast<mesh::PatchId>(p), m.n_inner_faces, m.n_inner_faces},
@@ -46,16 +45,16 @@ public:
             for (LocalIndex begin = m.n_inner_faces; begin < m.n_faces;) {
                 const auto id = m.face_patch[static_cast<std::size_t>(begin)];
                 mpi::require(id >= -1 && (id == -1 || static_cast<std::size_t>(id) < patches_.size()),
-                                "Scalar boundary: invalid patch ID on boundary face");
+                             "PatchCatalog: invalid patch ID on boundary face");
                 LocalIndex end = begin + 1;
                 while (end < m.n_faces && m.face_patch[static_cast<std::size_t>(end)] == id) ++end;
                 if (id == -1) {
-                    mpi::require(!seen_unlabelled, "Scalar boundary: unlabelled faces must be contiguous");
+                    mpi::require(!seen_unlabelled, "PatchCatalog: unlabelled faces must be contiguous");
                     seen_unlabelled = true;
                     unlabelled_ = {id, begin, end};
                 } else {
                     const std::size_t p = static_cast<std::size_t>(id);
-                    mpi::require(!seen[p], "Scalar boundary: each patch must be a contiguous face interval");
+                    mpi::require(!seen[p], "PatchCatalog: each patch must be a contiguous face interval");
                     seen[p] = true;
                     patches_[p].range = {id, begin, end};
                 }

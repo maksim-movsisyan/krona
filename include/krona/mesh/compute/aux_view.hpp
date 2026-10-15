@@ -10,6 +10,8 @@ namespace detail {
 
 template<class Space, bool Owning>
 struct AuxConnectivityArrays {
+    using memory_space = Space;
+    
     AuxConnType active_mask = AuxConnType::None;
     LocalIndex n_faces = 0, n_cells_own = 0, n_nodes_own = 0;
 
@@ -39,6 +41,8 @@ struct AuxConnectivityArrays {
 
 template<class Space, bool Owning>
 struct AuxGeometryArrays {
+    using memory_space = Space;
+
     AuxGeomType active_mask = AuxGeomType::None;
     LocalIndex n_faces = 0, n_cells = 0;
 
@@ -74,7 +78,7 @@ struct AuxGeometryArrays {
 
 } // namespace detail
 
-// Optional data stays outside MeshView: kernels capture only needed descriptors.
+// Optional data stays outside MeshView: kernels capture only needed descriptors. 
 template<class Space = execution::MemorySpace>
 using AuxConnectivityView = detail::AuxConnectivityArrays<Space, false>;
 
