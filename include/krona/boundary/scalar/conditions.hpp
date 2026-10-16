@@ -1,103 +1,72 @@
 #pragma once
 
-#include <krona/execution/types.hpp>
+#include <krona/boundary/context.hpp>
 
-#include <cstddef>
+#include <concepts>
 
 namespace krona::boundary::scalar {
 
-/// @brief Geometry and explicit data for one boundary face; normal points out of owner.
-template<class Real>
-struct Context {
-    LocalIndex face = 0, owner = 0;
-    std::size_t boundary_index = 0;
-    Real x = 0, y = 0, z = 0;
-    Real nx = 0, ny = 0, nz = 0;
-    Real distance = 0, area = 0, diffusivity = 0, time = 0;
-    Real tangential_increment = 0;
-};
-
-/// @brief Affine face value and outward diffusive flux density, without face area.
-/// phi_f = value_owner * phi_P + value_constant; q_n = flux_owner * phi_P + flux_constant.
+/// @brief Affine face value and outward normal derivative; no constitutive coefficient or area.
 template<class Real>
 struct Relation {
     Real value_owner = 0, value_constant = 0;
-    Real flux_owner = 0, flux_constant = 0;
+    Real gradient_owner = 0, gradient_constant = 0;
 
     KOKKOS_INLINE_FUNCTION Real face_value(Real owner_value) const
-    { return value_owner * owner_value + value_constant; }
+    { return value_owner == Real{0} ? value_constant : value_owner*owner_value + value_constant; }
 
-    KOKKOS_INLINE_FUNCTION Real outward_flux(Real owner_value) const
-    { return flux_owner * owner_value + flux_constant; }
+    KOKKOS_INLINE_FUNCTION Real normal_gradient(Real owner_value) const
+    { return gradient_owner == Real{0} ? gradient_constant : gradient_owner*owner_value + gradient_constant; }
 };
 
-/// @brief Prescribes phi_f; tangential correction enters the diffusive flux only.
+/// @brief Prescribes phi_f; the normal derivative includes the supplied explicit increment.
 template<class Real = ComputeReal>
 struct FixedValue {
     Real value = 0;
-    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const Context<Real>& c) const
+    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
     {
-        const Real factor = c.diffusivity / c.distance;
-        return {Real{0}, value, factor, factor * (c.tangential_increment - value)};
+        const Real inverse = Real{1}/c.distance;
+        return {Real{0}, value, -inverse, (value - increment)*inverse};
     }
 };
 
-/// @brief Prescribes outward normal derivative d(phi)/dn, including its sign.
+/// @brief Prescribes d(phi)/dn with the outward-normal sign convention.
 template<class Real = ComputeReal>
 struct NormalGradient {
     Real gradient = 0;
-    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const Context<Real>& c) const
-    {
-        return {Real{1}, c.distance * gradient + c.tangential_increment,
-                Real{0}, -c.diffusivity * gradient};
-    }
+    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
+    { return {Real{1}, c.distance*gradient + increment, Real{0}, gradient}; }
 };
 
-/// @brief Prescribes outward flux density q_n = -D*d(phi)/dn; requires D > 0.
+/// @brief Declares an outward physical flux density; conversion belongs to a supplied flux law.
 template<class Real = ComputeReal>
-struct FixedFlux {
-    Real flux = 0;
-    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const Context<Real>& c) const
-    {
-        KOKKOS_ASSERT(c.diffusivity > Real{0});
-        return {Real{1}, c.tangential_increment - c.distance * flux / c.diffusivity,
-                Real{0}, flux};
+struct FixedFlux { Real flux = 0; };
+
+/// @brief Explicit absence of a flux-to-gradient law; sufficient for value/gradient conditions.
+struct NoFluxLaw {};
+
+template<class Law, class Real>
+concept FluxLaw = requires(const Law& law, const FaceContext<Real>& c, Real flux) {
+    { law.normal_gradient(c, flux) } -> std::convertible_to<Real>;
+};
+
+/// @brief Custom conditions return Relation<Real> from (face geometry, explicit increment).
+template<class Condition, class Real, class Law = NoFluxLaw>
+KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const Condition& condition,
+    const FaceContext<Real>& c, Real increment = 0, const Law& = {})
+{ return condition(c, increment); }
+
+/// @brief Converts only this flux condition; other conditions never access the supplied law.
+template<class Real, class Law = NoFluxLaw>
+KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const FixedFlux<Real>& condition,
+    const FaceContext<Real>& c, Real increment = 0, const Law& law = {})
+{
+    if constexpr (FluxLaw<Law, Real>) {
+        return NormalGradient<Real>{static_cast<Real>(law.normal_gradient(c, condition.flux))}(c, increment);
+    } else {
+        Kokkos::abort("Scalar boundary: FIXED_FLUX requires a flux law with normal_gradient(context, flux)");
+        return {};
     }
-};
-
-/// @brief Constant face diffusivity; no allocation or device upload.
-template<class Real = ComputeReal>
-struct UniformDiffusivity {
-    Real value = 1;
-    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t) const { return value; }
-};
-
-/// @brief Face-indexed diffusivity; View includes all mesh faces and may be strided.
-template<class View>
-struct FaceDiffusivity {
-    static_assert(Kokkos::is_view<View>::value && View::rank == 1);
-    View values;
-    KOKKOS_INLINE_FUNCTION auto operator()(std::size_t face) const { return values(face); }
-};
-
-/// @brief Orthogonal approximation: no explicit tangential gradient contribution.
-struct NoCorrection {
-    template<class Real>
-    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t, Real, Real, Real) const { return Real{0}; }
-};
-
-/// @brief Uses owned cell gradients; MPI ghost gradients are not needed at exterior faces.
-template<class X, class Y, class Z>
-struct GradientCorrection {
-    X x;
-    Y y;
-    Z z;
-    template<class Real>
-    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t owner, Real tx, Real ty, Real tz) const
-    {
-        return tx * static_cast<Real>(x(owner)) + ty * static_cast<Real>(y(owner)) +
-               tz * static_cast<Real>(z(owner));
-    }
-};
+}
 
 } // namespace krona::boundary::scalar

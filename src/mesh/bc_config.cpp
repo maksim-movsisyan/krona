@@ -95,6 +95,11 @@ void generate_bc_template_config(const MeshPart& mesh, const std::filesystem::pa
             << "# Labelled faces: " << mesh.n_labeled_bfaces_g << "\n"
             << "# Unlabelled faces: " << mesh.n_bfaces_g - mesh.n_labeled_bfaces_g
             << " (not represented by patch entries)\n\n";
+        out << "# Add scalar tables inside each corresponding [[boundary_condition]] entry:\n"
+               "# [boundary_condition.scalar.temperature]\n"
+               "# type = \"FIXED_FLUX\"\n# flux = 0.0  # Positive outward; units depend on the transport law.\n"
+               "# Unlabelled scalar conditions use [unlabelled.scalar.temperature].\n\n";
+        if (mesh.patches.empty()) out << "boundary_condition = []\n\n";
         for (std::size_t p = 0; p < mesh.patches.size(); ++p) {
             const auto& patch = mesh.patches[p];
             const auto type = suggested_type(patch.source_type);

@@ -60,7 +60,7 @@ public:
                 }
                 begin = end;
             }
-            mpi::require(m.n_labeled_bfaces_g <= m.n_bfaces_g, "Scalar boundary: invalid global boundary counts");
+            mpi::require(m.n_labeled_bfaces_g <= m.n_bfaces_g, "PatchCatalog: invalid global boundary counts");
             needs_unlabelled_ = seen_unlabelled || m.n_labeled_bfaces_g < m.n_bfaces_g;
         });
     }

@@ -637,13 +637,13 @@ target_link_libraries(krona_boundary_scalar
     #====================================
     #=== PHYSICAL BOUNDARY CONDITIONS ===
     #====================================
-add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
-add_library(krona::boundary_physical ALIAS krona_boundary_physical)
-target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
-krona_public_headers(krona_boundary_physical PUBLIC)
-target_link_libraries(krona_boundary_physical
-    PUBLIC krona::boundary_scalar
-    PRIVATE krona::warnings krona::tomlplusplus)
+#add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
+#add_library(krona::boundary_physical ALIAS krona_boundary_physical)
+#target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
+#krona_public_headers(krona_boundary_physical PUBLIC)
+#target_link_libraries(krona_boundary_physical
+#    PUBLIC krona::boundary_scalar
+#    PRIVATE krona::warnings krona::tomlplusplus)
 
 
     #========================
@@ -714,9 +714,9 @@ if(KRONA_BUILD_APPLICATIONS)
     #================================
     #=== SCALAR TRANSPORT EXAMPLE ===
     #================================
-    add_executable(krona_scalar_diffusion apps/scalar_diffusion.cpp)
-    target_link_libraries(krona_scalar_diffusion PRIVATE
-        krona::transport_scalar krona::mesh_io krona::warnings)
+#    add_executable(krona_scalar_diffusion apps/scalar_diffusion.cpp)
+#    target_link_libraries(krona_scalar_diffusion PRIVATE
+#        krona::transport_scalar krona::mesh_io krona::warnings)
 
 endif()
     
