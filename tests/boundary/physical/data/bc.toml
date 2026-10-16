@@ -1,52 +1,45 @@
-# One file: flow and independent scalar catalogues share patch metadata.
 [[boundary_condition]]
 patch_id = 0
-name = "inlet"
-family = "inlet"
-source_type = "BCInflow"
-global_face_count = 1
-type = "INLET_VELOCITY"
-[boundary_condition.physical]
-velocity = [20, 0, 0]
-temperature = 300
-[boundary_condition.scalar.temperature]
-type = "FIXED_VALUE"
-value = 300
-[boundary_condition.scalar.tracer]
-type = "FIXED_VALUE"
-value = 0.25
-
-[[boundary_condition]]
-patch_id = 1
-name = "wall"
+name = "iso"
 family = "wall"
 source_type = "BCWall"
 global_face_count = 1
-type = "WALL_ISOTHERMAL"
-[boundary_condition.physical]
+type = "ISOTHERMAL_WALL"
 temperature = 350
-[boundary_condition.scalar.temperature]
-type = "FIXED_VALUE"
-value = 350
+
 [boundary_condition.scalar.tracer]
-type = "ZERO_GRADIENT"
+type = "FIXED_VALUE"
+value = 0.2
+
+[[boundary_condition]]
+patch_id = 1
+name = "adiabatic"
+type = "ADIABATIC_WALL"
 
 [[boundary_condition]]
 patch_id = 2
-name = "outlet"
-family = "outlet"
-source_type = "BCOutflow"
-global_face_count = 1
-type = "OUTLET_PRESSURE"
-[boundary_condition.physical]
-pressure = 100000
-[boundary_condition.scalar.temperature]
-type = "ZERO_GRADIENT"
-[boundary_condition.scalar.tracer]
-type = "ZERO_GRADIENT"
+name = "symmetry"
+type = "SYMMETRY"
 
-# A scalar-only unlabelled table does not configure unlabelled flow boundaries.
-[unlabelled.scalar.temperature]
-type = "ZERO_GRADIENT"
-[unlabelled.scalar.tracer]
-type = "ZERO_GRADIENT"
+[[boundary_condition]]
+patch_id = 3
+name = "outlet"
+type = "PRESSURE_OUTLET"
+pressure = 90000
+
+[[boundary_condition]]
+patch_id = 4
+name = "inlet"
+type = "SUPERSONIC_INLET"
+pressure = 120000
+temperature = 280
+velocity = [-700, 0, 0]
+
+[[boundary_condition]]
+patch_id = 5
+name = "empty"
+type = "SYMMETRY"
+
+[unlabelled]
+type = "HEAT_FLUX_WALL"
+flux = 10

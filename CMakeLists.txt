@@ -620,7 +620,7 @@ endif()
     #========================
     #=== SCALAR TRANSPORT ===
     #========================   
-krona_interface(thermodynamics krona::execution)
+krona_interface(thermodynamics krona::execution krona::mpi)
 
     #==================================
     #=== SCALAR BOUNDARY CONDITIONS ===
@@ -637,13 +637,13 @@ target_link_libraries(krona_boundary_scalar
     #====================================
     #=== PHYSICAL BOUNDARY CONDITIONS ===
     #====================================
-#add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
-#add_library(krona::boundary_physical ALIAS krona_boundary_physical)
-#target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
-#krona_public_headers(krona_boundary_physical PUBLIC)
-#target_link_libraries(krona_boundary_physical
-#    PUBLIC krona::boundary_scalar
-#    PRIVATE krona::warnings krona::tomlplusplus)
+add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
+add_library(krona::boundary_physical ALIAS krona_boundary_physical)
+target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
+krona_public_headers(krona_boundary_physical PUBLIC)
+target_link_libraries(krona_boundary_physical
+    PUBLIC krona::boundary_scalar
+    PRIVATE krona::warnings krona::tomlplusplus)
 
 
     #========================

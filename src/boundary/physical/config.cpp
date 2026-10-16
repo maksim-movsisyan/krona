@@ -5,149 +5,191 @@
 #include <toml++/toml.hpp>
 #elif __has_include(<toml++/toml.h>)
 #include <toml++/toml.h>
-#else
+#elif __has_include(<toml.hpp>)
 #include <toml.hpp>
+#else
+#error "Physical boundary configuration requires toml++"
 #endif
 
-#include <algorithm>
 #include <cmath>
-#include <fstream>
-#include <sstream>
-#include <utility>
+#include <initializer_list>
+#include <unordered_set>
 
 namespace krona::boundary::physical {
 namespace {
+[[noreturn]] void error(const std::string& message) { mpi::fatal("Physical boundary configuration: "+message); }
 
-std::string string(const toml::table& table, std::string_view key)
+std::string string(const toml::table& t,std::string_view key)
 {
-    const auto value = table[key].value<std::string>();
-    mpi::require(value.has_value(), "Physical boundary TOML: missing or invalid string");
-    return *value;
+    auto s=t[key].value<std::string>();
+    if (!s) error("missing string '"+std::string{key}+"'");
+    return *s;
 }
-
-double number(const toml::node& node)
+double number(const toml::table& t,std::string_view key)
 {
-    const auto value = node.value<double>();
-    mpi::require(value.has_value() && std::isfinite(*value), "Physical boundary TOML: expected a finite number");
-    return *value;
+    const auto node=t[key]; const auto x=node.value<double>();
+    if (!node || !node.is_number() || !x || !std::isfinite(*x))
+        error("'"+std::string{key}+"' must be a finite number");
+    return *x;
 }
-
-std::optional<double> optional_number(const toml::table& table, std::string_view key)
+double number(const toml::table& t,std::string_view canonical,std::string_view alias)
 {
-    const auto* node = table.get(key);
-    return node ? std::optional<double>{number(*node)} : std::nullopt;
+    if (t.contains(canonical)&&t.contains(alias)) error("duplicate parameter aliases for '"+std::string{canonical}+"'");
+    return number(t,t.contains(canonical)?canonical:alias);
 }
-
-std::array<double, 3> vector(const toml::table& table, std::string_view key, bool required)
+Vector<double> vector(const toml::table& t,std::string_view key,bool required=true)
 {
-    const auto* node = table.get(key);
-    if (!node) {
-        mpi::require(!required, "Physical boundary TOML: missing required vector");
-        return {};
+    if (!t.contains(key)&&!required) return {};
+    const auto* a=t.get_as<toml::array>(key);
+    if (!a || a->size()!=3) error("'"+std::string{key}+"' must contain three numbers");
+    double values[3]{};
+    for (std::size_t i=0;i<3;++i) {
+        const auto& node=(*a)[i]; const auto x=node.value<double>();
+        if (!node.is_number() || !x || !std::isfinite(*x)) error("nonfinite/non-numeric vector entry");
+        values[i]=*x;
     }
-    const auto* array = node->as_array();
-    mpi::require(array && array->size() == 3, "Physical boundary TOML: vector must contain three numbers");
-    return {number((*array)[0]), number((*array)[1]), number((*array)[2])};
+    return {values[0],values[1],values[2]};
 }
-
-Kind kind(std::string_view type)
+bool boolean(const toml::table& t,std::string_view key,bool fallback=false)
 {
-    if (type == "INLET_VELOCITY") return Kind::VelocityInlet;
-    if (type == "INLET_TOTAL_TP") return Kind::TotalInlet;
-    if (type == "INLET_SUPERSONIC") return Kind::SupersonicInlet;
-    if (type == "OUTLET_PRESSURE") return Kind::PressureOutlet;
-    if (type == "INLET_OUTLET") return Kind::InletOutlet;
-    if (type == "OUTLET_SUPERSONIC") return Kind::SupersonicOutlet;
-    if (type == "WALL_ADIABATIC") return Kind::AdiabaticWall;
-    if (type == "WALL_ISOTHERMAL") return Kind::IsothermalWall;
-    if (type == "WALL_SLIP") return Kind::SlipWall;
-    if (type == "SYMMETRY") return Kind::Symmetry;
-    if (type == "EXTRAPOLATE") return Kind::Extrapolate;
-    mpi::fatal("Physical boundary TOML: unsupported physical type");
+    if (!t.contains(key)) return fallback;
+    const auto x=t[key].value<bool>();
+    if (!x) error("'"+std::string{key}+"' must be boolean");
+    return *x;
 }
-
-ConditionConfig condition(const toml::table& entry)
+void keys(const toml::table& t,std::initializer_list<std::string_view> allowed,bool patch)
 {
-    ConditionConfig c;
-    c.kind = kind(string(entry, "type"));
-    const toml::table empty;
-    const auto* node = entry.get("physical");
-    mpi::require(!node || node->is_table(), "Physical boundary TOML: physical must be a table");
-    const auto& table = node ? *node->as_table() : empty;
-    const bool total = c.kind == Kind::TotalInlet;
-    const bool pressure = c.kind == Kind::PressureOutlet || c.kind == Kind::InletOutlet || c.kind == Kind::SupersonicInlet;
-    const bool velocity = c.kind == Kind::VelocityInlet || c.kind == Kind::InletOutlet || c.kind == Kind::SupersonicInlet ||
-                          c.kind == Kind::AdiabaticWall || c.kind == Kind::IsothermalWall || c.kind == Kind::SlipWall;
-    const bool temperature = velocity && c.kind != Kind::AdiabaticWall;
-    for (const auto& [key, value] : table) {
-        (void)value;
-        const auto k = key.str();
-        mpi::require((pressure && k == "pressure") || (velocity && k == "velocity") ||
-                     (temperature && k == "temperature") ||
-                     (total && (k == "total_pressure" || k == "total_temperature" || k == "direction")),
-                     "Physical boundary TOML: unexpected key or inapplicable physical parameter");
+    for (const auto& [key,node]:t) {
+        (void)node;
+        const auto k=key.str();
+        if (patch && (k=="patch_id"||k=="name"||k=="family"||k=="source_type"||
+                      k=="global_face_count"||k=="scalar")) continue;
+        bool found=false;
+        for (const auto a:allowed) found=found||a==k;
+        if (!found) error("unexpected key '"+std::string{k}+"'");
     }
-    c.pressure = optional_number(table, "pressure");
-    c.temperature = optional_number(table, "temperature");
-    c.total_pressure = optional_number(table, "total_pressure");
-    c.total_temperature = optional_number(table, "total_temperature");
-    c.velocity = vector(table, "velocity", c.kind == Kind::VelocityInlet || c.kind == Kind::InletOutlet ||
-                                           c.kind == Kind::SupersonicInlet);
-    c.direction = vector(table, "direction", total);
-    mpi::require(!pressure || c.pressure.has_value(), "Physical boundary TOML: pressure is required");
-    mpi::require(!total || (c.total_pressure && c.total_temperature),
-                 "Physical boundary TOML: total pressure and total temperature are required");
-    mpi::require((c.kind != Kind::SupersonicInlet && c.kind != Kind::IsothermalWall) || c.temperature.has_value(),
-                 "Physical boundary TOML: static temperature is required");
-    return c;
+}
+TotalConditionsInlet<double> total_inlet(const toml::table& t)
+{ return {number(t,"total_pressure","p0"),number(t,"total_temperature","T0"),vector(t,"direction"),boolean(t,"allow_choking")}; }
+
+Backflow<double> backflow(const toml::table& parent)
+{
+    Backflow<double> result;
+    if (!parent.contains("backflow")) return result;
+    const auto* t=parent.get_as<toml::table>("backflow");
+    if (!t) error("backflow must be a table");
+    const auto type=string(*t,"type");
+    if (type=="REJECT") keys(*t,{"type"},false);
+    else if (type=="TOTAL_CONDITIONS_INLET") {
+        keys(*t,{"type","total_pressure","p0","total_temperature","T0","direction","allow_choking"},false);
+        result.mode=BackflowMode::TotalConditions; result.reservoir=total_inlet(*t);
+    } else if (type=="DIRECTION_TEMPERATURE") {
+        keys(*t,{"type","direction","temperature"},false);
+        result.mode=BackflowMode::DirectionTemperature;
+        result.direction=vector(*t,"direction");
+        if (t->contains("temperature")) result.temperature=number(*t,"temperature");
+    } else error("unsupported backflow type '"+type+"'");
+    return result;
 }
 
-} // namespace
+ConfigCondition condition(const toml::table& t)
+{
+    if (const auto* scalar=t.get_as<toml::table>("scalar"))
+        if (scalar->contains("temperature"))
+            error("scalar.temperature conflicts with the physical boundary temperature channel");
+    const auto type=string(t,"type");
+    if (type=="SYMMETRY") { keys(t,{"type"},true); return Symmetry{}; }
+    if (type=="SLIP_WALL") {
+        keys(t,{"type","velocity"},true); return SlipWall<double>{vector(t,"velocity",false)};
+    }
+    if (type=="ADIABATIC_WALL"||type=="WALL_ADIABATIC") {
+        keys(t,{"type","velocity"},true); return AdiabaticWall<double>{vector(t,"velocity",false)};
+    }
+    if (type=="ISOTHERMAL_WALL"||type=="WALL_ISOTHERMAL") {
+        keys(t,{"type","temperature","T_wall","velocity"},true);
+        return IsothermalWall<double>{number(t,"temperature","T_wall"),vector(t,"velocity",false)};
+    }
+    if (type=="HEAT_FLUX_WALL") {
+        keys(t,{"type","flux","velocity"},true);
+        return HeatFluxWall<double>{number(t,"flux"),vector(t,"velocity",false)};
+    }
+    if (type=="PRESSURE_OUTLET"||type=="OUTLET_BACK_PRESSURE") {
+        keys(t,{"type","pressure","p_back","backflow"},true);
+        return PressureOutlet<double>{number(t,"pressure","p_back"),backflow(t)};
+    }
+    if (type=="TOTAL_CONDITIONS_INLET"||type=="INLET_TOTAL_TP") {
+        keys(t,{"type","total_pressure","p0","total_temperature","T0","direction","allow_choking"},true);
+        return total_inlet(t);
+    }
+    if (type=="SUPERSONIC_INLET"||type=="INLET_SUPERSONIC") {
+        keys(t,{"type","pressure","p","temperature","T","velocity","mach","M","direction"},true);
+        SupersonicInlet<double> result;
+        result.pressure=number(t,"pressure","p"); result.temperature=number(t,"temperature","T");
+        if (t.contains("velocity")) {
+            if (t.contains("mach")||t.contains("M")||t.contains("direction"))
+                error("supersonic inlet accepts velocity OR Mach and direction");
+            result.velocity=vector(t,"velocity");
+        } else { result.mach=number(t,"mach","M"); result.direction=vector(t,"direction");
+            if (!(result.mach>0)) error("prescribed Mach number must be positive"); }
+        return result;
+    }
+    if (type=="SUPERSONIC_OUTLET"||type=="OUTLET_SUPERSONIC") {
+        keys(t,{"type"},true); return SupersonicOutlet{};
+    }
+    if (type=="VELOCITY_INLET") {
+        keys(t,{"type","velocity","temperature"},true);
+        return VelocityInlet<double>{vector(t,"velocity"),t.contains("temperature")?number(t,"temperature"):0.0};
+    }
+    error("unsupported physical type '"+type+"'");
+}
 
-Configuration parse_config(std::string_view text)
+Configuration decode(const toml::table& root)
+{
+    Configuration result;
+    const auto* entries=root.get_as<toml::array>("boundary_condition");
+    if (!entries) error("expected [[boundary_condition]] entries or boundary_condition = []");
+    std::unordered_set<std::int64_t> seen;
+    result.patches.reserve(entries->size());
+    for (const auto& entry:*entries) {
+        const auto* t=entry.as_table();
+        if (!t) error("boundary_condition entries must be tables");
+        const auto id=(*t)["patch_id"].value<std::int64_t>();
+        if (!id || *id<0) error("patch_id must be a nonnegative integer");
+        if (!seen.insert(*id).second) error("duplicate patch_id "+std::to_string(*id));
+        result.patches.push_back({*id,string(*t,"name"),condition(*t)});
+    }
+    if (root.contains("unlabelled")) {
+        const auto* t=root.get_as<toml::table>("unlabelled");
+        if (!t) error("unlabelled must be a table");
+        // A scalar-only unlabelled table does not silently select a physical condition.
+        if (t->contains("type")) result.unlabelled=condition(*t);
+    }
+    return result;
+}
+
+Configuration parsed(std::string_view text)
+{
+#if TOML_EXCEPTIONS
+    return decode(toml::parse(text));
+#else
+    auto result=toml::parse(text);
+    if (!result) { std::ostringstream message; message<<result.error(); error(message.str()); }
+    return decode(result.table());
+#endif
+}
+}
+
+Configuration parse_config(std::string_view text) { return mpi::guarded([&] { return parsed(text); }); }
+Configuration read_config(const std::filesystem::path& file)
 {
     return mpi::guarded([&] {
 #if TOML_EXCEPTIONS
-        const auto root = toml::parse(text);
+        return decode(toml::parse_file(file.string()));
 #else
-        auto parsed = toml::parse(text);
-        if (!parsed) mpi::fatal(parsed.error().description());
-        const auto root = std::move(parsed).table();
+        auto result=toml::parse_file(file.string());
+        if (!result) { std::ostringstream message; message<<result.error(); error(message.str()); }
+        return decode(result.table());
 #endif
-        const auto* patches = root["boundary_condition"].as_array();
-        mpi::require(patches != nullptr, "Physical boundary TOML: boundary_condition must be an array of tables");
-        Configuration config;
-        config.patches.reserve(patches->size());
-        std::vector<std::int64_t> ids;
-        ids.reserve(patches->size());
-        for (const auto& patch : *patches) {
-            const auto* p = patch.as_table();
-            mpi::require(p != nullptr, "Physical boundary TOML: boundary_condition entry must be a table");
-            const auto id = (*p)["patch_id"].value<std::int64_t>();
-            mpi::require(id.has_value() && *id >= 0, "Physical boundary TOML: invalid patch_id");
-            config.patches.push_back({*id, string(*p, "name"), condition(*p)});
-            ids.push_back(*id);
-        }
-        std::sort(ids.begin(), ids.end());
-        mpi::require(std::adjacent_find(ids.begin(), ids.end()) == ids.end(), "Physical boundary TOML: duplicate patch_id");
-        if (const auto* node = root.get("unlabelled")) {
-            const auto* table = node->as_table();
-            mpi::require(table != nullptr, "Physical boundary TOML: unlabelled must be a table");
-            // A scalar-only unlabelled section is independent of this physical catalogue.
-            if (table->contains("type") || table->contains("physical")) config.unlabelled = condition(*table);
-        }
-        return config;
-    });
-}
-
-Configuration read_config(const std::filesystem::path& path)
-{
-    return mpi::guarded([&] {
-        std::ifstream file(path);
-        file.exceptions(std::ios::badbit | std::ios::failbit);
-        std::ostringstream text;
-        text << file.rdbuf();
-        return parse_config(text.str());
     });
 }
 
