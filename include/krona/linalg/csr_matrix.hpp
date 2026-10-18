@@ -27,12 +27,14 @@ public:
     using execution_space = Exec;
     using memory_space = typename Types<Scalar, Exec>::memory_space;
     using native_type = typename Types<Scalar, Exec>::matrix_type;
+    template<class OtherScalar>
+    using native_type_for = typename Types<OtherScalar, Exec>::matrix_type;
+    static constexpr bool block_storage = false;
 
     explicit CsrMatrix(const CsrPattern<Exec>& pattern) : pattern_(pattern)
     {
         mpi::guarded([&] {
-            matrix_ = Teuchos::rcp(new native_type(pattern_.native()));
-            matrix_->fillComplete(pattern_.distribution().native(), pattern_.distribution().native());
+            matrix_ = create_native_structure<Scalar>();
             Kokkos::fence("Linalg: matrix initialization complete");
         });
     }
@@ -41,7 +43,18 @@ public:
     ~CsrMatrix() { commit(); }
 
     [[nodiscard]] const CsrPattern<Exec>& pattern() const noexcept { return pattern_; }
+    [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return pattern_.distribution(); }
+    [[nodiscard]] static constexpr LocalOrdinal block_size() noexcept { return 1; }
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
+
+    /// @brief Native interoperability: independent coefficients sharing this matrix's graph/maps.
+    template<class OtherScalar>
+    [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const
+    {
+        auto matrix = Teuchos::rcp(new native_type_for<OtherScalar>(pattern_.native()));
+        matrix->fillComplete(distribution().native(), distribution().native());
+        return matrix;
+    }
 
     /// @brief Native CSR order; use pattern.input_to_entry() for original input slots.
     [[nodiscard]] auto edit_values(const Exec& exec = {})
@@ -100,7 +113,7 @@ public:
                Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const
     {
         require_committed(); x.require_committed(); y.require_committed();
-        const auto* map = pattern_.distribution().native().getRawPtr();
+        const auto* map = distribution().native().getRawPtr();
         mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
                      "Linalg: vectors must share the matrix distribution");
         mpi::require(x.native().getRawPtr() != y.native().getRawPtr(), "Linalg: in-place matrix apply is unsupported");

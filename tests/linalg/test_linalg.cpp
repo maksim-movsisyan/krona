@@ -189,7 +189,7 @@ void solve_case(const std::string& method, const std::string& preconditioner, bo
         options.preconditioner.parameters.sublist("coarse: params").set("relaxation: sweeps", 5);
         if (reuse) options.preconditioner.parameters.set("reuse: type", "full");
     }
-    Solver<S, Exec, P> solver(matrix, options);
+    Solver<decltype(matrix), P> solver(matrix, options);
     if (rank == 0)
         std::fprintf(stderr, "[linalg] solve %s/%s/%zu/%zu, reuse=%s\n", method.c_str(),
                      preconditioner.c_str(), sizeof(S), sizeof(P), reuse ? "full" : "none");
@@ -211,7 +211,9 @@ void solve_case(const std::string& method, const std::string& preconditioner, bo
     check(solver.preconditioner().generation() == generation, "test: unnecessary preconditioner rebuild");
     // Only one process changes coefficients: preparation must still refresh on every process.
     if (rank == 0) {
-        for (auto& value : values) value *= S(1.25);
+        for (std::size_t row = 0; row < gids.size(); ++row)
+            for (auto k = input.row_offsets[row]; k < input.row_offsets[row+1]; ++k)
+                if (input.column_gids[k] == gids[row]) values[k] *= S(1.25);
         matrix.set_values(values);
     }
     matrix.apply(exact, rhs);
@@ -242,7 +244,7 @@ void symmetric_indefinite()
     SolverOptions options;
     options.method = "MINRES";
     options.preconditioner.type = "NONE";
-    Solver<double, Exec, double> solver(matrix, options);
+    Solver<decltype(matrix), double> solver(matrix, options);
     const auto result = solver.solve(rhs, solution);
     check(result.converged && error(solution) < 1e-8, "test: MINRES failed on a symmetric indefinite operator");
 }
@@ -260,7 +262,7 @@ void stopping_cases()
     SolverOptions options;
     options.preconditioner.type = "NONE";
     options.relative_tolerance = 1e-9;
-    Solver<double, Exec, double> solver(matrix, options);
+    Solver<decltype(matrix), double> solver(matrix, options);
     // Homogeneous system with a nonzero initial guess exercises the zero-RHS scale.
     solution.fill(2.0);
     const auto zero_rhs = solver.solve(rhs, solution);
@@ -269,20 +271,20 @@ void stopping_cases()
     check(zero_rhs.relative_residual <= 1e-9, "test: zero-RHS relative residual is inconsistent");
     matrix.apply(exact, rhs);
     options.maximum_iterations = 0;
-    Solver<double, Exec, double> no_iterations(matrix, options);
+    Solver<decltype(matrix), double> no_iterations(matrix, options);
     solution.fill(0);
     const auto stopped = no_iterations.solve(rhs, solution);
     check(!stopped.converged && !stopped.iterations_started && stopped.iterations == 0,
           "test: zero iteration budget falsely converged");
     options.maximum_iterations = 1;
-    Solver<double, Exec, double> one_iteration(matrix, options);
+    Solver<decltype(matrix), double> one_iteration(matrix, options);
     const auto limited = one_iteration.solve(rhs, solution);
     check(!limited.converged && limited.iterations_started && limited.iterations <= 1,
           "test: iteration limit or independent residual check failed");
     options.maximum_iterations = 300;
     options.relative_tolerance = 0;
     options.absolute_tolerance = 1e-8;
-    Solver<double, Exec, double> absolute(matrix, options);
+    Solver<decltype(matrix), double> absolute(matrix, options);
     solution.fill(0);
     const auto result = absolute.solve(rhs, solution);
     check(result.converged && result.residual_norm <= 1e-8, "test: absolute-only tolerance failed");
@@ -305,7 +307,7 @@ void empty_cases()
         SolverOptions options;
         options.method = "CG";
         options.preconditioner.type = "NONE";
-        Solver<double, Exec, double> solver(matrix, options);
+        Solver<decltype(matrix), double> solver(matrix, options);
         const auto result = solver.solve(rhs, solution);
         check(result.converged, "test: solve with empty local/global distribution failed");
         if (all_empty) check(result.iterations == 0, "test: empty system performed iterations");
@@ -442,7 +444,7 @@ void precision_bridge_and_factory()
     PreconditionerOptions options;
     options.type = "NONE"; // A supplied factory overrides this selector.
     int preparations = 0;
-    using Prec = Preconditioner<double, Exec, float>;
+    using Prec = Preconditioner<decltype(matrix), float>;
     Prec prec(matrix, options, [&](const Teuchos::RCP<const Prec::matrix_type>& low,
                                   const Teuchos::RCP<Prec::inner_operator_type>& previous) {
         ++preparations;
@@ -455,7 +457,7 @@ void precision_bridge_and_factory()
     if (rank == 0) matrix.mark_modified();
     prec.prepare();
     check(preparations == 2 && prec.generation() == 2, "test: custom factory did not refresh collectively");
-    using SamePrec = Preconditioner<double, Exec, double>;
+    using SamePrec = Preconditioner<decltype(matrix), double>;
     SamePrec same(matrix, options, [&](const Teuchos::RCP<const SamePrec::matrix_type>& shared,
                                       const Teuchos::RCP<SamePrec::inner_operator_type>&) {
         check(shared.getRawPtr() == matrix.native().getRawPtr(), "test: same precision allocated another matrix");
@@ -472,6 +474,41 @@ void rejected_case(const std::string& mode)
     if (mode == "duplicate_column") { input.row_offsets = {0, 2}; input.column_gids = {rank, rank}; }
     if (mode == "missing_owner") input.column_gids = {static_cast<GlobalOrdinal>(ranks+10)};
     CsrPattern<Exec> pattern(distribution, input);
+    if (mode.starts_with("bsr_") || mode.starts_with("pack_") || mode == "expanded_gid_overflow") {
+        if (mode == "expanded_gid_overflow") {
+            const std::vector<GlobalOrdinal> huge{std::numeric_limits<GlobalOrdinal>::max()-2};
+            Distribution<Exec> large(huge, mpi::CommView::world());
+            (void)large.expanded(5);
+        }
+        if (mode == "bsr_zero_block") { BsrMatrix<double, Exec> invalid(pattern, 0); }
+        if (mode == "bsr_different_blocks") { BsrMatrix<double, Exec> invalid(pattern, rank+2); }
+        BsrMatrix<double, Exec> block_matrix(pattern, 3);
+        block_matrix.set_values(std::vector<double>{2, 0, 0, 0, 2, 0, 0, 0, 2});
+        Vector<double, Exec> block_rhs(block_matrix.distribution()), block_solution(block_matrix.distribution());
+        if (mode == "bsr_wrong_map") {
+            Vector<double, Exec> wrong(distribution); block_matrix.apply(wrong, block_solution);
+        }
+        if (mode == "bsr_pending_read") { const auto view = block_matrix.read_blocks(); (void)view; block_matrix.apply(block_rhs, block_solution); }
+        if (mode == "bsr_wrong_values") block_matrix.set_values(std::vector<double>{1});
+        if (mode == "bsr_precision_overflow") {
+            block_matrix.set_values(std::vector<double>(9, std::numeric_limits<double>::max()));
+            PreconditionerOptions options; options.type = "RELAXATION";
+            Preconditioner<decltype(block_matrix), float> prec(block_matrix, options); prec.prepare();
+        }
+        if (mode == "bsr_overlap" || mode == "bsr_kokkos_amg") {
+            PreconditionerOptions options;
+            options.type = mode == "bsr_overlap" ? "SCHWARZ" : "AMG";
+            if (mode == "bsr_overlap") options.parameters.set("schwarz: overlap level", 1);
+            else options.parameters.set("use kokkos refactor", true);
+            Preconditioner prec(block_matrix, options); prec.prepare();
+        }
+        if (mode.starts_with("pack_")) {
+            Kokkos::View<double*, Space> values("short", mode == "pack_short" ? 0 : 1);
+            if (mode == "pack_short") copy_from_fields(block_rhs, Exec{}, values, values, values);
+            else copy_from_fields(block_rhs, Exec{}, values, values);
+        }
+        check(false, "test: new rejection case unexpectedly succeeded");
+    }
     CsrMatrix<double, Exec> matrix(pattern);
     matrix.set_values(std::vector<double>{2.0});
     Vector<double, Exec> rhs(distribution), solution(distribution);
@@ -482,7 +519,7 @@ void rejected_case(const std::string& mode)
     if (mode == "bicgstab_left") { options.method = "BICGSTAB"; options.side = PreconditioningSide::Left; }
     if (mode == "bad_method") options.method = "NO_SUCH_METHOD";
     if (mode == "precision_overflow") matrix.set_values(std::vector<double>{std::numeric_limits<double>::max()});
-    Solver<double, Exec, float> solver(matrix, options);
+    Solver<decltype(matrix), float> solver(matrix, options);
     solver.prepare();
     check(false, "test: rejection case unexpectedly succeeded");
 }
@@ -529,6 +566,347 @@ void float_solver()
     solve_case<float, double>("GMRES", "RELAXATION", false);
 }
 
+template<class S>
+std::vector<S> block_coefficients(const Distribution<Exec>& blocks, const CsrInput& input,
+                                  int width, bool symmetric)
+{
+    std::vector<S> values(input.column_gids.size()*static_cast<std::size_t>(width*width));
+    for (std::size_t row = 0; row < blocks.local_size(); ++row) {
+        const auto gid = blocks.global_id(static_cast<LocalOrdinal>(row));
+        for (auto k = input.row_offsets[row]; k < input.row_offsets[row+1]; ++k)
+            for (int a = 0; a < width; ++a) for (int b = 0; b < width; ++b) {
+                const double coupling = symmetric ? 0.025*double(a+b+1) : 0.02*double((a+1)*(b+2));
+                const double value = input.column_gids[k] == gid ?
+                    (a == b ? 8.0+0.25*double(a) : coupling) :
+                    -0.04*double(a+b+1)*(symmetric ? 1.0 : (input.column_gids[k] < gid ? 0.7 : 1.3));
+                values[(k*static_cast<std::size_t>(width)+static_cast<std::size_t>(a))*static_cast<std::size_t>(width)+
+                       static_cast<std::size_t>(b)] = static_cast<S>(value);
+            }
+    }
+    return values;
+}
+
+void bsr_mapping()
+{
+    constexpr int width = 3;
+    const auto gids = owned(4);
+    Distribution<Exec> blocks(gids, mpi::CommView::world());
+    const auto input = input_for(blocks);
+    CsrPattern<Exec> graph(blocks, input);
+    BsrPattern<Exec> pattern(graph, width);
+    BsrMatrix<double, Exec> matrix(pattern), copied(pattern);
+    check(copied.distribution().native().getRawPtr() == matrix.distribution().native().getRawPtr(),
+          "test: matrices with one BSR pattern do not share their point map");
+    check(matrix.distribution().local_size() == blocks.local_size()*width &&
+          matrix.distribution().global_size() == blocks.global_size()*width, "test: wrong BSR point-map size");
+    for (std::size_t row = 0; row < gids.size(); ++row) for (int c = 0; c < width; ++c)
+        check(matrix.distribution().global_id(static_cast<LocalOrdinal>(row*width+static_cast<std::size_t>(c))) ==
+              gids[row]*width+c, "test: BSR point-map order/GIDs changed");
+    const auto native_graph = matrix.native()->getLocalMatrixDevice().graph;
+    const auto original_graph = graph.native()->getLocalGraphDevice();
+    check(native_graph.entries.data() == original_graph.entries.data() &&
+          native_graph.row_map.data() == original_graph.row_map.data(), "test: BSR duplicated the device graph");
+    check(matrix.native()->getLocalNumEntries() == graph.local_nonzeros() &&
+          matrix.local_values() == graph.local_nonzeros()*width*width, "test: BSR graph was expanded to scalar CSR");
+    check(matrix.native()->getDomainMap()->isSameAs(*matrix.distribution().native()) &&
+          matrix.native()->getRowMap()->isSameAs(*blocks.native()), "test: BSR block/point maps are confused");
+
+    const auto values = block_coefficients<double>(blocks, input, width, false);
+    matrix.set_values(values);
+    Vector<double, Exec> x(pattern.distribution()), y(pattern.distribution()), reference(pattern.distribution());
+    exact_values(x);
+    const auto check_product = [&](double alpha, double beta, double initial) {
+        y.fill(initial); matrix.apply(x, y, alpha, beta);
+        auto local = std::as_const(*y.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
+        for (std::size_t row = 0; row < gids.size(); ++row) for (int a = 0; a < width; ++a) {
+            double expected = beta*initial;
+            for (auto k = input.row_offsets[row]; k < input.row_offsets[row+1]; ++k)
+                for (int b = 0; b < width; ++b) {
+                    const auto point_gid = input.column_gids[k]*width+b;
+                    expected += alpha*values[(k*width+static_cast<std::size_t>(a))*width+static_cast<std::size_t>(b)]*
+                                (1.0+0.125*double(point_gid%7));
+                }
+            check(std::abs(local(row*width+static_cast<std::size_t>(a), 0)-expected) < 1e-11,
+                  "test: BSR apply differs from independent dense-block reference");
+        }
+    };
+    check_product(1.7, -0.3, 2.0);
+
+    // Independently expanded point CSR must implement the same operator.
+    CsrInput point_input; point_input.row_offsets.push_back(0);
+    std::vector<double> point_values;
+    for (std::size_t row = 0; row < gids.size(); ++row) for (int a = 0; a < width; ++a) {
+        for (auto k = input.row_offsets[row]; k < input.row_offsets[row+1]; ++k)
+            for (int b = 0; b < width; ++b) {
+                point_input.column_gids.push_back(input.column_gids[k]*width+b);
+                point_values.push_back(values[(k*width+static_cast<std::size_t>(a))*width+static_cast<std::size_t>(b)]);
+            }
+        point_input.row_offsets.push_back(point_values.size());
+    }
+    CsrPattern<Exec> point_pattern(pattern.distribution(), point_input);
+    CsrMatrix<double, Exec> point_matrix(point_pattern);
+    point_matrix.set_values(point_values); point_matrix.apply(x, reference);
+    matrix.apply(x, y);
+    y.native()->update(-1.0, *reference.native(), 1.0);
+    check(y.native()->norm2() < 1e-11, "test: BSR and expanded CSR operators differ");
+
+    const auto exec = Kokkos::Experimental::partition_space(Exec{}, 1)[0];
+    const auto flat = device_copy(values);
+    const auto revision = matrix.revision();
+    matrix.set_values_async(flat, exec); matrix.commit();
+    check(matrix.revision() == revision+1, "test: BSR async assembly did not advance revision");
+    check_product(1, 0, 0);
+    Kokkos::View<double***, Kokkos::LayoutLeft, Space> tensor("test/blocks", input.column_gids.size(), width, width);
+    auto host = Kokkos::create_mirror_view(tensor);
+    for (std::size_t k = 0; k < input.column_gids.size(); ++k)
+        for (int a = 0; a < width; ++a) for (int b = 0; b < width; ++b)
+            host(k, a, b) = values[(k*width+static_cast<std::size_t>(a))*width+static_cast<std::size_t>(b)];
+    Kokkos::deep_copy(exec, tensor, host);
+    matrix.set_values_async(tensor, exec); matrix.commit();
+    check_product(1, 0, 0);
+    const auto after_write = matrix.revision();
+    const auto read = matrix.read_blocks(exec);
+    const auto target = copied.overwrite_blocks(exec);
+    Kokkos::deep_copy(exec, target, read);
+    copied.commit(); matrix.commit();
+    check(matrix.revision() == after_write, "test: reading BSR coefficients changed revision");
+    copied.apply(x, y); matrix.apply(x, reference);
+    y.native()->update(-1.0, *reference.native(), 1.0);
+    check(y.native()->norm2() < 1e-11, "test: BSR native block assembly differs");
+    matrix.mark_modified();
+    check(matrix.revision() == after_write+1, "test: BSR native edit did not advance revision");
+
+    BsrMatrix<double, Exec> one(graph, 1);
+    CsrMatrix<double, Exec> scalar(graph);
+    const auto scalar_values = coefficients<double>(blocks, input, false);
+    one.set_values(scalar_values); scalar.set_values(scalar_values);
+    Vector<double, Exec> sx(blocks), sy(blocks), sr(blocks);
+    exact_values(sx); one.apply(sx, sy); scalar.apply(sx, sr);
+    sy.native()->update(-1.0, *sr.native(), 1.0);
+    check(sy.native()->norm2() < 1e-13, "test: block size one differs from CSR");
+}
+
+template<class S, class P>
+void bsr_solve_case(const std::string& method, const std::string& type, bool symmetric, bool reuse = false)
+{
+    constexpr int width = 5;
+    auto gids = owned();
+    // Uncoupled AMG needs local neighbours to exercise actual multilevel coarsening.
+    if (type == "AMG" || type == "SCHWARZ")
+        for (std::size_t i = 0; i < gids.size(); ++i)
+            gids[i] = static_cast<GlobalOrdinal>(rank)*static_cast<GlobalOrdinal>(gids.size())+
+                static_cast<GlobalOrdinal>(type == "AMG" ? i : gids.size()-1-i);
+    Distribution<Exec> blocks(gids, mpi::CommView::world());
+    const auto input = input_for(blocks);
+    CsrPattern<Exec> graph(blocks, input);
+    BsrPattern<Exec> pattern(graph, width);
+    BsrMatrix<S, Exec> matrix(pattern);
+    auto values = block_coefficients<S>(blocks, input, width, symmetric);
+    matrix.set_values(values);
+    Vector<S, Exec> exact(matrix.distribution()), rhs(matrix.distribution()), solution(matrix.distribution());
+    exact_values(exact); matrix.apply(exact, rhs); solution.fill(S(0.25));
+    SolverOptions options; options.method = method; options.preconditioner.type = type;
+    options.relative_tolerance = std::is_same_v<S, float> ? 2e-5 : 1e-10;
+    options.maximum_iterations = 300; options.restart_length = 15;
+    if (type == "SCHWARZ") {
+        options.preconditioner.parameters.sublist("inner preconditioner parameters").set("fact: iluk level-of-fill", 1);
+    }
+    if (type == "AMG") {
+        options.preconditioner.parameters.set("coarse: max size", 4);
+        options.preconditioner.parameters.set("max levels", 4);
+        if (reuse) options.preconditioner.parameters.set("reuse: type", "full");
+    }
+    Solver<decltype(matrix), P> solver(matrix, options);
+    if (rank == 0) std::fprintf(stderr, "[linalg] BSR solve %s/%s/%zu/%zu\n", method.c_str(), type.c_str(), sizeof(S), sizeof(P));
+    const auto result = solver.solve(rhs, solution);
+    if (!result.converged)
+        std::fprintf(stderr, "BSR rank %d: %s/%s it=%d residual=%g threshold=%g krylov=%d error=%g\n",
+            rank, method.c_str(), type.c_str(), result.iterations, result.residual_norm,
+            result.residual_threshold, result.krylov_converged, error(solution));
+    check(result.converged && error(solution) < (std::is_same_v<S, float> ? 5e-4 : 1e-8),
+          "test: BSR solve failed independent solution/residual checks");
+    const auto generation = solver.preconditioner().generation();
+    const auto old = solver.preconditioner().native_inner().getRawPtr();
+    if (type == "AMG") {
+        using Amg = MueLu::TpetraOperator<P, LocalOrdinal, GlobalOrdinal, typename Types<P, Exec>::node_type>;
+        const auto amg = Teuchos::rcp_dynamic_cast<Amg>(solver.preconditioner().native_inner(), true);
+        check(amg->GetHierarchy()->GetNumLevels() > 1, "test: BSR AMG did not build multiple levels");
+        using XMatrix = Xpetra::Matrix<P, LocalOrdinal, GlobalOrdinal, typename Types<P, Exec>::node_type>;
+        for (int level = 0; level < amg->GetHierarchy()->GetNumLevels(); ++level) {
+            const auto a = amg->GetHierarchy()->GetLevel(level)->template Get<Teuchos::RCP<XMatrix>>("A");
+            check(a->GetStorageBlockSize() == width, "test: BSR AMG hierarchy lost block storage");
+        }
+    }
+    if (rank == 0) {
+        // Change only diagonal blocks, preserving symmetry for CG/MINRES.
+        for (std::size_t row = 0; row < gids.size(); ++row)
+            for (auto k = input.row_offsets[row]; k < input.row_offsets[row+1]; ++k)
+                if (input.column_gids[k] == gids[row])
+                    for (int a = 0; a < width*width; ++a) values[k*width*width+static_cast<std::size_t>(a)] *= S(1.25);
+        matrix.set_values(values);
+    }
+    matrix.apply(exact, rhs); solution.fill(S(0));
+    const auto changed = solver.solve(rhs, solution);
+    check(changed.converged && error(solution) < (std::is_same_v<S, float> ? 5e-4 : 1e-8),
+          "test: BSR rank-local revision left stale preconditioner coefficients");
+    if (type != "NONE") check(solver.preconditioner().generation() == generation+1,
+                              "test: BSR preconditioner revision was not refreshed collectively");
+    if (reuse) check(solver.preconditioner().native_inner().getRawPtr() == old, "test: BSR AMG reuse replaced the operator");
+}
+
+void bsr_solvers()
+{
+    for (const auto* method : {"GMRES", "FGMRES", "BICGSTAB", "CG", "MINRES"})
+        bsr_solve_case<double, double>(method, "NONE", std::string_view(method) == "CG" || std::string_view(method) == "MINRES");
+    bsr_solve_case<double, double>("GMRES", "RELAXATION", false);
+    bsr_solve_case<double, double>("CG", "RELAXATION", true);
+    bsr_solve_case<double, double>("BICGSTAB", "RELAXATION", false);
+}
+
+void bsr_ifpack()
+{
+    bsr_solve_case<double, double>("GMRES", "SCHWARZ", false);
+    bsr_solve_case<double, float>("FGMRES", "SCHWARZ", false);
+}
+
+void bsr_amg() { bsr_solve_case<double, double>("GMRES", "AMG", true); }
+void bsr_amg_reuse() { bsr_solve_case<double, double>("GMRES", "AMG", true, true); }
+void bsr_mixed_precision()
+{
+    bsr_solve_case<double, float>("FGMRES", "RELAXATION", false);
+    bsr_solve_case<float, float>("GMRES", "RELAXATION", false);
+    bsr_solve_case<float, double>("GMRES", "RELAXATION", false);
+    bsr_solve_case<double, float>("FGMRES", "AMG", true);
+}
+
+void bsr_empty()
+{
+    for (const bool all_empty : {false, true}) {
+        std::vector<GlobalOrdinal> gids;
+        if (!all_empty && rank == 0) gids = {0};
+        Distribution<Exec> blocks(gids, mpi::CommView::world());
+        CsrInput input{gids.empty() ? std::vector<std::size_t>{0} : std::vector<std::size_t>{0, 1}, gids};
+        CsrPattern<Exec> graph(blocks, input);
+        BsrMatrix<double, Exec> matrix(graph, 3);
+        matrix.set_values(block_coefficients<double>(blocks, input, 3, true));
+        Vector<double, Exec> exact(matrix.distribution()), rhs(matrix.distribution()), solution(matrix.distribution());
+        exact_values(exact); matrix.apply(exact, rhs);
+        SolverOptions options; options.method = "CG"; options.preconditioner.type = "RELAXATION";
+        Solver solver(matrix, options);
+        check(solver.solve(rhs, solution).converged, "test: BSR solve failed on an empty local/global map");
+    }
+}
+
+void bsr_factory()
+{
+    const auto gids = owned(3);
+    Distribution<Exec> blocks(gids, mpi::CommView::world());
+    const auto input = input_for(blocks);
+    CsrPattern<Exec> graph(blocks, input);
+    BsrMatrix<double, Exec> matrix(graph, 3);
+    const auto values = block_coefficients<double>(blocks, input, 3, true);
+    matrix.set_values(values);
+    PreconditionerOptions options; options.type = "NONE";
+    using Low = Preconditioner<decltype(matrix), float>;
+    int calls = 0;
+    Low low(matrix, options, [&](const Teuchos::RCP<const Low::matrix_type>& native,
+                                 const Teuchos::RCP<Low::inner_operator_type>& previous) {
+        static_assert(std::is_same_v<Low::matrix_type, Types<float, Exec>::block_matrix_type>);
+        ++calls;
+        check(native->getBlockSize() == 3 && native->getLocalNumEntries() == graph.local_nonzeros(),
+              "test: mixed precision expanded BSR coefficients to CSR");
+        check(native->getLocalMatrixDevice().graph.entries.data() == graph.native()->getLocalGraphDevice().entries.data(),
+              "test: mixed-precision BSR did not share the device graph");
+        const auto source = matrix.native()->getValuesHost();
+        const auto target = native->getValuesHost();
+        for (std::size_t i = 0; i < source.extent(0); ++i)
+            check(target(i) == static_cast<float>(source(i)), "test: BSR precision conversion changed coefficient ordering");
+        if (!previous.is_null()) return previous;
+        return Teuchos::rcp_implicit_cast<Low::inner_operator_type>(
+            Teuchos::rcp(new ScaleOperator<float>(matrix.distribution().native())));
+    });
+    low.prepare(); low.prepare();
+    check(calls == 1, "test: BSR custom factory rebuilt unchanged coefficients");
+    if (rank == 0) matrix.mark_modified();
+    low.prepare();
+    check(calls == 2, "test: BSR custom factory ignored a collective revision");
+    using Same = Preconditioner<decltype(matrix), double>;
+    Same same(matrix, options, [&](const Teuchos::RCP<const Same::matrix_type>& native,
+                                   const Teuchos::RCP<Same::inner_operator_type>&) {
+        check(native.getRawPtr() == matrix.native().getRawPtr(), "test: same-precision BSR allocated another matrix");
+        return Teuchos::rcp_implicit_cast<Same::inner_operator_type>(
+            Teuchos::rcp(new ScaleOperator<double>(matrix.distribution().native())));
+    });
+    same.prepare();
+    check(same.native().getRawPtr() == same.native_inner().getRawPtr(), "test: same precision created an adapter");
+}
+
+template<class Layout>
+void multiple_fields()
+{
+    const auto exec = Kokkos::Experimental::partition_space(Exec{}, 1)[0];
+    const auto gids = owned(3);
+    Distribution<Exec> cells(gids, mpi::CommView::world());
+    const auto dofs = cells.expanded(5);
+    Vector<double, Exec> vector(dofs);
+    const auto owned_cells = gids.size(), extended = owned_cells+2;
+    Kokkos::View<float*, Space> density("density", extended), density_out("density_out", extended);
+    Kokkos::View<double*[3], Layout, Space> momentum("momentum", extended), momentum_out("momentum_out", extended);
+    using EnergyLayout = std::conditional_t<std::is_same_v<Layout, Kokkos::LayoutLeft>, Kokkos::LayoutRight, Kokkos::LayoutLeft>;
+    Kokkos::View<double*[2], EnergyLayout, Space> energy("energy", extended), energy_out("energy_out", extended);
+    Kokkos::deep_copy(density_out, -7.0f); Kokkos::deep_copy(momentum_out, -8.0); Kokkos::deep_copy(energy_out, -9.0);
+    Kokkos::parallel_for("test/multiple_fields", Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>(exec, 0, extended),
+        KOKKOS_LAMBDA(std::size_t cell) {
+            density(cell) = static_cast<float>(100*cell);
+            for (int c = 0; c < 3; ++c) momentum(cell, c) = double(100*cell)+c+1;
+            energy(cell, 0) = -12; energy(cell, 1) = double(100*cell)+4;
+        });
+    using Rho = fields::FieldView<float, 1, Space>;
+    using Mom = fields::FieldView<double, 3, Space, Layout>;
+    Rho rho(typename Rho::view_type(density.data(), extended));
+    Rho rho_out(typename Rho::view_type(density_out.data(), extended));
+    Mom mom(typename Mom::view_type(momentum.data(), extended));
+    Mom mom_out(typename Mom::view_type(momentum_out.data(), extended));
+    const auto sources = field_pack(rho.as_const(), mom.as_const(), Kokkos::subview(energy, Kokkos::ALL(), 1));
+    static_assert(decltype(sources)::components == 5);
+    copy_from_fields(vector, sources, exec); vector.commit();
+    {
+        const auto h = std::as_const(*vector.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
+        for (std::size_t cell = 0; cell < owned_cells; ++cell) for (int c = 0; c < 5; ++c)
+            check(h(cell*5+static_cast<std::size_t>(c), 0) == double(100*cell)+c,
+                  "test: multiple-field packing has wrong AoS/component order");
+    }
+    copy_to_fields(vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
+    vector.fill_async(99, exec); vector.commit(); // The read must finish before the overwrite.
+    const auto hr = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, density_out);
+    const auto hm = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, momentum_out);
+    const auto he = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, energy_out);
+    for (std::size_t cell = 0; cell < extended; ++cell) {
+        check(hr(cell) == (cell < owned_cells ? static_cast<float>(100*cell) : -7.0f), "test: density tail was changed");
+        for (int c = 0; c < 3; ++c)
+            check(hm(cell, c) == (cell < owned_cells ? double(100*cell)+c+1 : -8), "test: momentum pack/tail is wrong");
+        check(he(cell, 0) == -9 && he(cell, 1) == (cell < owned_cells ? double(100*cell)+4 : -9),
+              "test: strided energy unpack changed another component or extended tail");
+    }
+    // Five separate scalar components exercise the Navier-Stokes residual form.
+    copy_from_fields(vector, exec, rho, mom.component(0), mom.component(1), mom.component(2),
+                     Kokkos::subview(energy, Kokkos::ALL(), 1));
+    vector.commit();
+    const auto h = std::as_const(*vector.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
+    for (std::size_t i = 0; i < vector.local_size(); ++i)
+        check(h(i, 0) == double(100*(i/5)+i%5), "test: scalar-component pack differs from mixed-field pack");
+    Distribution<Exec> empty(std::span<const GlobalOrdinal>{}, mpi::CommView::world());
+    const auto empty_dofs = empty.expanded(5);
+    Vector<double, Exec> empty_vector(empty_dofs);
+    copy_from_fields(empty_vector, sources, exec);
+    copy_to_fields(empty_vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
+    empty_vector.commit();
+    const auto unchanged = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, density_out);
+    for (std::size_t cell = 0; cell < extended; ++cell)
+        check(unchanged(cell) == (cell < owned_cells ? static_cast<float>(100*cell) : -7.0f),
+              "test: empty field pack changed destination data");
+}
+
 // test::run owns MPI (FUNNELED) and Kokkos, just as in the halo tests.
 // Tpetra borrows both runtimes; its guard is destroyed before returning to test::run.
 template<auto Function>
@@ -557,7 +935,10 @@ template<std::size_t Index>
 void rejection()
 {
     constexpr std::array names{"duplicate_column", "missing_owner", "pending_read", "pending_write",
-        "pending_matrix_read", "bicgstab_left", "bad_method", "precision_overflow"};
+        "pending_matrix_read", "bicgstab_left", "bad_method", "precision_overflow",
+        "bsr_zero_block", "bsr_wrong_map", "bsr_pending_read", "bsr_wrong_values",
+        "bsr_precision_overflow", "pack_mismatch", "pack_short", "expanded_gid_overflow", "bsr_different_blocks",
+        "bsr_overlap", "bsr_kokkos_amg"};
     rejected_case(names[Index]);
 }
 
@@ -586,7 +967,17 @@ int main(int argc, char** argv)
         krona::test::Case{"amg", with_tpetra<amg>},
         krona::test::Case{"amg_reuse", with_tpetra<amg_reuse>},
         krona::test::Case{"mixed_precision", with_tpetra<mixed_precision>},
-        krona::test::Case{"float_solver", with_tpetra<float_solver>}};
+        krona::test::Case{"float_solver", with_tpetra<float_solver>},
+        krona::test::Case{"bsr_mapping", with_tpetra<bsr_mapping>},
+        krona::test::Case{"bsr_solvers", with_tpetra<bsr_solvers>},
+        krona::test::Case{"bsr_ifpack", with_tpetra<bsr_ifpack>},
+        krona::test::Case{"bsr_amg", with_tpetra<bsr_amg>},
+        krona::test::Case{"bsr_amg_reuse", with_tpetra<bsr_amg_reuse>},
+        krona::test::Case{"bsr_mixed_precision", with_tpetra<bsr_mixed_precision>},
+        krona::test::Case{"bsr_empty", with_tpetra<bsr_empty>},
+        krona::test::Case{"bsr_factory", with_tpetra<bsr_factory>},
+        krona::test::Case{"multiple_fields_left", with_tpetra<multiple_fields<Kokkos::LayoutLeft>>},
+        krona::test::Case{"multiple_fields_right", with_tpetra<multiple_fields<Kokkos::LayoutRight>>}};
     constexpr std::array negative_cases{
         krona::test::Case{"duplicate_column", with_tpetra<rejection<0>>},
         krona::test::Case{"missing_owner", with_tpetra<rejection<1>>},
@@ -595,7 +986,18 @@ int main(int argc, char** argv)
         krona::test::Case{"pending_matrix_read", with_tpetra<rejection<4>>},
         krona::test::Case{"bicgstab_left", with_tpetra<rejection<5>>},
         krona::test::Case{"bad_method", with_tpetra<rejection<6>>},
-        krona::test::Case{"precision_overflow", with_tpetra<rejection<7>>}};
+        krona::test::Case{"precision_overflow", with_tpetra<rejection<7>>},
+        krona::test::Case{"bsr_zero_block", with_tpetra<rejection<8>>},
+        krona::test::Case{"bsr_wrong_map", with_tpetra<rejection<9>>},
+        krona::test::Case{"bsr_pending_read", with_tpetra<rejection<10>>},
+        krona::test::Case{"bsr_wrong_values", with_tpetra<rejection<11>>},
+        krona::test::Case{"bsr_precision_overflow", with_tpetra<rejection<12>>},
+        krona::test::Case{"pack_mismatch", with_tpetra<rejection<13>>},
+        krona::test::Case{"pack_short", with_tpetra<rejection<14>>},
+        krona::test::Case{"expanded_gid_overflow", with_tpetra<rejection<15>>},
+        krona::test::Case{"bsr_different_blocks", with_tpetra<rejection<16>>},
+        krona::test::Case{"bsr_overlap", with_tpetra<rejection<17>>},
+        krona::test::Case{"bsr_kokkos_amg", with_tpetra<rejection<18>>}};
     if (argc == 2) {
         const std::string_view selected = argv[1];
         for (const auto& entry : negative_cases)

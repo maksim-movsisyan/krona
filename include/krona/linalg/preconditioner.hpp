@@ -1,6 +1,8 @@
 #pragma once
 
 #include <krona/linalg/csr_matrix.hpp>
+#include <krona/linalg/bsr_matrix.hpp>
+#include <krona/linalg/detail/matrix_access.hpp>
 #include <krona/linalg/detail/precision_operator.hpp>
 
 #include <Ifpack2_Factory.hpp>
@@ -22,7 +24,6 @@ struct PreconditionerOptions {
 };
 
 namespace detail {
-
 inline std::string upper_name(std::string name)
 {
     for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -30,7 +31,7 @@ inline std::string upper_name(std::string name)
 }
 
 template<class Source, class Destination>
-struct ConvertCsrValues {
+struct ConvertMatrixValues {
     Source source;
     Destination destination;
     KOKKOS_INLINE_FUNCTION void operator()(std::size_t i, std::size_t& bad) const
@@ -41,14 +42,14 @@ struct ConvertCsrValues {
         if (!Kokkos::isfinite(value)) ++bad;
     }
 };
-
 } // namespace detail
 
 /// @brief Revision-aware native preconditioning, independent of the Krylov algorithm.
 /// Collective prepare; the matrix must outlive this object. Not reentrant.
-template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace,
-         class PrecScalar = PreconditionerReal>
+template<class Matrix, class PrecScalar = PreconditionerReal>
 class Preconditioner {
+    using Scalar = typename Matrix::scalar_type;
+    using Exec = typename Matrix::execution_space;
     using T = Types<Scalar, Exec>;
     using P = Types<PrecScalar, Exec>;
     using IfpackPrec = Ifpack2::Preconditioner<PrecScalar, LocalOrdinal, GlobalOrdinal, typename P::node_type>;
@@ -58,14 +59,14 @@ public:
     using scalar_type = Scalar;
     using preconditioner_scalar_type = PrecScalar;
     using operator_type = typename T::operator_type;
-    using matrix_type = typename P::matrix_type;
+    using matrix_type = typename Matrix::template native_type_for<PrecScalar>;
     using inner_operator_type = typename P::operator_type;
     // Called initially and after collectively detected coefficient changes.
     // A callback may reuse the previous operator or return a replacement.
     using Factory = std::function<Teuchos::RCP<inner_operator_type>(
         const Teuchos::RCP<const matrix_type>&, const Teuchos::RCP<inner_operator_type>&)>;
 
-    explicit Preconditioner(const CsrMatrix<Scalar, Exec>& matrix,
+    explicit Preconditioner(const Matrix& matrix,
                             PreconditionerOptions options = {}, Factory factory = {})
         : matrix_(matrix), options_(std::move(options)), factory_(std::move(factory)),
           type_(detail::upper_name(options_.type)) {}
@@ -91,7 +92,7 @@ public:
     {
         matrix_.require_committed();
         mpi::guarded([&] {
-            if (!enabled() || matrix_.pattern().distribution().global_size() == 0) {
+            if (!enabled() || matrix_.distribution().global_size() == 0) {
                 prepared_revision_ = matrix_.revision();
                 prepared_ = true;
                 return;
@@ -129,6 +130,16 @@ public:
                     auto parameters = options_.parameters;
                     if (type_ == "RELAXATION" && !parameters.isParameter("relaxation: type"))
                         parameters.set("relaxation: type", "Jacobi");
+                    if constexpr (Matrix::block_storage) {
+                        if (type_ == "SCHWARZ") {
+                            if (!parameters.isParameter("inner preconditioner name"))
+                                parameters.set("inner preconditioner name", "RBILUK");
+                            if (!parameters.isParameter("schwarz: overlap level"))
+                                parameters.set("schwarz: overlap level", 0);
+                            mpi::require(parameters.get<int>("schwarz: overlap level") == 0,
+                                "Linalg: Trilinos 17.2.1 block SCHWARZ requires zero overlap");
+                        }
+                    }
                     ifpack_->setParameters(parameters);
                     ifpack_->initialize();
                 }
@@ -136,7 +147,7 @@ public:
                 inner_ = ifpack_;
             }
 
-            const auto& map = matrix_.pattern().distribution().native();
+            const auto& map = matrix_.distribution().native();
             mpi::require(!inner_->getDomainMap().is_null() && !inner_->getRangeMap().is_null(),
                          "Linalg: preconditioner has null maps");
             const bool domain_ok = inner_->getDomainMap()->isSameAs(*map);
@@ -154,7 +165,7 @@ public:
     }
 
 private:
-    const CsrMatrix<Scalar, Exec>& matrix_;
+    const Matrix& matrix_;
     PreconditionerOptions options_;
     Factory factory_;
     std::string type_;
@@ -172,16 +183,14 @@ private:
             preconditioner_matrix_ = matrix_.native();
         } else {
             if (preconditioner_matrix_.is_null()) {
-                preconditioner_matrix_ = Teuchos::rcp(new matrix_type(matrix_.pattern().native()));
-                const auto& map = matrix_.pattern().distribution().native();
-                preconditioner_matrix_->fillComplete(map, map);
+                preconditioner_matrix_ = matrix_.template create_native_structure<PrecScalar>();
             }
-            const auto source = std::as_const(*matrix_.native()).getLocalValuesDevice(Tpetra::Access::ReadOnly);
-            const auto target = preconditioner_matrix_->getLocalValuesDevice(Tpetra::Access::OverwriteAll);
+            const auto source = detail::read_coefficients(std::as_const(*matrix_.native()));
+            const auto target = detail::overwrite_coefficients(*preconditioner_matrix_);
             using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
             std::size_t bad = 0;
             Kokkos::parallel_reduce("linalg/preconditioner_coefficients", Policy(Exec{}, 0, target.extent(0)),
-                detail::ConvertCsrValues<decltype(source), decltype(target)>{source, target}, bad);
+                detail::ConvertMatrixValues<decltype(source), decltype(target)>{source, target}, bad);
             mpi::require(bad == 0, "Linalg: matrix coefficients are nonfinite in the preconditioner precision");
         }
     }
@@ -192,10 +201,29 @@ private:
         const auto set_default = [&](const char* name, const auto& value) {
             if (!parameters.isParameter(name)) parameters.set(name, value);
         };
-        set_default("multigrid algorithm", "sa");
+        // Block storage uses an unsmoothed, block-preserving hierarchy by default.
+        set_default("multigrid algorithm", Matrix::block_storage ? "unsmoothed" : "sa");
         set_default("cycle type", "V");
-        set_default("smoother: type", "CHEBYSHEV");
-        set_default("use kokkos refactor", true);
+        set_default("smoother: type", Matrix::block_storage ? "RELAXATION" : "CHEBYSHEV");
+        if constexpr (Matrix::block_storage) {
+            set_default("number of equations", matrix_.block_size());
+            mpi::require(parameters.get<int>("number of equations") == matrix_.block_size(),
+                         "Linalg: AMG equation count differs from the BSR block size");
+            set_default("coarse: type", "RELAXATION");
+            if (detail::upper_name(parameters.get<std::string>("smoother: type")) == "RELAXATION") {
+                auto& smoother = parameters.sublist("smoother: params");
+                if (!smoother.isParameter("relaxation: type")) smoother.set("relaxation: type", "Jacobi");
+            }
+            if (detail::upper_name(parameters.get<std::string>("coarse: type")) == "RELAXATION") {
+                auto& coarse = parameters.sublist("coarse: params");
+                if (!coarse.isParameter("relaxation: type")) coarse.set("relaxation: type", "Jacobi");
+                if (!coarse.isParameter("relaxation: sweeps")) coarse.set("relaxation: sweeps", 8);
+            }
+        }
+        set_default("use kokkos refactor", !Matrix::block_storage);
+        if constexpr (Matrix::block_storage)
+            mpi::require(!parameters.get<bool>("use kokkos refactor"),
+                         "Linalg: Trilinos 17.2.1 block AMG requires use kokkos refactor=false");
         set_default("coarse: max size", 200);
         set_default("verbosity", "none");
         set_default("reuse: type", "none");

@@ -6,6 +6,7 @@
 #include <Tpetra_Core.hpp>
 #include <Tpetra_CrsGraph.hpp>
 #include <Tpetra_CrsMatrix.hpp>
+#include <Tpetra_BlockCrsMatrix.hpp>
 #include <Tpetra_Map.hpp>
 #include <Tpetra_MultiVector.hpp>
 #include <Tpetra_Operator.hpp>
@@ -80,6 +81,7 @@ struct Types : IndexTypes<Exec> {
     using scalar_type = Scalar;
     using node_type = typename IndexTypes<Exec>::node_type;
     using matrix_type = Tpetra::CrsMatrix<Scalar, LocalOrdinal, GlobalOrdinal, node_type>;
+    using block_matrix_type = Tpetra::BlockCrsMatrix<Scalar, LocalOrdinal, GlobalOrdinal, node_type>;
     using vector_type = Tpetra::Vector<Scalar, LocalOrdinal, GlobalOrdinal, node_type>;
     using multivector_type = Tpetra::MultiVector<Scalar, LocalOrdinal, GlobalOrdinal, node_type>;
     using operator_type = Tpetra::Operator<Scalar, LocalOrdinal, GlobalOrdinal, node_type>;

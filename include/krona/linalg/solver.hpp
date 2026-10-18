@@ -43,9 +43,10 @@ struct SolveResult {
 
 /// @brief Configurable Belos solve with independent true-residual verification.
 /// Collective and blocking; matrix must outlive the solver. Not reentrant.
-template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace,
-         class PrecScalar = PreconditionerReal>
+template<class Matrix, class PrecScalar = PreconditionerReal>
 class Solver {
+    using Scalar = typename Matrix::scalar_type;
+    using Exec = typename Matrix::execution_space;
     using T = Types<Scalar, Exec>;
     using MV = typename T::multivector_type;
     using OP = typename T::operator_type;
@@ -53,10 +54,10 @@ class Solver {
 public:
     using scalar_type = Scalar;
     using preconditioner_scalar_type = PrecScalar;
-    using preconditioner_type = Preconditioner<Scalar, Exec, PrecScalar>;
+    using preconditioner_type = Preconditioner<Matrix, PrecScalar>;
     using manager_type = Belos::SolverManager<Scalar, MV, OP>;
 
-    explicit Solver(const CsrMatrix<Scalar, Exec>& matrix, SolverOptions options = {},
+    explicit Solver(const Matrix& matrix, SolverOptions options = {},
                     typename preconditioner_type::Factory custom_factory = {})
         : matrix_(matrix), options_(std::move(options)),
           preconditioner_(matrix, options_.preconditioner, std::move(custom_factory))
@@ -113,7 +114,7 @@ public:
     [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution)
     {
         matrix_.require_committed(); rhs.require_committed(); solution.require_committed();
-        const auto* map = matrix_.pattern().distribution().native().getRawPtr();
+        const auto* map = matrix_.distribution().native().getRawPtr();
         mpi::require(rhs.distribution().native().getRawPtr() == map && solution.distribution().native().getRawPtr() == map,
                      "Linalg: solve vectors must share the matrix distribution");
         mpi::require(rhs.native().getRawPtr() != solution.native().getRawPtr(), "Linalg: RHS and solution alias");
@@ -121,12 +122,12 @@ public:
             SolveResult result;
             result.rhs_norm = static_cast<double>(rhs.native()->norm2());
             mpi::require(std::isfinite(result.rhs_norm), "Linalg: nonfinite RHS norm");
-            if (matrix_.pattern().distribution().global_size() == 0) {
+            if (matrix_.distribution().global_size() == 0) {
                 result.converged = true;
                 return result;
             }
             if (residual_.is_null())
-                residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.pattern().distribution().native(), false));
+                residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.distribution().native(), false));
             const auto residual_norm = [&] {
                 matrix_.native()->apply(*solution.native(), *residual_);
                 residual_->update(Scalar{1}, *rhs.native(), Scalar{-1});
@@ -186,7 +187,7 @@ public:
     }
 
 private:
-    const CsrMatrix<Scalar, Exec>& matrix_;
+    const Matrix& matrix_;
     SolverOptions options_;
     preconditioner_type preconditioner_;
     Teuchos::RCP<Problem> problem_;
