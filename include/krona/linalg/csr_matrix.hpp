@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace krona::linalg {
 namespace detail {
@@ -22,19 +23,22 @@ struct SetCsrValues {
 template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace>
 class CsrMatrix {
 public:
+    using scalar_type = Scalar;
+    using execution_space = Exec;
+    using memory_space = typename Types<Scalar, Exec>::memory_space;
     using native_type = typename Types<Scalar, Exec>::matrix_type;
 
     explicit CsrMatrix(const CsrPattern<Exec>& pattern) : pattern_(pattern)
     {
         mpi::guarded([&] {
             matrix_ = Teuchos::rcp(new native_type(pattern_.native()));
-            matrix_->setAllToScalar(Scalar{0});
             matrix_->fillComplete(pattern_.distribution().native(), pattern_.distribution().native());
             Kokkos::fence("Linalg: matrix initialization complete");
         });
     }
     CsrMatrix(const CsrMatrix&) = delete;
     CsrMatrix& operator=(const CsrMatrix&) = delete;
+    ~CsrMatrix() { commit(); }
 
     [[nodiscard]] const CsrPattern<Exec>& pattern() const noexcept { return pattern_; }
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
@@ -42,16 +46,27 @@ public:
     /// @brief Native CSR order; use pattern.input_to_entry() for original input slots.
     [[nodiscard]] auto edit_values(const Exec& exec = {})
     {
-        require_committed();
-        pending_exec_ = exec; pending_ = true; ++revision_;
-        return mpi::guarded([&] { return matrix_->getLocalMatrixDevice().values; });
+        begin_access(exec); ++revision_;
+        return mpi::guarded([&] { return matrix_->getLocalValuesDevice(Tpetra::Access::ReadWrite); });
     }
-    void commit()
+    /// @brief Full coefficient overwrite; skips synchronization of old host values.
+    [[nodiscard]] auto overwrite_values(const Exec& exec = {})
     {
-        if (pending_) { pending_exec_.fence("Linalg: matrix writes committed"); pending_ = false; }
+        begin_access(exec); ++revision_;
+        return mpi::guarded([&] { return matrix_->getLocalValuesDevice(Tpetra::Access::OverwriteAll); });
+    }
+    /// @brief Begins an asynchronous read batch without changing the coefficient revision.
+    [[nodiscard]] auto read_values(const Exec& exec = {}) const
+    {
+        begin_access(exec);
+        return mpi::guarded([&] { return std::as_const(*matrix_).getLocalValuesDevice(Tpetra::Access::ReadOnly); });
+    }
+    void commit() const
+    {
+        if (pending_) { pending_exec_.fence("Linalg: matrix accesses committed"); pending_ = false; }
     }
     void require_committed() const
-    { mpi::require(!pending_, "Linalg: matrix has pending writes; call commit()"); }
+    { mpi::require(!pending_, "Linalg: matrix has pending reads or writes; call commit()"); }
 
     /// @brief Blocking host assembly in the original CSR input order.
     void set_values(std::span<const Scalar> input)
@@ -59,7 +74,7 @@ public:
         require_committed();
         mpi::require(input.size() == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
         mpi::guarded([&] {
-            auto values = matrix_->getLocalMatrixHost().values;
+            auto values = matrix_->getLocalValuesHost(Tpetra::Access::OverwriteAll);
             auto permutation = pattern_.host_input_to_entry();
             for (std::size_t i = 0; i < input.size(); ++i) values(permutation[i]) = input[i];
             ++revision_;
@@ -73,7 +88,7 @@ public:
         static_assert(Input::rank == 1);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Input::memory_space>::accessible);
         mpi::require(input.extent(0) == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
-        auto values = edit_values(exec);
+        auto values = overwrite_values(exec);
         auto permutation = pattern_.input_to_entry();
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
         Kokkos::parallel_for("linalg/set_csr_values", Policy(exec, 0, input.extent(0)),
@@ -87,7 +102,7 @@ public:
         require_committed(); x.require_committed(); y.require_committed();
         const auto* map = pattern_.distribution().native().getRawPtr();
         mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
-                        "Linalg: vectors must share the matrix distribution");
+                     "Linalg: vectors must share the matrix distribution");
         mpi::require(x.native().getRawPtr() != y.native().getRawPtr(), "Linalg: in-place matrix apply is unsupported");
         mpi::guarded([&] {
             matrix_->apply(*x.native(), *y.native(), Teuchos::NO_TRANS, alpha, beta);
@@ -102,9 +117,16 @@ public:
 private:
     CsrPattern<Exec> pattern_;
     Teuchos::RCP<native_type> matrix_;
-    Exec pending_exec_{};
+    mutable Exec pending_exec_{};
     std::uint64_t revision_ = 0;
-    bool pending_ = false;
+    mutable bool pending_ = false;
+
+    void begin_access(const Exec& exec) const
+    {
+        mpi::require(!pending_ || pending_exec_ == exec,
+                     "Linalg: commit before switching execution instances");
+        pending_exec_ = exec; pending_ = true;
+    }
 };
 
 } // namespace krona::linalg

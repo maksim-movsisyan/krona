@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/mpi/communicator.hpp>
 #include <krona/linalg/csr_pattern.hpp>
 #include <krona/mesh/localmesh.hpp>
 
@@ -24,7 +25,7 @@ struct CellNumbering {
 
 /// @brief Collective prefix numbering and one halo exchange on a private MPI context.
 /// No Allgather table, original mesh GIDs, geometry or device memory are needed.
-[[nodiscard]] CellNumbering build_cell_numbering(const mesh::MeshPart& mesh, MPI_Comm comm);
+[[nodiscard]] CellNumbering build_cell_numbering(const mesh::MeshPart& mesh, mpi::CommView comm);
 
 /// @brief Scalar face-neighbour graph, including each owned diagonal, excluding physical boundary slots.
 /// Connectivity is a graph choice, not a discretization or boundary-condition assembly.

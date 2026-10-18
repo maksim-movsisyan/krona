@@ -514,10 +514,6 @@ int main(int argc, char** argv) {
             "${_krona_tpetra_probe}" Trilinos::all_selected_libs MPI::MPI_CXX)
     endforeach()
     krona_interface(linear_algebra krona::execution Trilinos::all_selected_libs MPI::MPI_CXX)
-    if(NOT _krona_SOLVER_type STREQUAL _krona_PRECONDITIONER_type)
-        message(STATUS
-            "PreconditionerReal is reserved configuration: the current krona::linalg solver uses SolverReal for Ifpack2 as well")
-    endif()
 endif()
 
 

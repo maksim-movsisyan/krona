@@ -1,4 +1,5 @@
 #include <krona/linalg/mesh_adapter.hpp>
+#include <krona/mpi/collectives.hpp>
 
 #include <algorithm>
 #include <limits>
@@ -7,21 +8,10 @@
 namespace krona::linalg {
 namespace {
 
-class PrivateComm {
-public:
-    explicit PrivateComm(MPI_Comm source) { mpi::check(MPI_Comm_dup(source, &comm_), "MPI_Comm_dup(linalg numbering)"); }
-    ~PrivateComm() { mpi::check(MPI_Comm_free(&comm_), "MPI_Comm_free(linalg numbering)"); }
-    PrivateComm(const PrivateComm&) = delete;
-    PrivateComm& operator=(const PrivateComm&) = delete;
-    [[nodiscard]] MPI_Comm get() const noexcept { return comm_; }
-private:
-    MPI_Comm comm_ = MPI_COMM_NULL;
-};
-
 void validate(const mesh::MeshPart& m, int rank, int ranks)
 {
     mpi::require(m.rank == rank && m.nprocs == ranks && m.n_own >= 0 && m.n_cells >= m.n_own,
-                    "Linalg: mesh/communicator or cell counts mismatch");
+                 "Linalg: mesh/communicator or cell counts mismatch");
     detail::local_count(static_cast<std::size_t>(m.n_cells));
     const auto peers = m.nb_ranks.size();
     detail::local_count(peers);
@@ -34,7 +24,7 @@ void validate(const mesh::MeshPart& m, int rank, int ranks)
         mpi::require(m.nb_ranks[peer] >= 0 && m.nb_ranks[peer] < ranks && m.nb_ranks[peer] != rank &&
             seen_peers.insert(m.nb_ranks[peer]).second, "Linalg: invalid/duplicate halo peer");
         mpi::require(m.send_offsets[peer] <= m.send_offsets[peer+1] && m.recv_offsets[peer] <= m.recv_offsets[peer+1],
-                        "Linalg: nonmonotone halo offsets");
+                     "Linalg: nonmonotone halo offsets");
         detail::local_count(m.send_offsets[peer+1]-m.send_offsets[peer]);
         detail::local_count(m.recv_offsets[peer+1]-m.recv_offsets[peer]);
     }
@@ -52,32 +42,29 @@ void validate(const mesh::MeshPart& m, int rank, int ranks)
 }
 } // namespace
 
-CellNumbering build_cell_numbering(const mesh::MeshPart& m, MPI_Comm comm)
+CellNumbering build_cell_numbering(const mesh::MeshPart& m, mpi::CommView comm)
 {
     return mpi::guarded([&] {
-        mpi::require(comm != MPI_COMM_NULL, "Linalg: null numbering communicator");
-        int inter = 0;
-        mpi::check(MPI_Comm_test_inter(comm, &inter), "MPI_Comm_test_inter(linalg numbering)");
-        mpi::require(inter == 0, "Linalg: intercommunicators are unsupported");
-        int rank = 0, ranks = 0;
-        mpi::check(MPI_Comm_rank(comm, &rank), "MPI_Comm_rank(linalg numbering)");
-        mpi::check(MPI_Comm_size(comm, &ranks), "MPI_Comm_size(linalg numbering)");
+        mpi::require(!comm.is_null(), "Linalg: null numbering communicator");
+        int rank = comm.rank(), ranks = comm.size();
         validate(m, rank, ranks);
         CellNumbering result;
         result.n_owned = static_cast<std::size_t>(m.n_own);
         const auto owned = static_cast<GlobalOrdinal>(m.n_own);
-        mpi::check(MPI_Exscan(&owned, &result.owned_begin, 1, MPI_LONG_LONG_INT, MPI_SUM, comm), "MPI_Exscan(linalg numbering)");
+        mpi::check(MPI_Exscan(&owned, &result.owned_begin, 1, 
+                   MPI_LONG_LONG_INT, MPI_SUM, comm.native()), "MPI_Exscan(linalg numbering)");
         if (rank == 0) result.owned_begin = 0;
-        mpi::check(MPI_Allreduce(&owned, &result.global_cells, 1, MPI_LONG_LONG_INT, MPI_SUM, comm), "MPI_Allreduce(linalg numbering)");
+
+        result.global_cells = mpi::allreduce<mpi::Reduction::sum>(comm, owned);
         result.cell_to_global.assign(static_cast<std::size_t>(m.n_cells), GlobalOrdinal{-1});
         for (std::size_t cell = 0; cell < result.n_owned; ++cell)
             result.cell_to_global[cell] = result.owned_begin+static_cast<GlobalOrdinal>(cell);
 
-        PrivateComm private_comm(comm);
+        mpi::Comm private_comm = mpi::Comm::duplicate(comm);
         std::vector<GlobalOrdinal> send(m.send_owned_local.size()), recv(m.recv_ghost_local.size());
         for (std::size_t i = 0; i < send.size(); ++i) send[i] = result.cell_to_global[static_cast<std::size_t>(m.send_owned_local[i])];
         mpi::require(m.nb_ranks.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()/2),
-                        "Linalg: too many numbering requests");
+                     "Linalg: too many numbering requests");
         std::vector<MPI_Request> requests;
         requests.reserve(2*m.nb_ranks.size());
         for (std::size_t peer = 0; peer < m.nb_ranks.size(); ++peer) {
@@ -85,7 +72,8 @@ CellNumbering build_cell_numbering(const mesh::MeshPart& m, MPI_Comm comm)
             const auto count = detail::local_count(m.recv_offsets[peer+1]-begin);
             if (count == 0) continue;
             MPI_Request request = MPI_REQUEST_NULL;
-            mpi::check(MPI_Irecv(recv.data()+begin, count, MPI_LONG_LONG_INT, m.nb_ranks[peer], 0, private_comm.get(), &request),
+            mpi::check(MPI_Irecv(recv.data()+begin, count, MPI_LONG_LONG_INT,
+                       m.nb_ranks[peer], 0, private_comm.native(), &request),
                        "MPI_Irecv(linalg numbering)");
             requests.push_back(request);
         }
@@ -94,7 +82,8 @@ CellNumbering build_cell_numbering(const mesh::MeshPart& m, MPI_Comm comm)
             const auto count = detail::local_count(m.send_offsets[peer+1]-begin);
             if (count == 0) continue;
             MPI_Request request = MPI_REQUEST_NULL;
-            mpi::check(MPI_Isend(send.data()+begin, count, MPI_LONG_LONG_INT, m.nb_ranks[peer], 0, private_comm.get(), &request),
+            mpi::check(MPI_Isend(send.data()+begin, count, MPI_LONG_LONG_INT,
+                       m.nb_ranks[peer], 0, private_comm.native(), &request),
                        "MPI_Isend(linalg numbering)");
             requests.push_back(request);
         }
@@ -111,9 +100,9 @@ CellNumbering build_cell_numbering(const mesh::MeshPart& m, MPI_Comm comm)
 std::vector<GlobalOrdinal> CellNumbering::expanded_gids(int components) const
 {
     mpi::require(components > 0 && global_cells >= 0 && global_cells <= std::numeric_limits<GlobalOrdinal>::max()/components,
-                    "Linalg: invalid component count or global DOF overflow");
+                 "Linalg: invalid component count or global DOF overflow");
     mpi::require(cell_to_global.size() <= std::numeric_limits<std::size_t>::max()/static_cast<std::size_t>(components),
-                    "Linalg: expanded local DOF size overflow");
+                 "Linalg: expanded local DOF size overflow");
     detail::local_count(cell_to_global.size()*static_cast<std::size_t>(components));
     std::vector<GlobalOrdinal> result(cell_to_global.size()*static_cast<std::size_t>(components));
     for (std::size_t cell = 0; cell < cell_to_global.size(); ++cell) for (int c = 0; c < components; ++c)
@@ -135,7 +124,7 @@ CsrInput make_face_csr(const mesh::MeshPart& m, const CellNumbering& numbering)
         for (std::size_t face = 0; face < m.face_owner.size(); ++face) {
             const auto owner = m.face_owner[face], neighbour = m.face_neigh[face];
             mpi::require(owner >= 0 && owner < m.n_own && neighbour >= -1 && neighbour < m.n_cells && neighbour != owner,
-                            "Linalg: invalid face endpoints");
+                         "Linalg: invalid face endpoints");
             if (neighbour < 0) continue;
             ++counts[static_cast<std::size_t>(owner)];
             if (neighbour < m.n_own) ++counts[static_cast<std::size_t>(neighbour)];

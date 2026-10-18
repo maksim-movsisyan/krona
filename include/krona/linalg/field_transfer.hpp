@@ -11,7 +11,7 @@ struct FieldCopy {
     Values values;
     KOKKOS_INLINE_FUNCTION void operator()(std::size_t dof) const
     {
-        const auto cell = dof/static_cast<std::size_t>(Field::components);
+        const std::size_t cell = dof/static_cast<std::size_t>(Field::components);
         const int component = static_cast<int>(dof%static_cast<std::size_t>(Field::components));
         if constexpr (ToVector) values(dof, 0) = static_cast<typename Values::non_const_value_type>(field(cell, component));
         else field(cell, component) = static_cast<typename Field::value_type>(values(dof, 0));
@@ -26,8 +26,8 @@ void copy_from_field(Vector<Scalar, Exec>& vector, fields::FieldView<T, N, Space
 {
     static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible);
     mpi::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
-                    field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
-    auto values = vector.edit(exec);
+                 field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
+    auto values = vector.overwrite(exec);
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
     Kokkos::parallel_for("linalg/field_to_vector", Policy(exec, 0, vector.local_size()),
         detail::FieldCopy<decltype(field), decltype(values), true>{field, values});
@@ -39,8 +39,8 @@ void copy_to_field(const Vector<Scalar, Exec>& vector, fields::FieldView<T, N, S
 {
     static_assert(!std::is_const_v<T> && Kokkos::SpaceAccessibility<Exec, Space>::accessible);
     mpi::require(vector.local_size()%static_cast<std::size_t>(N) == 0 &&
-                    field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
-    auto values = vector.read();
+                 field.size() >= vector.local_size()/static_cast<std::size_t>(N), "Linalg: field/DOF size mismatch");
+    auto values = vector.read(exec);
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
     Kokkos::parallel_for("linalg/vector_to_field", Policy(exec, 0, vector.local_size()),
         detail::FieldCopy<decltype(field), decltype(values), false>{field, values});

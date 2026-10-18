@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace krona::linalg {
@@ -19,7 +20,9 @@ struct CsrInput {
 template<class Exec = execution::ExecutionSpace>
 class CsrPattern {
 public:
-    using graph_type = typename Types<double, Exec>::graph_type;
+    using execution_space = Exec;
+    using memory_space = typename Exec::memory_space;
+    using graph_type = typename IndexTypes<Exec>::graph_type;
     using permutation_type = Kokkos::View<const std::size_t*, typename Exec::memory_space>;
 
     CsrPattern(const Distribution<Exec>& distribution, std::span<const std::size_t> row_offsets,
@@ -29,24 +32,23 @@ public:
         mpi::guarded([&] {
             const auto rows = distribution_.local_size();
             mpi::require(row_offsets.size() == rows+1 && row_offsets.front() == 0 &&
-                            row_offsets.back() == column_gids.size(), "Linalg: invalid CSR offsets/extents");
+                         row_offsets.back() == column_gids.size(), "Linalg: invalid CSR offsets/extents");
             std::vector<std::size_t> counts(rows);
             std::vector<GlobalOrdinal> sorted;
             for (std::size_t row = 0; row < rows; ++row) {
                 mpi::require(row_offsets[row] <= row_offsets[row+1] && row_offsets[row+1] <= column_gids.size(),
-                                "Linalg: nonmonotone/out-of-range CSR offsets");
+                             "Linalg: nonmonotone/out-of-range CSR offsets");
                 counts[row] = row_offsets[row+1]-row_offsets[row];
                 static_cast<void>(detail::local_count(counts[row]));
                 sorted.assign(column_gids.begin()+static_cast<std::ptrdiff_t>(row_offsets[row]),
-                    column_gids.begin()+static_cast<std::ptrdiff_t>(row_offsets[row+1]));
+                              column_gids.begin()+static_cast<std::ptrdiff_t>(row_offsets[row+1]));
                 std::sort(sorted.begin(), sorted.end());
                 mpi::require(sorted.empty() || (sorted.front() >= 0 && sorted.back() < std::numeric_limits<GlobalOrdinal>::max()),
-                                "Linalg: invalid column GID");
+                             "Linalg: invalid column GID");
                 mpi::require(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(),
-                                "Linalg: duplicate column in a CSR row");
+                             "Linalg: duplicate column in a CSR row");
             }
-            // Release Tpetra builds need not diagnose unowned column GIDs themselves.
-            // Query only distinct remote columns, not a replicated global row table.
+
             {
                 std::vector<GlobalOrdinal> remote;
                 for (const auto gid : column_gids)
@@ -61,16 +63,17 @@ public:
                     Teuchos::ArrayView<int>(owners.data(), count));
                 mpi::require(status == Tpetra::AllIDsPresent, "Linalg: column has no owner in the domain map");
             }
+
             auto graph = Teuchos::rcp(new graph_type(distribution_.native(),
                 Teuchos::ArrayView<const std::size_t>(counts.data(), detail::local_count(rows))));
             for (std::size_t row = 0; row < rows; ++row) {
                 if (counts[row] == 0) continue;
                 graph->insertGlobalIndices(distribution_.global_id(static_cast<LocalOrdinal>(row)),
                     Teuchos::ArrayView<const GlobalOrdinal>(column_gids.data()+row_offsets[row],
-                                                          detail::local_count(counts[row])));
+                                                            detail::local_count(counts[row])));
             }
             graph->fillComplete(distribution_.native(), distribution_.native());
-            detail::local_count(graph->getColMap()->getLocalNumElements());
+            static_cast<void>(detail::local_count(graph->getColMap()->getLocalNumElements()));
             graph_ = graph;
             nonzeros_ = graph_->getLocalNumEntries();
             if (!has_input_mapping_) {
@@ -85,7 +88,7 @@ public:
                 for (std::size_t input = row_offsets[row]; input < row_offsets[row+1]; ++input) {
                     const auto local = graph_->getColMap()->getLocalElement(column_gids[input]);
                     mpi::require(local != Teuchos::OrdinalTraits<LocalOrdinal>::invalid(),
-                                    "Linalg: column has no owner in the domain map");
+                                 "Linalg: column is absent from the finalized column map");
                     auto pos = begin, upper = end;
                     while (pos < upper) {
                         const auto middle = pos+(upper-pos)/2;
@@ -93,12 +96,13 @@ public:
                         else upper = middle;
                     }
                     mpi::require(pos < end && native_graph.entries(pos) == local,
-                                    "Linalg: CSR entry disappeared during graph finalization");
+                                 "Linalg: CSR entry disappeared during graph finalization");
                     permutation[input] = pos;
                 }
             }
-            Kokkos::View<std::size_t*, typename Exec::memory_space> device("linalg/input_to_entry", permutation.size());
-            auto host = Kokkos::create_mirror_view(device);
+            Kokkos::View<std::size_t*, typename Exec::memory_space> device(
+                Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, std::string("linalg/input_to_entry")), permutation.size());
+            auto host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, device);
             for (std::size_t i = 0; i < permutation.size(); ++i) host(i) = permutation[i];
             Kokkos::deep_copy(exec, device, host);
             input_to_entry_ = device;

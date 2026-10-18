@@ -1,165 +1,185 @@
 #pragma once
 
-#include <krona/linalg/csr_matrix.hpp>
+#include <krona/linalg/preconditioner.hpp>
 
 #include <BelosTpetraAdapter.hpp>
-#include <BelosPseudoBlockGmresSolMgr.hpp>
-#include <Ifpack2_Factory.hpp>
-#include <MueLu_CreateTpetraPreconditioner.hpp>
-#include <Teuchos_CommHelpers.hpp>
+#include <BelosSolverFactory_Tpetra.hpp>
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <limits>
-#include <string>
-#include <type_traits>
+#include <optional>
 #include <utility>
 
 namespace krona::linalg {
 
+enum class PreconditioningSide { Automatic, Left, Right };
+
 struct SolverOptions {
-    double relative_tolerance = std::is_same_v<SolverReal, float> ? 1.0e-5 : 1.0e-10;
+    // Native Belos names; FGMRES is also accepted as FLEXIBLE GMRES.
+    std::string method = "GMRES";
+    // Unset chooses 1e-5 for float or 1e-10 for double, using the actual Solver scalar.
+    std::optional<double> relative_tolerance;
     double absolute_tolerance = 0;
     int maximum_iterations = 500;
     int restart_length = 50;
-    // AMG selects MueLu; empty disables preconditioning; other names select Ifpack2.
-    std::string preconditioner = "AMG";
-    Teuchos::ParameterList preconditioner_parameters;
+    PreconditioningSide side = PreconditioningSide::Automatic;
+    Teuchos::ParameterList solver_parameters;
+    PreconditionerOptions preconditioner;
 };
 
 struct SolveResult {
+    // Authoritative test: independently recomputed ||b-Ax||_2 <= residual_threshold.
     bool converged = false;
     bool krylov_converged = false;
+    bool iterations_started = false;
     int iterations = 0;
     double residual_norm = 0;
+    double initial_residual_norm = 0;
     double rhs_norm = 0;
     double relative_residual = 0;
+    double residual_threshold = 0;
 };
 
-/// @brief Restarted GMRES with MueLu AMG or optional Ifpack2 right preconditioning.
-/// The matrix must outlive the solver; construction, prepare and solve are collective.
-template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace>
+/// @brief Configurable Belos solve with independent true-residual verification.
+/// Collective and blocking; matrix must outlive the solver. Not reentrant.
+template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace,
+         class PrecScalar = PreconditionerReal>
 class Solver {
     using T = Types<Scalar, Exec>;
     using MV = typename T::multivector_type;
     using OP = typename T::operator_type;
     using Problem = Belos::LinearProblem<Scalar, MV, OP>;
-    using Manager = Belos::PseudoBlockGmresSolMgr<Scalar, MV, OP>;
-    using IfpackPrec = Ifpack2::Preconditioner<Scalar, LocalOrdinal, GlobalOrdinal, typename T::node_type>;
-    using AmgPrec = MueLu::TpetraOperator<Scalar, LocalOrdinal, GlobalOrdinal, typename T::node_type>;
-    using RowMatrix = Tpetra::RowMatrix<Scalar, LocalOrdinal, GlobalOrdinal, typename T::node_type>;
-
 public:
-    explicit Solver(const CsrMatrix<Scalar, Exec>& matrix, SolverOptions options = {})
-        : matrix_(matrix), options_(std::move(options))
+    using scalar_type = Scalar;
+    using preconditioner_scalar_type = PrecScalar;
+    using preconditioner_type = Preconditioner<Scalar, Exec, PrecScalar>;
+    using manager_type = Belos::SolverManager<Scalar, MV, OP>;
+
+    explicit Solver(const CsrMatrix<Scalar, Exec>& matrix, SolverOptions options = {},
+                    typename preconditioner_type::Factory custom_factory = {})
+        : matrix_(matrix), options_(std::move(options)),
+          preconditioner_(matrix, options_.preconditioner, std::move(custom_factory))
     {
         mpi::guarded([&] {
-            mpi::require(std::isfinite(options_.relative_tolerance) && options_.relative_tolerance > 0 &&
-                options_.relative_tolerance < 1 && std::isfinite(options_.absolute_tolerance) &&
-                options_.absolute_tolerance >= 0 && options_.maximum_iterations > 0 && options_.restart_length > 0,
+            relative_tolerance_ = options_.relative_tolerance.value_or(std::is_same_v<Scalar, float> ? 1.0e-5 : 1.0e-10);
+            mpi::require(std::isfinite(relative_tolerance_) && relative_tolerance_ >= 0 && relative_tolerance_ < 1 &&
+                std::isfinite(options_.absolute_tolerance) && options_.absolute_tolerance >= 0 &&
+                (relative_tolerance_ > 0 || options_.absolute_tolerance > 0) &&
+                options_.maximum_iterations >= 0,
                 "Linalg: invalid solver tolerances or iteration limits");
+            auto parameters = Teuchos::rcp(new Teuchos::ParameterList(options_.solver_parameters));
+            Belos::SolverFactory<Scalar, MV, OP> factory;
+            method_ = detail::upper_name(options_.method);
+            if (method_ == "FGMRES") method_ = "FLEXIBLE GMRES";
+            manager_ = factory.create(method_, parameters);
+            const auto valid = manager_->getValidParameters();
+            mpi::require(valid->isParameter("Convergence Tolerance") && valid->isParameter("Maximum Iterations"),
+                         "Linalg: selected Belos manager does not expose the common stopping controls");
+            mpi::require(!valid->isParameter("Num Blocks") || options_.solver_parameters.isParameter("Num Blocks") ||
+                         options_.restart_length > 0, "Linalg: nonpositive Krylov restart length");
             problem_ = Teuchos::rcp(new Problem);
             problem_->setOperator(matrix_.native());
-            manager_ = Teuchos::rcp(new Manager);
-            residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.pattern().distribution().native(), false));
+            const bool symmetric = method_.ends_with("CG") || method_ == "MINRES";
+            problem_->setHermitian(symmetric);
+            side_ = options_.side == PreconditioningSide::Automatic ?
+                (symmetric ? PreconditioningSide::Left : PreconditioningSide::Right) : options_.side;
+            mpi::require(!preconditioner_.enabled() || method_ != "BICGSTAB" || side_ == PreconditioningSide::Right,
+                         "Linalg: Belos BICGSTAB requires right preconditioning");
+            mpi::require(!preconditioner_.enabled() || method_ != "FLEXIBLE GMRES" || side_ == PreconditioningSide::Right,
+                         "Linalg: flexible GMRES requires right preconditioning");
+            manager_->setProblem(problem_);
         });
     }
     Solver(const Solver&) = delete;
     Solver& operator=(const Solver&) = delete;
 
-    /// @brief Refreshes preconditioning collectively after coefficient edits; AMG reuse is opt-in.
+    /// @brief Optional explicit warm-up; solve also prepares after coefficient revisions.
     void prepare()
     {
-        matrix_.require_committed();
-        mpi::guarded([&] {
-            if (options_.preconditioner.empty() || matrix_.pattern().distribution().global_size() == 0) {
-                prepared_revision_ = matrix_.revision(); prepared_ = true; return;
-            }
-            const int local_dirty = !prepared_ || prepared_revision_ != matrix_.revision() ? 1 : 0;
-            int global_dirty = 0;
-            Teuchos::reduceAll(*matrix_.native()->getComm(), Teuchos::REDUCE_MAX, 1, &local_dirty, &global_dirty);
-            if (global_dirty == 0) return;
-            if (options_.preconditioner == "AMG") {
-                const auto& parameters = options_.preconditioner_parameters;
-                const bool reuse = parameters.isParameter("reuse: type") &&
-                    parameters.get<std::string>("reuse: type") != "none";
-                if (amg_preconditioner_.is_null() || !reuse) {
-                    auto settings = amg_parameters();
-                    // Release the previous hierarchy before allocating another one.
-                    problem_->setRightPrec(Teuchos::null);
-                    amg_preconditioner_ = Teuchos::null;
-                    // Select the const Operator overload explicitly; concrete matrix RCPs may match both.
-                    const Teuchos::RCP<const OP> matrix_operator = matrix_.native();
-                    auto next = MueLu::CreateTpetraPreconditioner<Scalar, LocalOrdinal, GlobalOrdinal,
-                                                                typename T::node_type>(matrix_operator, settings);
-                    problem_->setRightPrec(next);
-                    amg_preconditioner_ = std::move(next);
-                } else {
-                    MueLu::ReuseTpetraPreconditioner<Scalar, LocalOrdinal, GlobalOrdinal,
-                                                    typename T::node_type>(matrix_.native(), *amg_preconditioner_);
-                }
-            } else {
-                if (ifpack_preconditioner_.is_null()) {
-                    ifpack_preconditioner_ = Ifpack2::Factory::create<RowMatrix>(options_.preconditioner, matrix_.native());
-                    auto parameters = options_.preconditioner_parameters;
-                    if (options_.preconditioner == "RELAXATION" && !parameters.isParameter("relaxation: type"))
-                        parameters.set("relaxation: type", "Jacobi");
-                    ifpack_preconditioner_->setParameters(parameters);
-                    ifpack_preconditioner_->initialize();
-                    problem_->setRightPrec(ifpack_preconditioner_);
-                }
-                ifpack_preconditioner_->compute();
-            }
-            prepared_revision_ = matrix_.revision(); prepared_ = true;
-            Kokkos::fence("Linalg: preconditioner preparation complete");
-        });
+        // Let a rebuild release the old hierarchy before allocating a new one.
+        problem_->setLeftPrec(Teuchos::null);
+        problem_->setRightPrec(Teuchos::null);
+        preconditioner_.prepare();
+        if (side_ == PreconditioningSide::Left) problem_->setLeftPrec(preconditioner_.native());
+        else problem_->setRightPrec(preconditioner_.native());
     }
 
-    /// @brief Blocking solve with the supplied initial guess and independently checked true residual.
+    [[nodiscard]] preconditioner_type& preconditioner() noexcept { return preconditioner_; }
+    [[nodiscard]] const preconditioner_type& preconditioner() const noexcept { return preconditioner_; }
+    [[nodiscard]] const Teuchos::RCP<manager_type>& native() const noexcept { return manager_; }
+
+    /// @brief Uses the supplied initial guess; RHS=0 uses ||r_initial|| as the relative reference.
     [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution)
     {
         matrix_.require_committed(); rhs.require_committed(); solution.require_committed();
         const auto* map = matrix_.pattern().distribution().native().getRawPtr();
         mpi::require(rhs.distribution().native().getRawPtr() == map && solution.distribution().native().getRawPtr() == map,
-                        "Linalg: solve vectors must share the matrix distribution");
+                     "Linalg: solve vectors must share the matrix distribution");
         mpi::require(rhs.native().getRawPtr() != solution.native().getRawPtr(), "Linalg: RHS and solution alias");
         return mpi::guarded([&] {
             SolveResult result;
             result.rhs_norm = static_cast<double>(rhs.native()->norm2());
             mpi::require(std::isfinite(result.rhs_norm), "Linalg: nonfinite RHS norm");
-            const double threshold = std::max(options_.absolute_tolerance, options_.relative_tolerance*result.rhs_norm);
-            auto check_residual = [&] {
+            if (matrix_.pattern().distribution().global_size() == 0) {
+                result.converged = true;
+                return result;
+            }
+            if (residual_.is_null())
+                residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.pattern().distribution().native(), false));
+            const auto residual_norm = [&] {
                 matrix_.native()->apply(*solution.native(), *residual_);
                 residual_->update(Scalar{1}, *rhs.native(), Scalar{-1});
-                result.residual_norm = static_cast<double>(residual_->norm2());
-                result.relative_residual = result.rhs_norm > 0 ? result.residual_norm/result.rhs_norm :
-                    (result.residual_norm == 0 ? 0 : std::numeric_limits<double>::infinity());
-                result.converged = std::isfinite(result.residual_norm) && result.residual_norm <= threshold;
+                return static_cast<double>(residual_->norm2());
             };
-            if (matrix_.pattern().distribution().global_size() == 0) {
-                result.converged = true; result.krylov_converged = true; return result;
-            }
+            result.initial_residual_norm = residual_norm();
+            mpi::require(std::isfinite(result.initial_residual_norm), "Linalg: nonfinite initial residual");
+            const double reference = result.rhs_norm > 0 ? result.rhs_norm : result.initial_residual_norm;
+            result.residual_threshold = std::max(options_.absolute_tolerance, relative_tolerance_*reference);
+            mpi::require(std::isfinite(result.residual_threshold), "Linalg: stopping threshold overflow");
+            const auto record_residual = [&](double norm) {
+                result.residual_norm = norm;
+                result.relative_residual = reference > 0 ? norm/reference :
+                    (norm == 0 ? 0 : std::numeric_limits<double>::infinity());
+                result.converged = std::isfinite(norm) && norm <= result.residual_threshold;
+            };
+            record_residual(result.initial_residual_norm);
+            if (result.converged || options_.maximum_iterations == 0) return result;
+
             prepare();
             problem_->setLHS(solution.native());
             problem_->setRHS(rhs.native());
+            // Reuse the true residual instead of doing another initial SpMV.
+            problem_->setInitResVec(residual_);
             mpi::require(problem_->setProblem(), "Linalg: Belos rejected the linear problem");
-            auto parameters = Teuchos::rcp(new Teuchos::ParameterList);
-            const double tolerance = result.rhs_norm > 0 ? threshold/result.rhs_norm :
-                (options_.absolute_tolerance > 0 ? options_.absolute_tolerance : options_.relative_tolerance);
-            const auto native_tolerance = static_cast<Scalar>(tolerance);
+            auto parameters = Teuchos::rcp(new Teuchos::ParameterList(*manager_->getCurrentParameters()));
+            const auto valid = manager_->getValidParameters();
+            const bool unscaled = valid->isParameter("Implicit Residual Scaling") || valid->isParameter("Residual Scaling");
+            const double tolerance = unscaled ? result.residual_threshold :
+                result.residual_threshold/result.initial_residual_norm;
+            const Scalar native_tolerance = static_cast<Scalar>(tolerance);
             mpi::require(std::isfinite(native_tolerance) && native_tolerance > Scalar{0},
-                            "Linalg: stopping tolerance cannot be represented by the solver scalar");
+                         "Linalg: stopping tolerance cannot be represented by the solver scalar");
             parameters->set("Convergence Tolerance", native_tolerance);
             parameters->set("Maximum Iterations", options_.maximum_iterations);
-            parameters->set("Num Blocks", options_.restart_length);
-            parameters->set("Implicit Residual Scaling", result.rhs_norm > 0 ? "Norm of RHS" : "None");
-            parameters->set("Explicit Residual Scaling", result.rhs_norm > 0 ? "Norm of RHS" : "None");
+            if (valid->isParameter("Implicit Residual Scaling")) parameters->set("Implicit Residual Scaling", "None");
+            // CG/BICGSTAB give the legacy name priority when both names occur.
+            if (valid->isParameter("Residual Scaling")) parameters->set("Residual Scaling", "None");
+            if (valid->isParameter("Explicit Residual Scaling")) parameters->set("Explicit Residual Scaling", "None");
+            if (valid->isParameter("Num Blocks") && !options_.solver_parameters.isParameter("Num Blocks"))
+                parameters->set("Num Blocks", options_.restart_length);
+            if (valid->isParameter("Maximum Restarts") && valid->isParameter("Num Blocks") &&
+                !options_.solver_parameters.isParameter("Maximum Restarts")) {
+                const int length = parameters->get<int>("Num Blocks");
+                mpi::require(length > 0, "Linalg: nonpositive Krylov restart length");
+                parameters->set("Maximum Restarts", options_.maximum_iterations/length +
+                    static_cast<int>(options_.maximum_iterations%length != 0));
+            }
             manager_->setParameters(parameters);
-            manager_->setProblem(problem_);
+            result.iterations_started = true;
             result.krylov_converged = manager_->solve() == Belos::Converged;
             result.iterations = manager_->getNumIters();
-            check_residual();
+            record_residual(residual_norm());
             Kokkos::fence("Linalg: solve complete");
             return result;
         });
@@ -168,30 +188,13 @@ public:
 private:
     const CsrMatrix<Scalar, Exec>& matrix_;
     SolverOptions options_;
+    preconditioner_type preconditioner_;
     Teuchos::RCP<Problem> problem_;
-    Teuchos::RCP<Manager> manager_;
-    Teuchos::RCP<IfpackPrec> ifpack_preconditioner_;
-    Teuchos::RCP<AmgPrec> amg_preconditioner_;
+    Teuchos::RCP<manager_type> manager_;
     Teuchos::RCP<typename T::vector_type> residual_;
-    std::uint64_t prepared_revision_ = 0;
-    bool prepared_ = false;
-
-    Teuchos::ParameterList amg_parameters() const
-    {
-        auto parameters = options_.preconditioner_parameters;
-        const auto set_default = [&](const char* name, const auto& value) {
-            if (!parameters.isParameter(name)) parameters.set(name, value);
-        };
-        set_default("multigrid algorithm", "sa");
-        set_default("cycle type", "V");
-        set_default("smoother: type", "CHEBYSHEV");
-        set_default("use kokkos refactor", true);
-        set_default("coarse: max size", 200);
-        set_default("verbosity", "none");
-        set_default("reuse: type", "none");
-        // Coarse solver and PDE-specific data remain native MueLu settings.
-        return parameters;
-    }
+    std::string method_;
+    PreconditioningSide side_ = PreconditioningSide::Right;
+    double relative_tolerance_ = 0;
 };
 
 } // namespace krona::linalg

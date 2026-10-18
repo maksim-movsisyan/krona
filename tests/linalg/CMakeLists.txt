@@ -1,32 +1,63 @@
+if(NOT KRONA_ENABLE_TRILINOS)
+    return()
+endif()
+
 add_executable(krona_test_linalg test_linalg.cpp)
-target_link_libraries(krona_test_linalg PRIVATE krona_test_support krona::linalg krona::fields)
+target_link_libraries(krona_test_linalg PRIVATE krona_test_support krona::linalg)
+
 if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Linalg tests require an MPI launcher")
 endif()
 
-foreach(case IN ITEMS distribution numbering numbering_empty subcomm csr device update empty precision fields shared native nonconvergence zero_rhs all_empty)
-    set(ranks 2)
-    if(case STREQUAL "numbering_empty")
-        set(ranks 3)
-    endif()
-    add_test(NAME "linalg.${case}"
+function(krona_add_linalg_test name ranks)
+    add_test(NAME "linalg.${name}"
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
-                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:krona_test_linalg> ${MPIEXEC_POSTFLAGS} "${case}")
-    set_tests_properties("linalg.${case}" PROPERTIES
-        LABELS "linalg;numerical" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
+            ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_linalg>" ${MPIEXEC_POSTFLAGS} ${ARGN})
+    set_tests_properties("linalg.${name}" PROPERTIES
+        LABELS "linalg;mpi"
+        PROCESSORS "${ranks}"
+        TIMEOUT 180
+        RUN_SERIAL TRUE
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endfunction()
+
+# A small first case isolates MPI/Kokkos/Tpetra startup from numerical work.
+set(cases initialization mapping stopping empty minres_indefinite fields_left fields_right
+    mesh_adapter precision_bridge gmres fgmres bicgstab cg minres ifpack amg amg_reuse
+    mixed_precision float_solver)
+foreach(case IN LISTS cases)
+    krona_add_linalg_test("${case}" 1 "${case}")
+endforeach()
+set_tests_properties(linalg.initialization PROPERTIES TIMEOUT 60)
+
+# No case argument runs all positive cases with one MPI/Kokkos startup.
+foreach(ranks IN ITEMS 2 3)
+    krona_add_linalg_test("mpi${ranks}" "${ranks}")
 endforeach()
 
-foreach(case IN ITEMS duplicate pending missing offsets)
-    add_test(NAME "linalg.${case}"
+set(cases duplicate_column missing_owner pending_read pending_write pending_matrix_read
+    bicgstab_left bad_method precision_overflow)
+set(expected "duplicate column" "column has no owner" "pending reads or writes"
+    "pending reads or writes" "pending reads or writes" "requires right preconditioning"
+    "NO_SUCH_METHOD" "nonfinite in the preconditioner precision")
+list(LENGTH cases count)
+math(EXPR last "${count}-1")
+foreach(i RANGE "${last}")
+    list(GET cases "${i}" name)
+    list(GET expected "${i}" diagnostic)
+    add_test(NAME "linalg.reject_${name}"
         COMMAND "${CMAKE_COMMAND}"
-            "-DTEST_EXECUTABLE=$<TARGET_FILE:krona_test_linalg>"
-            "-DTEST_CASE=${case}"
+            "-DPROGRAM=$<TARGET_FILE:krona_test_linalg>"
+            "-DCASE=${name}" "-DEXPECT=${diagnostic}"
             "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
             "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
             "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}"
             "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_failure.cmake")
-    set_tests_properties("linalg.${case}" PROPERTIES LABELS "linalg;contract"
-        PROCESSORS 2 TIMEOUT 120 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+    set_tests_properties("linalg.reject_${name}" PROPERTIES
+        LABELS "linalg;mpi;negative"
+        PROCESSORS 1
+        TIMEOUT 60
+        RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()

@@ -1,19 +1,22 @@
+foreach(required IN ITEMS PROGRAM CASE EXPECT MPIEXEC_EXECUTABLE MPIEXEC_NUMPROC_FLAG)
+    if(NOT DEFINED ${required})
+        message(FATAL_ERROR "${required} is required")
+    endif()
+endforeach()
+
 execute_process(
-    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2
-            ${MPIEXEC_PREFLAGS} "${TEST_EXECUTABLE}" ${MPIEXEC_POSTFLAGS} "${TEST_CASE}"
-    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 90)
-if(TEST_CASE STREQUAL "duplicate")
-    set(expected "Linalg: duplicate column in a CSR row")
-elseif(TEST_CASE STREQUAL "pending")
-    set(expected "Linalg: matrix has pending writes")
-elseif(TEST_CASE STREQUAL "missing")
-    set(expected "Linalg: column has no owner in the domain map")
-elseif(TEST_CASE STREQUAL "offsets")
-    set(expected "Linalg: nonmonotone/out-of-range CSR offsets")
-else()
-    message(FATAL_ERROR "Unknown expected failure")
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1
+        ${MPIEXEC_PREFLAGS} "${PROGRAM}" ${MPIEXEC_POSTFLAGS} "${CASE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 45)
+
+# Keep the child's progress/diagnostic visible in ctest -V, including failures.
+message("${output}${error}")
+if("${result}" STREQUAL "0")
+    message(FATAL_ERROR "${CASE} unexpectedly succeeded")
 endif()
-string(FIND "${output}\n${error}" "${expected}" found)
-if(result STREQUAL "0" OR result MATCHES "[Tt]imeout" OR found EQUAL -1)
-    message(FATAL_ERROR "Expected diagnosed failure (${expected}); result=${result}\n${output}\n${error}")
+if("${result}" MATCHES "[Tt]imeout")
+    message(FATAL_ERROR "${CASE} did not terminate within 45 seconds: ${result}")
+endif()
+if(NOT "${output}\n${error}" MATCHES "${EXPECT}")
+    message(FATAL_ERROR "${CASE} failed for the wrong reason: ${result}; expected '${EXPECT}'")
 endif()

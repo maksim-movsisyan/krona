@@ -14,7 +14,9 @@ namespace krona::linalg {
 template<class Exec = execution::ExecutionSpace>
 class Distribution {
 public:
-    using map_type = typename Types<double, Exec>::map_type;
+    using execution_space = Exec;
+    using map_type = typename IndexTypes<Exec>::map_type;
+    using memory_space = typename IndexTypes<Exec>::memory_space;
 
     /// @brief Preserves the supplied local row order; GIDs must be globally unique.
     Distribution(std::span<const GlobalOrdinal> owned_gids, mpi::CommView comm)
@@ -30,7 +32,7 @@ public:
                 std::sort(sorted.begin(), sorted.end());
                 mpi::require(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "Linalg: duplicate local owned GID");
             } else mpi::require(std::adjacent_find(owned_gids.begin(), owned_gids.end()) == owned_gids.end(),
-                                   "Linalg: duplicate local owned GID");
+                                "Linalg: duplicate local owned GID");
             auto mpi_comm = Teuchos::rcp(new Teuchos::MpiComm<int>(Teuchos::opaqueWrapper(comm.native())));
             map_ = Teuchos::rcp(new map_type(Teuchos::OrdinalTraits<Tpetra::global_size_t>::invalid(),
                 Teuchos::ArrayView<const GlobalOrdinal>(owned_gids.data(), count), GlobalOrdinal{0}, mpi_comm));
