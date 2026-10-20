@@ -601,6 +601,12 @@ krona_interface(halo krona::execution krona::mpi krona::mesh_compute krona::fiel
 krona_interface(gradient krona::mesh_compute krona::fields)
 
 
+    #=======================
+    #=== RECONSTRUCTIONs ===
+    #=======================
+krona_interface(reconstruction krona::mesh_compute krona::fields)
+
+
     #======================
     #=== LINEAR ALGEBRA ===
     #======================
