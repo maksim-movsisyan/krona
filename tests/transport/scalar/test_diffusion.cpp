@@ -1,403 +1,461 @@
 #include "common/test_support.hpp"
-#include "cartesian_fixture.hpp"
-#include "krona/mpi/communicator.hpp"
 
+#include <krona/transport/scalar/steady_diffusion.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/transport/scalar/steady_diffusion.hpp>
+#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/halo/exchange.hpp>
+#include <krona/linalg/bsr_matrix.hpp>
 
 #include <array>
 #include <limits>
-#include <string>
+#include <numeric>
+#include <string_view>
 
 namespace {
-using namespace krona::test;
-namespace ts = krona::transport::scalar;
-namespace bc = krona::boundary::scalar;
-using Calc = krona::ComputeReal;
+using namespace krona;
+namespace ts = transport::scalar;
+namespace bc = boundary::scalar;
+using Exec = execution::ExecutionSpace;
+using Real = ComputeReal;
 using Space = typename Exec::memory_space;
-using Field = krona::fields::FieldStorage<Real, 1, Exec>;
-using MeshStorage = krona::mesh::compute::MeshStorage<Exec>;
-using MeshPart = krona::mesh::MeshPart;
-using DeviceVector = Kokkos::View<Real*, Space>;
+using krona::test::check;
 
-ts::SteadyDiffusionOptions options()
+struct Fixture {
+    mesh::MeshPart host;
+    mesh::MeshAuxConnectivity connectivity;
+    mesh::MeshAuxGeometry geometry;
+    int first = 0, total = 0;
+};
+
+Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false, bool all_empty = false)
 {
+    Fixture f;
+    auto& m = f.host;
+    const int active = all_empty ? 0 : (empty_last && comm.size() > 1 ? comm.size()-1 : comm.size());
+    const int count = comm.rank() < active ? 3 : 0;
+    f.first = comm.rank()*3; f.total = active*3;
+    m.rank = comm.rank(); m.nprocs = comm.size(); m.n_own = count;
+    m.n_cells_g = static_cast<std::uint64_t>(f.total);
+    m.faces_grouped = true;
+    m.patches.resize(2); m.patches[0].name = "left"; m.patches[1].name = "right";
+    m.n_bfaces_g = f.total == 0 ? 0 : 2; m.n_labeled_bfaces_g = m.n_bfaces_g;
+    for (int i = 0; i < count; ++i) m.cell_centroid_x.push_back(static_cast<GeometryReal>(f.first+i)+GeometryReal{0.5});
+    for (int peer : {comm.rank()-1, comm.rank()+1}) {
+        if (count == 0 || peer < 0 || peer >= active) continue;
+        m.nb_ranks.push_back(peer);
+        m.send_owned_local.push_back(peer < comm.rank() ? 0 : count-1);
+        m.recv_ghost_local.push_back(static_cast<LocalIndex>(m.cell_centroid_x.size()));
+        m.cell_centroid_x.push_back(static_cast<GeometryReal>(peer < comm.rank() ? f.first-1 : f.first+count)+GeometryReal{0.5});
+        m.send_offsets.push_back(m.send_owned_local.size()); m.recv_offsets.push_back(m.recv_ghost_local.size());
+    }
+    m.n_cells = static_cast<LocalIndex>(m.cell_centroid_x.size());
+    m.cell_centroid_y.assign(m.cell_centroid_x.size(), 0); m.cell_centroid_z.assign(m.cell_centroid_x.size(), 0);
+    m.cell_volume.assign(m.cell_centroid_x.size(), 1);
+    const auto face = [&](LocalIndex owner, LocalIndex neighbour, GeometryReal x, GeometryReal normal, GeometryReal area, mesh::PatchId patch) {
+        m.face_owner.push_back(owner); m.face_neigh.push_back(neighbour); m.face_patch.push_back(patch);
+        m.face_centroid_x.push_back(x); m.face_centroid_y.push_back(0); m.face_centroid_z.push_back(0);
+        m.face_normal_x.push_back(normal); m.face_normal_y.push_back(0); m.face_normal_z.push_back(0); m.face_area.push_back(area);
+        const GeometryReal distance = neighbour < 0 ? GeometryReal{0.5} : GeometryReal{1};
+        f.geometry.face_normal_dist.push_back(distance);
+        f.geometry.face_area_over_normal_dist.push_back(area/distance);
+        f.geometry.face_interp_weight.push_back(neighbour < 0 ? 0 : GeometryReal{0.5});
+    };
+    for (LocalIndex cell = 0; cell+1 < count; ++cell)
+        for (int copy = 0; copy < (duplicate ? 2 : 1); ++copy)
+            face(cell, cell+1, static_cast<GeometryReal>(f.first+cell+1), 1, duplicate ? GeometryReal{0.5} : GeometryReal{1}, -1);
+    m.n_internal_faces = static_cast<LocalIndex>(m.face_owner.size());
+    for (std::size_t p = 0; p < m.nb_ranks.size(); ++p) {
+        const bool left = m.nb_ranks[p] < comm.rank();
+        face(left ? 0 : count-1, m.recv_ghost_local[p], static_cast<GeometryReal>(left ? f.first : f.first+count), left ? -1 : 1, 1, -1);
+    }
+    m.n_inner_faces = static_cast<LocalIndex>(m.face_owner.size());
+    if (count != 0 && comm.rank() == 0) face(0, -1, 0, -1, 1, 0);
+    if (count != 0 && comm.rank() == active-1) face(count-1, -1, static_cast<GeometryReal>(f.total), 1, 1, 1);
+    m.n_faces = static_cast<LocalIndex>(m.face_owner.size());
+    auto& c = f.connectivity;
+    c.active_mask = mesh::AuxConnType::CellFaces; c.n_faces = m.n_faces; c.n_cells_own = m.n_own;
+    c.cell_faces_offsets = {0};
+    for (LocalIndex cell = 0; cell < count; ++cell) {
+        for (LocalIndex entry = 0; entry < m.n_faces; ++entry)
+            if (m.face_owner[static_cast<std::size_t>(entry)] == cell || m.face_neigh[static_cast<std::size_t>(entry)] == cell)
+                c.cell_faces.push_back(entry);
+        c.cell_faces_offsets.push_back(c.cell_faces.size());
+    }
+    f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance |
+                             mesh::AuxGeomType::FaceInterpolationWeights;
+    f.geometry.n_faces = m.n_faces;
+    return f;
+}
+
+struct Attached {
+    mesh::compute::MeshStorage<Exec> mesh;
+    mesh::compute::AuxConnectivityStorage<Exec> connectivity;
+    mesh::compute::AuxGeometryStorage<Exec> geometry;
+    ts::DiffusionPlan<Exec, Real> plan;
+    Attached(const Fixture& f, mpi::CommView comm, Exec exec)
+        : mesh(f.host, {}, exec), connectivity(f.host, f.connectivity, exec), geometry(f.host, f.geometry, exec),
+          plan(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec) {}
+};
+
+struct Robin {
+    Real a = 1, b = 1, value = 0;
+    KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c, Real increment = 0) const {
+        const Real denominator = b+a*c.distance;
+        return {b/denominator, (c.distance*value+b*increment)/denominator,
+                -a/denominator, (value-a*increment)/denominator};
+    }
+};
+struct NegativeRelation {
+    KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>&, Real = 0) const
+    { return {1, 0, 1, 0}; }
+};
+using Boundary = bc::Manager<Exec, Real, Robin, NegativeRelation>;
+
+ts::SteadyDiffusionOptions settings(bool no_iterations = false) {
     ts::SteadyDiffusionOptions o;
-    const bool single = std::is_same_v<krona::SolverReal, float>;
-    o.linear.relative_tolerance = single ? 2.0e-6 : 1.0e-12;
-    o.linear.absolute_tolerance = single ? 2.0e-5 : 1.0e-12;
-    o.linear.maximum_iterations = 400; o.linear.restart_length = 80;
+    o.linear.method = "FGMRES"; o.linear.relative_tolerance = 1e-10;
+    o.linear.preconditioner.type = "RELAXATION";
+    if (no_iterations) o.linear.maximum_iterations = 0;
     return o;
 }
 
-double tolerance() { return std::is_same_v<Real, float> ? 8.0e-4 : 2.0e-10; }
-std::size_t extended(const MeshPart& m)
-{ return static_cast<std::size_t>(m.n_cells)+static_cast<std::size_t>(m.n_faces-m.n_inner_faces); }
-
-template<class View>
-auto snapshot(const Exec& exec, View view)
-{
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
-    complete(exec, [&] { Kokkos::deep_copy(exec, host, view); });
-    return host;
+template<class Storage, class Layout>
+auto snapshot(const fields::FieldStorage<Storage, 3, Exec, Layout>& field, Exec exec) {
+    auto result = field.create_host_buffer(); Kokkos::deep_copy(exec, result, field.view().kokkos_view()); exec.fence("test snapshot"); return result;
 }
 
-template<class Manager>
-void insulated(Manager& boundary)
-{ for (int p = 0; p < 6; ++p) boundary.set(p, bc::NormalGradient<Calc>{0}); }
-
-struct AffineValue {
-    Calc offset = 1;
-    KOKKOS_INLINE_FUNCTION bc::Relation<Calc> operator()(const bc::Context<Calc>& c) const
-    { return bc::FixedValue<Calc>{offset + Calc{2}*c.x - Calc{3}*c.y + Calc{4}*c.z}(c); }
-};
-
-struct LayeredDiffusion {
-    krona::mesh::compute::MeshView<Space> mesh;
-    KOKKOS_INLINE_FUNCTION Calc operator()(std::size_t face) const
-    {
-        const auto x = mesh.geometry.face_centroid_x(face);
-        if (x == 0.5) return Calc{8}/Calc{5}; // Harmonic face value at the material interface.
-        return x < 0.5 ? Calc{1} : Calc{4};
+template<class Storage = double, class Layout = Kokkos::LayoutLeft, class Prec = double, class Scalar = double>
+void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool empty_last = false, bool all_empty = false)
+{
+    const auto comm = mpi::CommView::world();
+    const auto f = bar(comm, duplicate, empty_last, all_empty);
+    Attached a(f, comm, exec);
+    Boundary boundary(f.host, a.mesh.view(), exec);
+    boundary.set(0, bc::FixedValue<Real>{1});
+    const Real total = static_cast<Real>(f.total);
+    if (kind == 1) boundary.set(1, bc::NormalGradient<Real>{2});
+    else if (kind == 2) boundary.set(1, bc::FixedFlux<Real>{-4});
+    else if (kind == 3) boundary.set(1, Robin{1, 1, Real{3}+Real{2}*total});
+    else boundary.set(1, bc::FixedValue<Real>{Real{1}+Real{2}*total});
+    fields::FieldStorage<Storage, 3, Exec, Layout> field("test/temperature", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
+    field.fill(exec, Storage{-77});
+    auto options = settings();
+    if constexpr (std::is_same_v<Scalar, float>) options.linear.relative_tolerance = 1e-5;
+    ts::SteadyDiffusion<Storage, Scalar, Exec, Real, Prec> solver(a.plan, field.view().component(1), options);
+    const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
+    const auto result = solver.solve_owned(boundary, law);
+    check(result.converged, "linear bar did not converge"); solver.solution().require_committed();
+    auto h = snapshot(field, exec);
+    const double tolerance = std::is_same_v<Scalar, float> ? 2e-4 : (std::is_same_v<Storage, float> ? 2e-5 : 1e-8);
+    for (std::size_t i = 0; i < field.size(); ++i) {
+        test::near(static_cast<double>(h(i, 0)), -77.0, 0.0, "another component was overwritten");
+        test::near(static_cast<double>(h(i, 2)), -77.0, 0.0, "another component was overwritten");
+        if (i < static_cast<std::size_t>(f.host.n_own))
+            test::near(static_cast<double>(h(i, 1)), 1+2*static_cast<double>(f.host.cell_centroid_x[i]), tolerance, "owned linear solution is incorrect");
+        else test::near(static_cast<double>(h(i, 1)), -77.0, 0.0, "solve_owned wrote a ghost/boundary slot");
     }
-};
-
-struct NegativeBoundary {
-    KOKKOS_INLINE_FUNCTION bc::Relation<Calc> operator()(const bc::Context<Calc>&) const
-    { return {0, 0, -1, 0}; }
-};
-
-double affine(double x, double y, double z, double offset = 1)
-{ return offset+2*x-3*y+4*z; }
-
-void check_result(const krona::linalg::SolveResult& result)
-{
-    check(result.converged, "True algebraic residual meets the requested threshold");
-    check(std::isfinite(result.residual_norm), "Finite residual norm");
-    const auto o = options();
-    check(result.residual_norm <= std::max(o.linear.absolute_tolerance, o.linear.relative_tolerance*result.rhs_norm),
-          "Convergence report agrees with the true residual");
+    halo::Exchange<Storage, Exec> exchange(a.mesh.view(), a.mesh.halo_plan(), comm, 17, exec);
+    exchange.add_component(field.view().component(1)); exchange.prepare(); exchange.exchange();
+    boundary.apply_component_async(field.view().component(1), law); boundary.execution_space().fence("test BC complete");
+    h = snapshot(field, exec);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(f.host.n_cells); ++i)
+        test::near(static_cast<double>(h(i, 1)), 1+2*static_cast<double>(f.host.cell_centroid_x[i]), tolerance, "halo publication is incorrect");
+    for (LocalIndex face = f.host.n_inner_faces; face < f.host.n_faces; ++face) {
+        const auto index = static_cast<std::size_t>(f.host.n_cells+face-f.host.n_inner_faces);
+        test::near(static_cast<double>(h(index, 1)), 1+2*static_cast<double>(f.host.face_centroid_x[static_cast<std::size_t>(face)]), tolerance, "boundary publication is incorrect");
+    }
+    const auto balance = solver.balance(boundary, law);
+    test::near(balance.defect, 0.0, tolerance*10, "linear bar violates global balance");
 }
 
-template<class Values, class Rhs>
-void check_two_cell_matrix(const MeshPart& m, Values values, Rhs rhs, double d)
+void source_case(const Exec& exec) {
+    const auto comm = mpi::CommView::world(); auto f = bar(comm);
+    // Cross-section two checks both volume integration and face-area scaling.
+    for (auto& volume : f.host.cell_volume) volume *= 2;
+    for (auto& area : f.host.face_area) area *= 2;
+    for (auto& metric : f.geometry.face_area_over_normal_dist) metric *= 2;
+    Attached a(f, comm, exec);
+    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{0});
+    fields::FieldStorage<double, 3, Exec> field("source", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, 0);
+    ts::SteadyDiffusion<double> solver(a.plan, field.view().component(0), settings());
+    const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
+    Kokkos::View<Real*, Space> source("source density", static_cast<std::size_t>(f.host.n_own)); Kokkos::deep_copy(exec, source, Real{3});
+    const ts::CellSource provider{source};
+    check(solver.solve_owned(boundary, law, provider).converged, "source solve failed");
+    const auto h = snapshot(field, exec);
+    for (LocalIndex i = 0; i < f.host.n_own; ++i) {
+        const double x = static_cast<double>(f.host.cell_centroid_x[static_cast<std::size_t>(i)]);
+        // Exact discrete TPFA solution: the half-cell boundary stencil adds this 1/4 term.
+        test::near(h(static_cast<std::size_t>(i), 0), 0.75*(x*(f.total-x)+0.25), 1e-8, "wrong integrated source or boundary stencil");
+    }
+    const auto balance = solver.balance(boundary, law, provider);
+    test::near(balance.source_integral, 6.0*f.total, 1e-10, "source density was not volume integrated");
+    test::near(balance.defect, 0.0, 1e-7, "source/boundary flux signs disagree");
+}
+
+void variable_case(const Exec& exec) {
+    const auto comm = mpi::CommView::world(); auto f = bar(comm);
+    // Unequal cell widths exercise distance-weighted interpolation, including MPI-cut orientation.
+    const auto width = [](int gid) { return gid%2 == 0 ? 1.0 : 2.0; };
+    const auto position = [](int gid) { return static_cast<double>(gid+gid/2); };
+    std::vector<int> gids;
+    for (const auto x : f.host.cell_centroid_x) gids.push_back(static_cast<int>(x-GeometryReal{0.5}));
+    for (std::size_t i = 0; i < gids.size(); ++i) {
+        f.host.cell_centroid_x[i] = static_cast<GeometryReal>(position(gids[i])+width(gids[i])/2);
+        f.host.cell_volume[i] = static_cast<GeometryReal>(width(gids[i]));
+    }
+    for (std::size_t face = 0; face < f.host.face_owner.size(); ++face) {
+        const auto ordinal = static_cast<int>(f.host.face_centroid_x[face]);
+        f.host.face_centroid_x[face] = static_cast<GeometryReal>(position(ordinal));
+        const auto owner = static_cast<std::size_t>(f.host.face_owner[face]);
+        const auto neighbour = f.host.face_neigh[face];
+        const double d = neighbour < 0 ? width(gids[owner])/2 : (width(gids[owner])+width(gids[static_cast<std::size_t>(neighbour)]))/2;
+        f.geometry.face_normal_dist[face] = static_cast<GeometryReal>(d);
+        f.geometry.face_area_over_normal_dist[face] = static_cast<GeometryReal>(1/d);
+        f.geometry.face_interp_weight[face] = neighbour < 0 ? 0 : static_cast<GeometryReal>(width(gids[static_cast<std::size_t>(neighbour)])/(2*d));
+    }
+    Attached a(f, comm, exec);
+    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+    fields::FieldStorage<double, 3, Exec> field("variable", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, 0);
+    Kokkos::View<Real*, Space> coefficient("cell D", static_cast<std::size_t>(f.host.n_cells));
+    auto hD = Kokkos::create_mirror(coefficient);
+    for (std::size_t i = 0; i < hD.extent(0); ++i) {
+        hD(i) = gids[i]%2 == 0 ? Real{1} : Real{4};
+    }
+    Kokkos::deep_copy(exec, coefficient, hD);
+    const auto law = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{coefficient}};
+    ts::SteadyDiffusion<double> solver(a.plan, field.view().component(0), settings());
+    check(solver.solve_owned(boundary, law).converged, "variable coefficient solve failed");
+    double resistance = 0; for (int i = 0; i < f.total; ++i) resistance += width(i)*(i%2 == 0 ? 1.0 : 0.25);
+    const auto h = snapshot(field, exec);
+    for (LocalIndex i = 0; i < f.host.n_own; ++i) {
+        const int gid = f.first+i; double prefix = 0; for (int j = 0; j < gid; ++j) prefix += width(j)*(j%2 == 0 ? 1.0 : 0.25);
+        const double expected = (prefix+0.5*width(gid)*(gid%2 == 0 ? 1.0 : 0.25))/resistance;
+        test::near(h(static_cast<std::size_t>(i), 0), expected, 1e-9, "harmonic cell coefficient violates series resistance");
+    }
+    test::near(solver.balance(boundary, law).defect, 0.0, 1e-8, "variable coefficient violates balance across MPI cuts");
+    // Explicit arithmetic interpolation is a distinct, supported numerical policy.
+    const auto arithmetic = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient<decltype(coefficient), transport::ArithmeticCoefficient>{coefficient}};
+    check(solver.solve_owned(boundary, arithmetic).converged, "arithmetic coefficient solve failed");
+    test::near(solver.balance(boundary, arithmetic).defect, 0.0, 1e-8, "arithmetic coefficient is not conservative");
+}
+
+void shared_case(const Exec& exec) {
+    const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
+    Boundary left(f.host, a.mesh.view(), exec), right(f.host, a.mesh.view(), exec);
+    left.set(0, bc::FixedValue<Real>{1}); left.set(1, bc::FixedValue<Real>{1+2*static_cast<Real>(f.total)});
+    right.set(0, bc::FixedValue<Real>{3}); right.set(1, bc::FixedValue<Real>{3-static_cast<Real>(f.total)/2});
+    fields::FieldStorage<double, 3, Exec, Kokkos::LayoutRight> field("two scalars", left.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, -77);
+    ts::SteadyDiffusion<double> first(a.plan, field.view().component(0), settings()), second(a.plan, field.view().component(1), settings());
+    check(first.operation().matrix().pattern().native().getRawPtr() == second.operation().matrix().pattern().native().getRawPtr(), "shared plan duplicated the graph");
+    check(first.operation().plan().row_plan().owner_entries.data() == second.operation().plan().row_plan().owner_entries.data(), "shared plan duplicated entry maps");
+    check(first.operation().plan().geometry_view().face_normal_dist.data() == a.geometry.view().face_normal_dist.data(), "shared geometry was copied");
+    const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
+    check(first.solve_owned(left, law).converged && second.solve_owned(right, law).converged, "shared scalar solve failed");
+    halo::Exchange<double, Exec> exchange(a.mesh.view(), a.mesh.halo_plan(), comm, 19, exec);
+    exchange.add_component(field.view().component(0)); exchange.add_component(field.view().component(1)); exchange.prepare(); exchange.exchange();
+    left.apply_component_async(field.view().component(0), law); right.apply_component_async(field.view().component(1), law); exec.fence("two scalars published");
+    const auto h = snapshot(field, exec);
+    for (LocalIndex i = 0; i < f.host.n_cells; ++i) {
+        const auto j = static_cast<std::size_t>(i); const double x = static_cast<double>(f.host.cell_centroid_x[j]);
+        test::near(h(j, 0), 1+2*x, 1e-8, "first scalar publication failed");
+        test::near(h(j, 1), 3-0.5*x, 1e-8, "second scalar publication failed");
+        test::near(h(j, 2), -77.0, 0.0, "group exchange touched another component");
+    }
+    // A coefficient revision refreshes only the first equation, preserving the shared topology.
+    const auto revision = first.operation().matrix().revision();
+    check(first.solve_owned(left, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{5}}).converged, "coefficient reassembly failed");
+    check(first.operation().matrix().revision() > revision, "reassembly did not update matrix revision");
+}
+
+template<class Values>
+KOKKOS_INLINE_FUNCTION void add_coefficient(Values values, std::size_t entry, int equation, int variable,
+                                           typename Values::non_const_value_type value)
 {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_own); ++i) {
-        // Each cell has one shared face and one Dirichlet x face; all other faces are insulated.
-        const auto row_begin = values.graph.row_map(i), row_end = values.graph.row_map(i+1);
-        double diagonal = 0, off_diagonal = 0;
-        for (auto k = row_begin; k < row_end; ++k) {
-            const double a = static_cast<double>(values.values(k));
-            if (a > 0) diagonal += a; else off_diagonal += a;
+    if constexpr (Values::rank == 3) values(entry, equation, variable) += value;
+    else values(entry) += value;
+}
+
+template<class Matrix>
+void assembly_product(Matrix& matrix, const Fixture& f, mesh::compute::MeshView<Space> mesh,
+    mesh::compute::AuxConnectivityView<Space> connectivity, linalg::FaceAssemblyMap<Space> entries, const Exec& exec)
+{
+    using Scalar = typename Matrix::scalar_type;
+    const int width = matrix.block_size();
+    const auto values = [&] {
+        if constexpr (Matrix::block_storage) return matrix.overwrite_blocks(exec);
+        else return matrix.overwrite_values(exec);
+    }();
+    Kokkos::deep_copy(exec, values, Scalar{0});
+    const auto offsets = connectivity.cell_faces_offsets;
+    const auto faces = connectivity.cell_faces;
+    const auto owners = mesh.connectivity.face_owner;
+    const auto inner = mesh.sizes.n_inner_faces;
+    using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
+    Kokkos::parallel_for("test/shared_face_assembly", Policy(exec, 0, mesh.sizes.n_own), KOKKOS_LAMBDA(LocalIndex cell) {
+        const auto i = static_cast<std::size_t>(cell);
+        for (int equation = 0; equation < width; ++equation) {
+            add_coefficient(values, entries.diagonal(i), equation, equation, Scalar{2});
+            for (auto k = offsets(i); k < offsets(i+1); ++k) {
+                const auto face = faces(k);
+                if (face >= inner) continue;
+                const auto face_index = static_cast<std::size_t>(face);
+                const auto entry = owners(face_index) == cell ? entries.owner_entries(face_index) : entries.neighbour_entries(face_index);
+                for (int variable = 0; variable < width; ++variable) {
+                    const auto value = static_cast<Scalar>((equation+1)*4+variable+1);
+                    add_coefficient(values, entry, equation, variable, -value);
+                    add_coefficient(values, entries.diagonal(i), equation, variable, value);
+                }
+            }
         }
-        near(diagonal, 6*d, tolerance(), "Integrated diagonal includes Dirichlet area/h");
-        near(off_diagonal, -2*d, tolerance(), "Interior off-diagonal has the negative sign");
-        const double value = m.cell_centroid_x[i] < 0.5 ? 1 : 3;
-        near(static_cast<double>(rhs(i, 0)), 4*d*value+1, tolerance(), "Source density is integrated by cell volume");
-    }
-}
-
-void assembly_case(const Exec& exec, bool split)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(2, 1, 1, comm.native());
-    if (split) krona::test::diffusion::split_face(m);
-    MeshStorage mesh{m, {}, exec};
-    bc::Manager<> boundary{m, mesh.view(), exec};
-    insulated(boundary); boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{3});
-    ts::DiffusionOperator<> op{m, mesh.view(), comm, exec};
-    op.assemble_async(boundary, ts::UniformSource<Calc>{2}, bc::UniformDiffusivity<Calc>{3});
-    check(op.pending(), "Assembly records an outstanding batch");
-    op.commit(); op.require_ready();
-    {
-        auto values = op.matrix().native()->getLocalMatrixHost();
-        auto rhs = op.rhs().native()->getLocalViewHost(Tpetra::Access::ReadOnly);
-        check_two_cell_matrix(m, values, rhs, 3);
-    }
-    const auto* graph = op.matrix().pattern().native().getRawPtr();
-    const auto revision = op.matrix().revision();
-    op.assemble_async(boundary, ts::UniformSource<Calc>{2}, bc::UniformDiffusivity<Calc>{1});
-    op.commit();
-    check(op.matrix().pattern().native().getRawPtr() == graph, "Reassembly reuses the graph");
-    equal(op.matrix().revision(), revision+1, "Reassembly updates the numeric revision");
-    {
-        auto values = op.matrix().native()->getLocalMatrixHost();
-        auto rhs = op.rhs().native()->getLocalViewHost(Tpetra::Access::ReadOnly);
-        check_two_cell_matrix(m, values, rhs, 1);
-    }
-}
-void assembly(const Exec& exec) { assembly_case(exec, false); }
-void duplicate_faces(const Exec& exec) { assembly_case(exec, true); }
-
-void affine_case(const Exec& exec, int nx)
-{   
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(nx, 3, 2, comm.native());
-    MeshStorage mesh{m, {}, exec};
-    bc::Manager<Exec, Calc, AffineValue> boundary{m, mesh.view(), exec};
-    for (int p = 0; p < 6; ++p) boundary.set(p, AffineValue{});
-    Field field{"phi", extended(m)+2, krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    for (int pass = 0; pass < 2; ++pass) {
-        const Calc offset = pass == 0 ? Calc{1} : Calc{3};
-        for (int p = 0; p < 6; ++p) boundary.set(p, AffineValue{offset});
-        check_result(solver.solve(boundary));
-        const auto h = snapshot(exec, field.view().component(0));
-        for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_cells); ++i)
-            near(static_cast<double>(h(i)), affine(m.cell_centroid_x[i], m.cell_centroid_y[i], m.cell_centroid_z[i], offset),
-                 tolerance(), "Affine solution in owned and scattered MPI ghost cells");
-        for (auto face = m.n_inner_faces; face < m.n_faces; ++face) {
-            const auto f = static_cast<std::size_t>(face);
-            const auto b = static_cast<std::size_t>(m.n_cells)+f-static_cast<std::size_t>(m.n_inner_faces);
-            near(static_cast<double>(h(b)), affine(m.face_centroid_x[f], m.face_centroid_y[f], m.face_centroid_z[f], offset),
-                 tolerance(), "Boundary tail stores face values");
+    });
+    matrix.commit();
+    linalg::Vector<Scalar, Exec> x(matrix.distribution()), y(matrix.distribution());
+    const auto local = x.overwrite(exec);
+    const int first = f.first;
+    Kokkos::parallel_for("test/shared_face_input", Policy(exec, 0, f.host.n_own), KOKKOS_LAMBDA(LocalIndex cell) {
+        for (int c = 0; c < width; ++c)
+            local(static_cast<std::size_t>(cell)*static_cast<std::size_t>(width)+static_cast<std::size_t>(c), 0) =
+                static_cast<Scalar>(10*(first+cell+1)+c+1);
+    });
+    x.commit(); matrix.apply(x, y);
+    const auto result = y.read(exec);
+    auto host = Kokkos::create_mirror(result);
+    Kokkos::deep_copy(exec, host, result); y.commit();
+    for (LocalIndex cell = 0; cell < f.host.n_own; ++cell) {
+        const auto i = static_cast<std::size_t>(cell);
+        for (int equation = 0; equation < width; ++equation) {
+            double expected = 2*(10*(f.first+cell+1)+equation+1);
+            for (auto k = f.connectivity.cell_faces_offsets[i]; k < f.connectivity.cell_faces_offsets[i+1]; ++k) {
+                const auto face = static_cast<std::size_t>(f.connectivity.cell_faces[k]);
+                if (face >= static_cast<std::size_t>(f.host.n_inner_faces)) continue;
+                const auto other = f.host.face_owner[face] == cell ? f.host.face_neigh[face] : f.host.face_owner[face];
+                const double delta = 10*(static_cast<double>(f.host.cell_centroid_x[i])-
+                                         static_cast<double>(f.host.cell_centroid_x[static_cast<std::size_t>(other)]));
+                for (int variable = 0; variable < width; ++variable)
+                    expected += ((equation+1)*4+variable+1)*delta;
+            }
+            const auto dof = i*static_cast<std::size_t>(width)+static_cast<std::size_t>(equation);
+            test::near(static_cast<double>(host(dof, 0)), expected, 1e-5, "shared CSR/BSR map assembled the wrong entry or block");
         }
-        equal(h(extended(m)), Real{0}, "Extra field tail is untouched");
-        const auto balance = solver.balance(boundary);
-        near(balance.source_integral, 0.0, tolerance(), "Zero integrated source");
-        near(balance.defect, 0.0, 4*tolerance(), "Global outward flux balance");
-    }
-}
-void affine_3d(const Exec& exec) { affine_case(exec, 6); }
-void empty_rank(const Exec& exec) { affine_case(exec, 2); }
-
-void mixed(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(10, 1, 1, comm.native());
-    MeshStorage mesh{m, {}, exec};
-    bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-    boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedFlux<Calc>{-6});
-    Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    for (int pass = 0; pass < 2; ++pass) {
-        if (pass == 1) boundary.set(1, bc::NormalGradient<Calc>{2});
-        check_result(solver.solve(boundary, ts::UniformSource<Calc>{0}, bc::UniformDiffusivity<Calc>{3}));
-        const auto h = snapshot(exec, field.view().component(0));
-        for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_cells); ++i)
-            near(static_cast<double>(h(i)), 1+2*m.cell_centroid_x[i], tolerance(), "Mixed Dirichlet/Neumann linear solution");
-        const auto balance = solver.balance(boundary, ts::UniformSource<Calc>{0}, bc::UniformDiffusivity<Calc>{3});
-        near(balance.defect, 0.0, 4*tolerance(), "Prescribed flux has the outward sign");
     }
 }
 
-void variable(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(12, 2, 1, comm.native());
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-    boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{0});
-    Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{0}); });
-    DeviceVector d{"D_faces", static_cast<std::size_t>(m.n_faces)};
-    auto host_d = Kokkos::create_mirror(d);
-    LayeredDiffusion provider{mesh.view()};
-    for (std::size_t f = 0; f < host_d.extent(0); ++f) {
-        const double x = m.face_centroid_x[f];
-        host_d(f) = static_cast<Real>(x == 0.5 ? 1.6 : (x < 0.5 ? 1 : 4));
+void assembly_case(const Exec& exec) {
+    const auto comm = mpi::CommView::world();
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        const auto f = bar(comm, scenario == 1, scenario == 2, scenario == 3);
+        // Returning a copy exercises allocation lifetime after the original plan is destroyed.
+        auto assembly = [&] {
+            const linalg::FaceAssemblyPlan<Exec> original(f.host, comm, exec);
+            auto copy = original;
+            check(copy.pattern().native().getRawPtr() == original.pattern().native().getRawPtr(), "assembly copy duplicated the graph");
+            check(copy.entry_map().owner_entries.data() == original.entry_map().owner_entries.data() &&
+                  copy.entry_map().neighbour_entries.data() == original.entry_map().neighbour_entries.data() &&
+                  copy.entry_map().diagonal.data() == original.entry_map().diagonal.data(), "assembly copy duplicated the entry map");
+            return copy;
+        }();
+        check(!assembly.pattern().has_input_mapping(), "assembly retained an unused input permutation");
+        mesh::compute::MeshStorage<Exec> mesh(f.host, {}, exec);
+        mesh::compute::AuxConnectivityStorage<Exec> connectivity(f.host, f.connectivity, exec);
+        mesh::compute::AuxGeometryStorage<Exec> geometry(f.host, f.geometry, exec);
+        ts::DiffusionPlan<Exec, Real> first(f.host, mesh.view(), connectivity.view(), geometry.view(), assembly, exec);
+        ts::DiffusionPlan<Exec, float> second(f.host, mesh.view(), connectivity.view(), geometry.view(), assembly, exec);
+        check(first.pattern().native().getRawPtr() == assembly.pattern().native().getRawPtr() &&
+              second.pattern().native().getRawPtr() == assembly.pattern().native().getRawPtr(), "diffusion rebuilt the shared graph");
+        check(first.row_plan().owner_entries.data() == assembly.entry_map().owner_entries.data() &&
+              second.row_plan().diagonal.data() == assembly.entry_map().diagonal.data(), "diffusion rebuilt the shared entry map");
+        linalg::CsrMatrix<double, Exec> scalar(assembly.pattern());
+        linalg::CsrMatrix<float, Exec> scalar_float(assembly.pattern());
+        linalg::BsrPattern<Exec> pairs(assembly.pattern(), 2), triples(assembly.pattern(), 3);
+        linalg::BsrMatrix<double, Exec> block2(pairs);
+        linalg::BsrMatrix<float, Exec> block3(triples);
+        check(scalar.pattern().native().getRawPtr() == pairs.native().getRawPtr() &&
+              pairs.native().getRawPtr() == triples.native().getRawPtr(), "CSR/BSR patterns duplicated the graph");
+        assembly_product(scalar, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
+        assembly_product(scalar_float, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
+        assembly_product(block2, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
+        assembly_product(block3, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
+        Boundary boundary(f.host, mesh.view(), exec);
+        boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+        ts::DiffusionOperator<> diffusion(first);
+        diffusion.assemble_async(boundary); diffusion.commit(); diffusion.require_ready();
+        check(diffusion.matrix().pattern().native().getRawPtr() == assembly.pattern().native().getRawPtr(),
+              "diffusion matrix duplicated the shared graph");
     }
-    complete(exec, [&] { Kokkos::deep_copy(exec, d, host_d); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    check_result(solver.solve(boundary, ts::UniformSource<Calc>{0}, bc::FaceDiffusivity{d}));
-    auto h = snapshot(exec, field.view().component(0));
-    for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_cells); ++i) {
-        const double x = m.cell_centroid_x[i];
-        const double expected = 1-1.6*(x < 0.5 ? x : (0.5+(x-0.5)/4));
-        near(static_cast<double>(h(i)), expected, tolerance(), "Layered material solution with harmonic interface D");
-    }
-    check_result(solver.solve(boundary, ts::UniformSource<Calc>{0}, provider));
-    const auto balance = solver.balance(boundary, ts::UniformSource<Calc>{0}, provider);
-    near(balance.defect, 0.0, 4*tolerance(), "Variable diffusivity flux balance");
 }
 
-double quadratic_error(const Exec& exec, int nx)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(nx, 1, 1, comm.native());
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-    boundary.set(0, bc::FixedValue<Calc>{0}); boundary.set(1, bc::FixedValue<Calc>{0});
-    Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{0}); });
-    DeviceVector source{"source_density", static_cast<std::size_t>(m.n_own)};
-    complete(exec, [&] { Kokkos::deep_copy(exec, source, Real{2}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    check_result(solver.solve(boundary, ts::CellSource{source}));
-    const auto h = snapshot(exec, field.view().component(0));
-    double local_error = 0;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_own); ++i) {
-        const double x = m.cell_centroid_x[i];
-        local_error = std::max(local_error, std::abs(static_cast<double>(h(i))-x*(1-x)));
+void nonconvergence(const Exec& exec) {
+    const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
+    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+    fields::FieldStorage<double, 3, Exec> field("unchanged", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, -77);
+    ts::SteadyDiffusion<double> solver(a.plan, field.view().component(1), settings(true));
+    const auto result = solver.solve_owned(boundary);
+    check(!result.converged && !result.iterations_started, "zero iteration solve started Krylov iterations");
+    const auto h = snapshot(field, exec);
+    for (std::size_t i = 0; i < field.size(); ++i) for (int c = 0; c < 3; ++c)
+        test::near(h(i, c), -77.0, 0.0, "nonconvergence modified application storage");
+}
+
+void linear(const Exec& e) { linear_case(e); }
+void gradient(const Exec& e) { linear_case(e, 1); }
+void flux(const Exec& e) { linear_case(e, 2); }
+void robin(const Exec& e) { linear_case(e, 3); }
+void duplicates(const Exec& e) { linear_case(e, 0, true); }
+void strided_float(const Exec& e) { linear_case<float, Kokkos::LayoutRight, float>(e); }
+void float_solver(const Exec& e) { linear_case<float, Kokkos::LayoutLeft, float, float>(e); }
+void empty(const Exec& e) { linear_case(e, 0, false, true); linear_case(e, 0, false, false, true); }
+
+template<int Which>
+void rejected(const Exec& exec) {
+    const auto comm = mpi::CommView::world(); auto f = bar(comm);
+    if constexpr (Which == 4) f.geometry.face_area_over_normal_dist[0] *= 2;
+    if constexpr (Which == 5) {
+        f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance;
+        f.geometry.face_interp_weight.clear();
     }
-    double error = 0;
-    krona::mpi::check(MPI_Allreduce(&local_error, &error, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD), "MPI_Allreduce(test error)");
-    const auto balance = solver.balance(boundary, ts::CellSource{source});
-    near(balance.source_integral, 2.0, tolerance(), "Source is a density, not an integrated RHS");
-    near(balance.outward_boundary_flux, 2.0, 4*tolerance(), "Boundary flux balances nonzero source");
-    near(error, 0.25/(nx*nx), std::is_same_v<Real, float> ? 2.0e-6 : 2.0e-11,
-         "Quadratic solution has the expected two-point boundary discretization error");
-    return error;
-}
-void refinement(const Exec& exec)
-{
-    const auto coarse = quadratic_error(exec, 8), fine = quadratic_error(exec, 16);
-    near(coarse/fine, 4.0, std::is_same_v<Real, float> ? 0.02 : 1.0e-6, "Second-order convergence under refinement");
-}
-
-void strided(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(8, 1, 1, comm.native());
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-    boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{3});
-    krona::fields::FieldStorage<Real, 3, Exec, Kokkos::LayoutRight> field{
-        "state", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{-7}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(1), comm, exec, options()};
-    check_result(solver.solve(boundary));
-    const auto h = snapshot(exec, field.view().kokkos_view());
-    for (std::size_t i = 0; i < extended(m); ++i) {
-        equal(h(i, 0), Real{-7}, "First unselected component is untouched");
-        equal(h(i, 2), Real{-7}, "Third unselected component is untouched");
-    }
-    for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_cells); ++i)
-        near(static_cast<double>(h(i, 1)), 1+2*m.cell_centroid_x[i], tolerance(), "Strided component is solved correctly");
-}
-
-void nonconvergence(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(12, 1, 1, comm.native());
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-    boundary.set(0, bc::FixedValue<Calc>{1}); boundary.set(1, bc::FixedValue<Calc>{0});
-    Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{-7}); });
-    auto o = options(); o.linear.maximum_iterations = 1; o.linear.restart_length = 1; o.linear.preconditioner.clear();
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, o};
-    const auto result = solver.solve(boundary);
-    check(!result.converged, "Insufficient iteration budget reports nonconvergence");
-    const auto h = snapshot(exec, field.view().component(0));
-    for (std::size_t i = 0; i < extended(m); ++i) equal(h(i), Real{-7}, "Failed solve does not publish a partial field");
-}
-
-void all_empty(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    MeshPart m; m.faces_grouped = true;
-    krona::mpi::check(MPI_Comm_rank(comm.native(), &m.rank), "MPI_Comm_rank(empty)");
-    krona::mpi::check(MPI_Comm_size(comm.native(), &m.nprocs), "MPI_Comm_size(empty)");
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec};
-    Field field{"phi", 0, krona::fields::FieldLocation::Custom, exec};
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    check(solver.solve(boundary).converged, "Globally empty system succeeds");
-    near(solver.balance(boundary).defect, 0.0, 0.0, "Empty balance is zero");
-}
-
-void publication(const Exec& exec)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(1, 1, 1, comm.native());
-    MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec};
-    const Calc value = Calc{1}/Calc{3};
-    for (int p = 0; p < 6; ++p) boundary.set(p, bc::FixedValue<Calc>{value});
-    Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-    complete(exec, [&] { field.fill(exec, Real{0}); });
-    ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm, exec, options()};
-    check_result(solver.solve(boundary));
-    const auto h = snapshot(exec, field.view().component(0));
-    double local_expected = 0;
-    if (m.n_own != 0) {
-        near(static_cast<double>(h(0)), static_cast<double>(value), tolerance(), "Published scalar is rounded to StorageReal");
-        local_expected = 12*(static_cast<double>(static_cast<Calc>(h(0)))-static_cast<double>(value));
-        if constexpr (std::is_same_v<Calc, double> && std::is_same_v<Real, float>)
-            check(local_expected != 0, "Mixed publication has a measurable storage-rounding balance defect");
-    }
-    double expected = 0;
-    krona::mpi::check(MPI_Allreduce(&local_expected, &expected, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD), "MPI_Allreduce(publication)");
-    const auto result = solver.balance(boundary);
-    near(result.defect, expected, std::is_same_v<Calc, float> ? 2.0e-6 : 1.0e-14,
-         "Physical balance uses the published field rather than the solver vector");
-}
-
-void subcomm(const Exec& exec)
-{
-    int rank = 0; krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "MPI_Comm_rank(subcomm)");
-    MPI_Comm comm = MPI_COMM_NULL;
-    const int color = rank%2;
-    krona::mpi::check(MPI_Comm_split(MPI_COMM_WORLD, color, rank, &comm), "MPI_Comm_split(diffusion)");
-    {
-        krona::mpi::CommView comm_view(comm);
-        auto m = krona::test::diffusion::cartesian(4, 1, 1, comm_view.native());
-        MeshStorage mesh{m, {}, exec}; bc::Manager<> boundary{m, mesh.view(), exec}; insulated(boundary);
-        boundary.set(0, bc::FixedValue<Calc>{static_cast<Calc>(color+1)});
-        boundary.set(1, bc::FixedValue<Calc>{static_cast<Calc>(color+3)});
-        Field field{"phi", extended(m), krona::fields::FieldLocation::Custom, exec};
-        complete(exec, [&] { field.fill(exec, Real{0}); });
-        ts::SteadyDiffusion<> solver{m, mesh.view(), field.view().component(0), comm_view, exec, options()};
-        check_result(solver.solve(boundary));
-        const auto h = snapshot(exec, field.view().component(0));
-        for (std::size_t i = 0; i < static_cast<std::size_t>(m.n_own); ++i)
-            near(static_cast<double>(h(i)), color+1+2*m.cell_centroid_x[i], tolerance(), "Independent subcommunicator solution");
-    }
-    krona::mpi::check(MPI_Comm_free(&comm), "MPI_Comm_free(diffusion subcomm)");
-}
-
-void rejection(const Exec& exec, std::string_view name)
-{
-    krona::mpi::CommView comm = krona::mpi::CommView::world();
-    auto m = krona::test::diffusion::cartesian(6, 1, 1, comm.native());
-    if (name == "nonorthogonal") {
-        m.face_normal_x[0] *= std::sqrt(0.99); m.face_normal_y[0] = 0.1;
-    }
-    MeshStorage mesh{m, {}, exec};
-    bc::Manager<Exec, Calc, NegativeBoundary> boundary{m, mesh.view(), exec}; insulated(boundary);
-    if (name != "pure_neumann") boundary.set(0, bc::FixedValue<Calc>{0});
-    if (name == "negative_boundary") boundary.set(1, NegativeBoundary{});
-    ts::DiffusionOperator<> op{m, mesh.view(), comm, exec};
-    if (name == "negative_diffusion") op.assemble_async(boundary, ts::UniformSource<Calc>{0}, bc::UniformDiffusivity<Calc>{-1});
-    else if (name == "bad_source") op.assemble_async(boundary, ts::UniformSource<Calc>{std::numeric_limits<Calc>::quiet_NaN()});
-    else if (name == "source_extent") {
-        DeviceVector source{"short_source", 1}; op.assemble_async(boundary, ts::CellSource{source});
+    if constexpr (Which == 6) f.host.face_centroid_y[static_cast<std::size_t>(f.host.n_inner_faces)] = GeometryReal{0.25};
+    Attached a(f, comm, exec); Boundary boundary(f.host, a.mesh.view(), exec);
+    boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+    if constexpr (Which == 1) { boundary.set(0, bc::NormalGradient<Real>{0}); boundary.set(1, bc::NormalGradient<Real>{0}); }
+    if constexpr (Which == 7) boundary.set(1, NegativeRelation{});
+    ts::DiffusionOperator<> op(a.plan);
+    if constexpr (Which == 2) op.assemble_async(boundary, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{0}});
+    else if constexpr (Which == 3) op.assemble_async(boundary, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}}, ts::UniformSource<Real>{std::numeric_limits<Real>::quiet_NaN()});
+    else if constexpr (Which == 5) {
+        Kokkos::View<Real*, Space> d("D", static_cast<std::size_t>(f.host.n_cells)); Kokkos::deep_copy(exec, d, Real{1});
+        op.assemble_async(boundary, transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{d}});
     } else op.assemble_async(boundary);
-    if (name == "pending") op.assemble_async(boundary);
+    if constexpr (Which == 0) op.assemble_async(boundary);
     op.commit();
-    check(false, "Invalid input should have been rejected");
+    check(false, "invalid system unexpectedly accepted");
 }
-void pure_neumann(const Exec& e) { rejection(e, "pure_neumann"); }
-void negative_diffusion(const Exec& e) { rejection(e, "negative_diffusion"); }
-void bad_source(const Exec& e) { rejection(e, "bad_source"); }
-void negative_boundary(const Exec& e) { rejection(e, "negative_boundary"); }
-void source_extent(const Exec& e) { rejection(e, "source_extent"); }
-void pending(const Exec& e) { rejection(e, "pending"); }
-void nonorthogonal(const Exec& e) { rejection(e, "nonorthogonal"); }
+
+template<auto Function>
+void with_tpetra(const Exec& exec) {
+    mpi::guarded([&] {
+        Tpetra::ScopeGuard tpetra(nullptr, nullptr, mpi::CommView::world().native());
+        test::complete(exec, [&] { Function(exec); });
+    });
+}
 } // namespace
 
-int main(int argc, char** argv)
-{
-    krona::mpi::Runtime runtime{argc, argv, krona::mpi::ThreadLevel::funneled};
-    try {
-        Kokkos::ScopeGuard kokkos{argc, argv};
-        Tpetra::ScopeGuard tpetra{&argc, &argv};
-        const std::array cases{
-            Case{"assembly", assembly}, Case{"duplicate_faces", duplicate_faces}, Case{"affine_3d", affine_3d},
-            Case{"empty_rank", empty_rank}, Case{"mixed", mixed}, Case{"variable", variable},
-            Case{"refinement", refinement}, Case{"strided", strided}, Case{"nonconvergence", nonconvergence},
-            Case{"all_empty", all_empty}, Case{"publication", publication}, Case{"subcomm", subcomm},
-            Case{"pure_neumann", pure_neumann},
-            Case{"negative_diffusion", negative_diffusion}, Case{"bad_source", bad_source},
-            Case{"negative_boundary", negative_boundary}, Case{"source_extent", source_extent},
-            Case{"pending", pending}, Case{"nonorthogonal", nonorthogonal}};
-        check(argc == 2, "Expected one diffusion test-case name");
-        const std::string_view selected = argv[1]; Exec exec{};
-        for (const auto& entry : cases) if (entry.name == selected) {
-            std::cout << "RUN diffusion." << entry.name << " [" << Exec::name() << "]\n";
-            entry.function(exec); exec.fence();
-            std::cout << "PASS diffusion." << entry.name << '\n'; return EXIT_SUCCESS;
-        }
-        check(false, "Unknown diffusion test case");
-    } catch (const std::exception& error) { krona::mpi::fatal(error.what()); }
-    catch (...) { krona::mpi::fatal("Unhandled diffusion test exception"); }
-    return EXIT_FAILURE;
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const std::array positive{
+        test::Case{"linear", with_tpetra<linear>}, test::Case{"normal_gradient", with_tpetra<gradient>},
+        test::Case{"fixed_flux", with_tpetra<flux>}, test::Case{"robin", with_tpetra<robin>},
+        test::Case{"source", with_tpetra<source_case>}, test::Case{"variable", with_tpetra<variable_case>},
+        test::Case{"shared", with_tpetra<shared_case>}, test::Case{"shared_assembly", with_tpetra<assembly_case>}, test::Case{"nonconvergence", with_tpetra<nonconvergence>},
+        test::Case{"duplicate_faces", with_tpetra<duplicates>}, test::Case{"strided_float", with_tpetra<strided_float>},
+        test::Case{"empty", with_tpetra<empty>}, test::Case{"float_solver", with_tpetra<float_solver>}};
+    const std::array negative{
+        test::Case{"pending", with_tpetra<rejected<0>>}, test::Case{"pure_neumann", with_tpetra<rejected<1>>},
+        test::Case{"bad_coefficient", with_tpetra<rejected<2>>}, test::Case{"bad_source", with_tpetra<rejected<3>>},
+        test::Case{"bad_metric", with_tpetra<rejected<4>>}, test::Case{"missing_weights", with_tpetra<rejected<5>>},
+        test::Case{"nonorthogonal", with_tpetra<rejected<6>>}, test::Case{"bad_boundary", with_tpetra<rejected<7>>}};
+    if (argc == 2) for (const auto& c : negative) if (std::string_view(argv[1]) == c.name)
+        return test::run(argc, argv, "transport.scalar", negative);
+    return test::run(argc, argv, "transport.scalar", positive);
 }

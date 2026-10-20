@@ -1,9 +1,11 @@
 // Steady heat conduction in an insulated rectangular bar; T_exact(x) = 300 + 100*x.
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/fields/field_storage.hpp>
+#include <krona/halo/exchange.hpp>
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
 #include <krona/io/vtu/vtu.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/compute/aux_storage.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/transport/scalar/steady_diffusion.hpp>
@@ -87,6 +89,13 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     Exec exec{};
     const krona::mesh::compute::MeshStorage<Exec> mesh{
         host_mesh, {.data = krona::mesh::compute::MeshData::FiniteVolume}, exec};
+    // These shared caches can serve every transported scalar on this mesh.
+    const auto host_connectivity = krona::mesh::build_aux_connectivity(host_mesh, krona::mesh::AuxConnType::CellFaces);
+    const auto host_geometry = krona::mesh::build_aux_geometry(host_mesh,
+        krona::mesh::AuxGeomType::FaceNormalDistance | krona::mesh::AuxGeomType::FaceAreaOverNormalDistance);
+    const krona::mesh::compute::AuxConnectivityStorage<Exec> connectivity{host_mesh, host_connectivity, exec};
+    const krona::mesh::compute::AuxGeometryStorage<Exec> geometry{host_mesh, host_geometry, exec};
+    const ts::DiffusionPlan<Exec, Real> plan{host_mesh, mesh.view(), connectivity.view(), geometry.view(), comm, exec};
     const auto config = load_boundary(paths[1], comm);
     const bc::Manager<Exec, Real> boundary{host_mesh, mesh.view(), config, exec};
 
@@ -99,17 +108,27 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     options.linear.relative_tolerance = std::is_same_v<krona::SolverReal, float> ? 2.0e-6 : 1.0e-8;
     options.linear.maximum_iterations = 2000;
     options.linear.restart_length = 100;
-    // Keep the default orthogonality check and host-staged MPI transport.
-    ts::SteadyDiffusion<> solver{host_mesh, mesh.view(), temperature.view().component(0),
-                                 comm, exec, options};
+    ts::SteadyDiffusion<> solver{plan, temperature.view().component(0), options};
+    // Register additional scalar fields here to publish them with the same grouped exchange.
+    krona::halo::Exchange<krona::StorageReal, Exec> halo{mesh.view(),
+        {host_mesh.nb_ranks, host_mesh.send_offsets, host_mesh.recv_offsets}, comm, 0, exec,
+        krona::halo::Transfer::HostStaged};
+    halo.add_field(temperature.view());
+    halo.prepare();
     const ts::UniformSource<Real> source{Real{0}};
-    const bc::UniformDiffusivity<Real> diffusion{static_cast<Real>(conductivity)};
+    const auto diffusion = krona::transport::IsotropicDiffusion{
+        krona::transport::UniformCoefficient<Real>{static_cast<Real>(conductivity)}};
 
     exec.fence("Scalar diffusion app: setup complete");
     krona::mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(before solve)");
 
     const double start = MPI_Wtime();
-    const auto result = solver.solve(boundary, source, diffusion);
+    const auto result = solver.solve_owned(boundary, diffusion, source);
+    if (result.converged) {
+        halo.exchange();
+        boundary.apply_async(temperature.view(), diffusion);
+        boundary.execution_space().fence("Scalar diffusion app: boundary values ready");
+    }
     exec.fence("Scalar diffusion app: solve measurement complete");
     
     const double local_seconds = MPI_Wtime() - start;
@@ -127,7 +146,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
             result.converged ? "yes" : "no", result.iterations, result.relative_residual, solve_seconds);
     if (!result.converged) return EXIT_FAILURE;
 
-    const auto balance = solver.balance(boundary, source, diffusion);
+    const auto balance = solver.balance(boundary, diffusion, source);
 
     // The writer is host-only. Allocate a snapshot even on CPU; no device pointer reaches VTU.
     auto values = temperature.create_host_buffer();

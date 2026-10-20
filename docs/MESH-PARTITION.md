@@ -352,7 +352,7 @@ There are **41 datasets in total**: 7 shared datasets and 34 partitioned arrays.
 
 ## 5. Preprocessing pipeline
 
-The following summarizes actual calls and their documented contracts in `mesh_partitioner.cpp`. The bodies of the import, partitioning, migration, geometry, and reordering modules were not part of the supplied implementation set.
+The following summarizes actual calls and their documented contracts in `mesh_partitioner.cpp`.
 
 | Stage | Operation | Result |
 | --- | --- | --- |

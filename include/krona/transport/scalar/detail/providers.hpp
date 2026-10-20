@@ -1,0 +1,100 @@
+#pragma once
+
+#include <krona/transport/isotropic_diffusion.hpp>
+#include <krona/transport/scalar/plan.hpp>
+
+namespace krona::transport::scalar::detail {
+
+/// @brief Canonical owner-to-neighbour orientation, also on the neighbour's row.
+template<class Real>
+struct InteriorFaceContext {
+    LocalIndex face = 0, owner = 0, neighbour = -1;
+    Real x = 0, y = 0, z = 0, nx = 0, ny = 0, nz = 0;
+    Real distance = 0, area = 0, time = 0;
+    Real owner_weight = -1; // Available when FaceInterpolationWeights is attached.
+};
+
+/// @brief Kernel captures only arrays used by row assembly; descriptors borrow existing storage.
+template<class Space>
+struct RowData {
+    using Index = mesh::compute::detail::MeshArray<LocalIndex, Space, false>;
+    using Metric = mesh::compute::detail::MeshArray<GeometryReal, Space, false>;
+    using Offset = mesh::compute::detail::MeshArray<std::size_t, Space, false>;
+    LocalIndex n_inner_faces = 0;
+    Index face_owner, face_neigh, faces;
+    Offset offsets;
+    Metric cell_volume, face_x, face_y, face_z, normal_x, normal_y, normal_z, area;
+    Metric distance, area_over_distance, owner_weight;
+    bool has_weights = false;
+};
+
+template<class Space>
+auto row_data(mesh::compute::MeshView<Space> mesh, mesh::compute::AuxConnectivityView<Space> connectivity,
+              mesh::compute::AuxGeometryView<Space> geometry)
+{
+    const auto& g = mesh.geometry;
+    return RowData<Space>{mesh.sizes.n_inner_faces, mesh.connectivity.face_owner, mesh.connectivity.face_neigh,
+        connectivity.cell_faces, connectivity.cell_faces_offsets, g.cell_volume,
+        g.face_centroid_x, g.face_centroid_y, g.face_centroid_z, g.face_normal_x, g.face_normal_y, g.face_normal_z,
+        g.face_area, geometry.face_normal_dist, geometry.face_area_over_normal_dist, geometry.face_interp_weight,
+        geometry.has_face_interp_weights()};
+}
+
+template<class Real, class Space>
+KOKKOS_INLINE_FUNCTION auto interior_context(const RowData<Space>& data, LocalIndex face, Real time)
+{
+    const std::size_t f = static_cast<std::size_t>(face);
+    return InteriorFaceContext<Real>{face, data.face_owner(f), data.face_neigh(f),
+        static_cast<Real>(data.face_x(f)), static_cast<Real>(data.face_y(f)), static_cast<Real>(data.face_z(f)),
+        static_cast<Real>(data.normal_x(f)), static_cast<Real>(data.normal_y(f)), static_cast<Real>(data.normal_z(f)),
+        static_cast<Real>(data.distance(f)), static_cast<Real>(data.area(f)), time,
+        data.has_weights ? static_cast<Real>(data.owner_weight(f)) : Real{-1}};
+}
+
+template<class Exec, class View>
+void validate_view(View view, std::size_t count)
+{
+    static_assert(Kokkos::is_view<View>::value && View::rank == 1);
+    static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
+    mpi::require(view.extent(0) >= count && (count == 0 || (view.data() != nullptr && view.stride(0) > 0)),
+                 "Scalar diffusion: invalid field/coefficient/source extent or storage");
+}
+
+template<class Exec, class Source> void validate_source(const Source&, std::size_t) {}
+template<class Exec, class View>
+void validate_source(CellSource<View> source, std::size_t count) { validate_view<Exec>(source.values, count); }
+
+template<class Plan, class Coefficient> void validate_coefficient(const Plan&, const Coefficient&) {}
+template<class Exec, class Real, class View>
+void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, FaceCoefficient<View> c)
+{ validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_faces)); }
+template<class Exec, class Real, class View>
+void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, OwnerCellCoefficient<View> c)
+{
+    mpi::require(plan.mesh_view().sizes.n_inner_faces == 0,
+        "Scalar diffusion: OwnerCellCoefficient is exterior-only; use InterpolatedCellCoefficient for interior faces");
+    validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_own));
+}
+template<class Exec, class Real, class View, class Interpolation>
+void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, InterpolatedCellCoefficient<View, Interpolation> c)
+{
+    validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_cells));
+    mpi::require(plan.mesh_view().sizes.n_inner_faces == 0 || plan.geometry_view().has_face_interp_weights(),
+        "Scalar diffusion: cell coefficients require attached FaceInterpolationWeights");
+}
+
+template<class Exec, class Real, class Boundary>
+void validate_boundary(const DiffusionPlan<Exec, Real>& plan, const Boundary& boundary)
+{
+    const auto m = plan.mesh_view();
+    const auto b = boundary.geometry_view();
+    const auto& g = m.geometry;
+    mpi::require(b.n_cells == m.sizes.n_cells && b.n_inner_faces == m.sizes.n_inner_faces &&
+        b.face_owner.data() == m.connectivity.face_owner.data() &&
+        b.cell_x.data() == g.cell_centroid_x.data() && b.cell_y.data() == g.cell_centroid_y.data() && b.cell_z.data() == g.cell_centroid_z.data() &&
+        b.face_x.data() == g.face_centroid_x.data() && b.face_y.data() == g.face_centroid_y.data() && b.face_z.data() == g.face_centroid_z.data() &&
+        b.normal_x.data() == g.face_normal_x.data() && b.normal_y.data() == g.face_normal_y.data() && b.normal_z.data() == g.face_normal_z.data() &&
+        b.face_area.data() == g.face_area.data(), "Scalar diffusion: boundary manager must use the same compute mesh");
+}
+
+} // namespace krona::transport::scalar::detail

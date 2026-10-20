@@ -1,8 +1,15 @@
 # KRONA
 
-**K**okkos **R**heology & **O**ptimized **N**on-structured **A**lgorithms
+KRONA (**K**okkos-based **R**eusable **O**perators for **N**umerical **A**pplications) is an experimental framework for distributed finite-volume simulations on unstructured meshes.
 
-**KRONA** is a high-performance, distributed multi-physics simulation framework designed for complex continuum mechanics on massively parallel architectures. By leveraging **MPI** and **Kokkos**, KRONA achieves performance portability across modern CPU and GPU hardware.
+It uses **MPI** for distributed-memory parallelism, **Kokkos** for portable CPU/GPU execution, and **Trilinos** for sparse linear algebra.
 
+Currently implemented:
 
+- Distributed mesh partitioning and preprocessing.
+- Mesh geometry, fields, halo exchange, and gradient reconstruction.
+- Scalar and physical boundary conditions.
+- Scalar CSR and block BSR matrices with configurable solvers and preconditioners.
+- A steady scalar diffusion solver.
 
+The project is under active development.

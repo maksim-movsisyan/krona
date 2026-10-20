@@ -21,7 +21,63 @@ struct OwnerCellCoefficient {
     View values;
     template<class Context>
     KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
-    { return values(static_cast<std::size_t>(c.owner)); }
+    {
+        if constexpr (requires { c.neighbour; }) { KOKKOS_ASSERT(c.neighbour < 0); }
+        return values(static_cast<std::size_t>(c.owner));
+    }
+};
+
+/// @brief Explicit face data, when the application already stores a face coefficient.
+template<class View>
+struct FaceCoefficient {
+    static_assert(Kokkos::is_view<View>::value && View::rank == 1);
+    View values;
+    template<class Context>
+    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
+    { return values(static_cast<std::size_t>(c.face)); }
+};
+
+struct ArithmeticCoefficient {
+    template<class Real>
+    KOKKOS_INLINE_FUNCTION Real operator()(Real owner, Real neighbour, Real owner_weight) const
+    { return owner_weight*owner + (Real{1}-owner_weight)*neighbour; }
+};
+
+/// @brief Series resistance: owner_weight is the neighbour-side distance fraction.
+struct HarmonicCoefficient {
+    template<class Real>
+    KOKKOS_INLINE_FUNCTION Real operator()(Real owner, Real neighbour, Real owner_weight) const
+    {
+        // Return invalid data to the operator's asynchronous validation instead of hiding it.
+        if (!Kokkos::isfinite(owner) || !(owner > Real{0})) return owner;
+        if (!Kokkos::isfinite(neighbour) || !(neighbour > Real{0})) return neighbour;
+        return Real{1}/((Real{1}-owner_weight)/owner + owner_weight/neighbour);
+    }
+};
+
+/// @brief Two-sided cell data on interior faces; owner extrapolation on exterior faces.
+/// Cell ghosts must be current. Interior contexts supply neighbour and owner_weight.
+template<class View, class Interpolation = HarmonicCoefficient>
+struct InterpolatedCellCoefficient {
+    static_assert(Kokkos::is_view<View>::value && View::rank == 1);
+    View values;
+    Interpolation interpolation{};
+
+    template<class Context>
+    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
+    {
+        using Real = std::common_type_t<typename View::non_const_value_type, decltype(c.distance)>;
+        const Real owner = static_cast<Real>(values(static_cast<std::size_t>(c.owner)));
+        if constexpr (requires { c.neighbour; c.owner_weight; }) {
+            if (c.neighbour >= 0) {
+                const Real neighbour = static_cast<Real>(values(static_cast<std::size_t>(c.neighbour)));
+                if (!Kokkos::isfinite(owner) || !(owner > Real{0})) return owner;
+                if (!Kokkos::isfinite(neighbour) || !(neighbour > Real{0})) return neighbour;
+                return interpolation(owner, neighbour, static_cast<Real>(c.owner_weight));
+            }
+        }
+        return owner;
+    }
 };
 
 /// @brief Scalar isotropic constitutive law q_n = -coefficient(context) * d(phi)/dn.

@@ -710,9 +710,9 @@ if(KRONA_BUILD_APPLICATIONS)
     #================================
     #=== SCALAR TRANSPORT EXAMPLE ===
     #================================
-#    add_executable(krona_scalar_diffusion apps/scalar_diffusion.cpp)
-#    target_link_libraries(krona_scalar_diffusion PRIVATE
-#        krona::transport_scalar krona::mesh_io krona::warnings)
+    add_executable(krona_scalar_diffusion apps/scalar_diffusion.cpp)
+    target_link_libraries(krona_scalar_diffusion PRIVATE
+        krona::transport_scalar krona::mesh_io krona::warnings)
 
 endif()
     
