@@ -1,9 +1,10 @@
 #pragma once
 
-#include <krona/transport/isotropic_diffusion.hpp>
-#include <krona/transport/scalar/plan.hpp>
+#include <krona/transport/diffusion/isotropic.hpp>
+#include <krona/transport/scalar/source.hpp>
+#include <krona/transport/scalar/diffusion/plan.hpp>
 
-namespace krona::transport::scalar::detail {
+namespace krona::transport::scalar::diffusion::detail {
 
 /// @brief Canonical owner-to-neighbour orientation, also on the neighbour's row.
 template<class Real>
@@ -51,34 +52,21 @@ KOKKOS_INLINE_FUNCTION auto interior_context(const RowData<Space>& data, LocalIn
         data.has_weights ? static_cast<Real>(data.owner_weight(f)) : Real{-1}};
 }
 
-template<class Exec, class View>
-void validate_view(View view, std::size_t count)
-{
-    static_assert(Kokkos::is_view<View>::value && View::rank == 1);
-    static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
-    mpi::require(view.extent(0) >= count && (count == 0 || (view.data() != nullptr && view.stride(0) > 0)),
-                 "Scalar diffusion: invalid field/coefficient/source extent or storage");
-}
-
-template<class Exec, class Source> void validate_source(const Source&, std::size_t) {}
-template<class Exec, class View>
-void validate_source(CellSource<View> source, std::size_t count) { validate_view<Exec>(source.values, count); }
-
 template<class Plan, class Coefficient> void validate_coefficient(const Plan&, const Coefficient&) {}
 template<class Exec, class Real, class View>
 void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, FaceCoefficient<View> c)
-{ validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_faces)); }
+{ scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_faces)); }
 template<class Exec, class Real, class View>
 void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, OwnerCellCoefficient<View> c)
 {
     mpi::require(plan.mesh_view().sizes.n_inner_faces == 0,
         "Scalar diffusion: OwnerCellCoefficient is exterior-only; use InterpolatedCellCoefficient for interior faces");
-    validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_own));
+    scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_own));
 }
 template<class Exec, class Real, class View, class Interpolation>
 void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, InterpolatedCellCoefficient<View, Interpolation> c)
 {
-    validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_cells));
+    scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_cells));
     mpi::require(plan.mesh_view().sizes.n_inner_faces == 0 || plan.geometry_view().has_face_interp_weights(),
         "Scalar diffusion: cell coefficients require attached FaceInterpolationWeights");
 }
@@ -97,4 +85,4 @@ void validate_boundary(const DiffusionPlan<Exec, Real>& plan, const Boundary& bo
         b.face_area.data() == g.face_area.data(), "Scalar diffusion: boundary manager must use the same compute mesh");
 }
 
-} // namespace krona::transport::scalar::detail
+} // namespace krona::transport::scalar::diffusion::detail

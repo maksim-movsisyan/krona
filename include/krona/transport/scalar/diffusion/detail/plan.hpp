@@ -1,15 +1,15 @@
 #pragma once
 
 #include <krona/execution/utils.hpp>
-#include <krona/linalg/face_assembly.hpp>
+#include <krona/mpi/communicator.hpp>
 #include <krona/mesh/compute/validation.hpp>
-#include <krona/transport/scalar/source.hpp>
+#include <krona/transport/scalar/diffusion/types.hpp>
 
 #include <KokkosKernels_ArithTraits.hpp>
 
 #include <cmath>
 
-namespace krona::transport::scalar::detail {
+namespace krona::transport::scalar::diffusion::detail {
 
 template<class Space, class Real>
 struct ValidateMetric {
@@ -19,8 +19,8 @@ struct ValidateMetric {
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
     {
-        const auto f = static_cast<std::size_t>(face);
-        const auto i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
+        const std::size_t f = static_cast<std::size_t>(face);
+        const std::size_t i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
         const auto neighbour = mesh.connectivity.face_neigh(f);
         const auto j = neighbour < 0 ? std::size_t{0} : static_cast<std::size_t>(neighbour);
         const auto& g = mesh.geometry;
@@ -59,14 +59,13 @@ void validate_plan(const mesh::MeshPart& host,
     mesh::compute::MeshView<typename Exec::memory_space> mesh_view,
     mesh::compute::AuxConnectivityView<typename Exec::memory_space> connectivity,
     mesh::compute::AuxGeometryView<typename Exec::memory_space> geometry,
-    const linalg::FaceAssemblyPlan<Exec>& assembly, const Exec& exec, DiffusionOptions options)
+    mpi::CommView comm, const Exec& exec, DiffusionOptions options)
 {
     mpi::guarded([&] {
         execution::require_kokkos();
         const auto& s = mesh_view.sizes;
-        const auto comm = assembly.communicator();
         mpi::require(host.rank == comm.rank() && host.nprocs == comm.size(),
-                     "Scalar diffusion: mesh/assembly communicator mismatch");
+                     "Scalar diffusion: mesh/communicator mismatch");
         mpi::require(host.faces_grouped && s.faces_grouped && host.n_own == s.n_own && host.n_cells == s.n_cells &&
             host.n_faces == s.n_faces && host.n_internal_faces == s.n_internal_faces && host.n_inner_faces == s.n_inner_faces,
             "Scalar diffusion: grouped host/view mesh mismatch");
@@ -79,8 +78,8 @@ void validate_plan(const mesh::MeshPart& host,
         const auto status = validation::validate<MeshData::FaceCells | MeshData::FaceGeometry,
             mesh::AuxConnType::CellFaces, metrics, true>(exec, mesh_view, connectivity, geometry);
         mpi::require(status.ok(), "Scalar diffusion: invalid mesh, cell-face incidence or normal metrics");
-        const auto cells = static_cast<std::size_t>(s.n_cells);
-        const auto owned = static_cast<std::size_t>(s.n_own);
+        const std::size_t cells = static_cast<std::size_t>(s.n_cells);
+        const std::size_t owned = static_cast<std::size_t>(s.n_own);
         const auto& g = mesh_view.geometry;
         mpi::require(mesh_view.has(MeshData::CellGeometry) && g.cell_centroid_x.extent(0) >= cells &&
             g.cell_centroid_y.extent(0) >= cells && g.cell_centroid_z.extent(0) >= cells && g.cell_volume.extent(0) >= owned,
@@ -96,13 +95,7 @@ void validate_plan(const mesh::MeshPart& host,
             validation::ValidateCells<MeshData::CellGeometry, mesh::AuxGeomType::None, typename Exec::memory_space>{mesh_view, {}}, bad);
         mpi::require(bad == 0, "Scalar diffusion: invalid owned cell geometry");
 
-        const auto entries = assembly.entry_map();
-        mpi::require(assembly.pattern().distribution().local_size() == owned &&
-            entries.diagonal.extent(0) == owned &&
-            entries.owner_entries.extent(0) == static_cast<std::size_t>(s.n_inner_faces) &&
-            entries.neighbour_entries.extent(0) == static_cast<std::size_t>(s.n_internal_faces),
-            "Scalar diffusion: incompatible face assembly plan");
     });
 }
 
-} // namespace krona::transport::scalar::detail
+} // namespace krona::transport::scalar::diffusion::detail

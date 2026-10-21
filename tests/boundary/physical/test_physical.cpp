@@ -2,7 +2,7 @@
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/transport/isotropic_diffusion.hpp>
+#include <krona/transport/diffusion/isotropic.hpp>
 #include <algorithm>
 #include <fstream>
 #include <iterator>

@@ -8,7 +8,8 @@
 #include <krona/mesh/compute/aux_storage.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
-#include <krona/transport/scalar/steady_diffusion.hpp>
+#include <krona/linalg/face_assembly.hpp>
+#include <krona/transport/scalar/solvers/steady_diffusion.hpp>
 
 #include <Tpetra_Core.hpp>
 
@@ -34,6 +35,7 @@ using Exec = krona::execution::ExecutionSpace;
 using Real = krona::ComputeReal;
 namespace bc = krona::boundary::scalar;
 namespace ts = krona::transport::scalar;
+namespace td = krona::transport::scalar::diffusion;
 namespace vtk = krona::io::vtk;
 
 constexpr double conductivity = 2.0;
@@ -95,7 +97,9 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
         krona::mesh::AuxGeomType::FaceNormalDistance | krona::mesh::AuxGeomType::FaceAreaOverNormalDistance);
     const krona::mesh::compute::AuxConnectivityStorage<Exec> connectivity{host_mesh, host_connectivity, exec};
     const krona::mesh::compute::AuxGeometryStorage<Exec> geometry{host_mesh, host_geometry, exec};
-    const ts::DiffusionPlan<Exec, Real> plan{host_mesh, mesh.view(), connectivity.view(), geometry.view(), comm, exec};
+    const td::DiffusionPlan<Exec, Real> plan{host_mesh, mesh.view(), connectivity.view(), geometry.view(), comm, exec};
+    // The mesh-only diffusion plan and the reusable algebra graph/map have separate lifetimes.
+    const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};
     const auto config = load_boundary(paths[1], comm);
     const bc::Manager<Exec, Real> boundary{host_mesh, mesh.view(), config, exec};
 
@@ -108,7 +112,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     options.linear.relative_tolerance = std::is_same_v<krona::SolverReal, float> ? 2.0e-6 : 1.0e-8;
     options.linear.maximum_iterations = 2000;
     options.linear.restart_length = 100;
-    ts::SteadyDiffusion<> solver{plan, temperature.view().component(0), options};
+    ts::SteadyDiffusion<> solver{plan, assembly, temperature.view().component(0), options};
     // Register additional scalar fields here to publish them with the same grouped exchange.
     krona::halo::Exchange<krona::StorageReal, Exec> halo{mesh.view(),
         {host_mesh.nb_ranks, host_mesh.send_offsets, host_mesh.recv_offsets}, comm, 0, exec,
