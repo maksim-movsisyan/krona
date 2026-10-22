@@ -47,7 +47,7 @@ struct Fixture {
     int first = 0, total = 0;
 };
 
-Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false, bool all_empty = false)
+Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false, bool all_empty = false, int boundary_copies = 1)
 {
     Fixture f;
     auto& m = f.host;
@@ -58,7 +58,7 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
     m.n_cells_g = static_cast<std::uint64_t>(f.total);
     m.faces_grouped = true;
     m.patches.resize(2); m.patches[0].name = "left"; m.patches[1].name = "right";
-    m.n_bfaces_g = f.total == 0 ? 0 : 2; m.n_labeled_bfaces_g = m.n_bfaces_g;
+    m.n_bfaces_g = f.total == 0 ? 0 : static_cast<std::uint64_t>(2*boundary_copies); m.n_labeled_bfaces_g = m.n_bfaces_g;
     for (int i = 0; i < count; ++i) m.cell_centroid_x.push_back(static_cast<GeometryReal>(f.first+i)+GeometryReal{0.5});
     for (int peer : {comm.rank()-1, comm.rank()+1}) {
         if (count == 0 || peer < 0 || peer >= active) continue;
@@ -89,8 +89,12 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
         face(left ? 0 : count-1, m.recv_ghost_local[p], static_cast<GeometryReal>(left ? f.first : f.first+count), left ? -1 : 1, 1, -1);
     }
     m.n_inner_faces = static_cast<LocalIndex>(m.face_owner.size());
-    if (count != 0 && comm.rank() == 0) face(0, -1, 0, -1, 1, 0);
-    if (count != 0 && comm.rank() == active-1) face(count-1, -1, static_cast<GeometryReal>(f.total), 1, 1, 1);
+    for (int copy = 0; copy < boundary_copies; ++copy) {
+        if (count != 0 && comm.rank() == 0) face(0, -1, 0, -1, GeometryReal{1}/static_cast<GeometryReal>(boundary_copies), 0);
+    }
+    for (int copy = 0; copy < boundary_copies; ++copy) {
+        if (count != 0 && comm.rank() == active-1) face(count-1, -1, static_cast<GeometryReal>(f.total), 1, GeometryReal{1}/static_cast<GeometryReal>(boundary_copies), 1);
+    }
     m.n_faces = static_cast<LocalIndex>(m.face_owner.size());
     auto& c = f.connectivity;
     c.active_mask = mesh::AuxConnType::CellFaces; c.n_faces = m.n_faces; c.n_cells_own = m.n_own;
@@ -373,17 +377,21 @@ void face_inputs(const Exec& exec)
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs input(a,exec);
     Kokkos::View<double**,Kokkos::LayoutRight,Space> storage("strided face inputs",f.host.n_faces,3);
     const auto mesh=a.mesh.view();
+    auto incoming=cv::make_inflow_profiles(boundary);
+    Kokkos::View<double*,Space> left("left profile",1),right("right profile",1);
+    incoming.set(0,left);incoming.set(1,right);
     for(const Real velocity:{Real{3},Real{-3}}){
+        Kokkos::deep_copy(exec,left,velocity>0?4.0:Kokkos::quiet_NaN_v<double>);
+        Kokkos::deep_copy(exec,right,velocity<0?4.0:Kokkos::quiet_NaN_v<double>);
         Kokkos::parallel_for("test/face_input_values",Kokkos::RangePolicy<Exec>(exec,0,f.host.n_faces),
             KOKKOS_LAMBDA(LocalIndex face){
                 const auto k=static_cast<std::size_t>(face);
                 const double mass=static_cast<double>(velocity*mesh.geometry.face_normal_x(k));
                 storage(k,0)=mass;
-                storage(k,1)=face>=mesh.sizes.n_inner_faces&&mass<0 ? 4.0 : Kokkos::quiet_NaN_v<double>;
+                storage(k,1)=23.0;
                 storage(k,2)=19.0;
             });
         const auto flux=cv::FaceMassFlux{Kokkos::subview(storage,Kokkos::ALL(),0)};
-        const auto incoming=cv::FaceInflowValues{Kokkos::subview(storage,Kokkos::ALL(),1)};
         linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
         const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
         Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
@@ -399,6 +407,90 @@ void face_inputs(const Exec& exec)
             near(hb(i),inlet?12.0:0.0,0.0,"Strided inflow input or flow reversal failed");
         }
     }
+}
+
+struct BoundaryInwardFlux {
+    template<class C>
+    KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
+    {
+        if constexpr (requires { c.neighbour; }) return Real{0};
+        else return Real{-2}*c.area;
+    }
+};
+
+template<class Inflow,class Flux>
+void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,Flux flux,
+    std::array<double,3> expected,const Exec& exec,Real time=0)
+{
+    const auto comm=mpi::CommView::world();
+    check(comm.size()==1,"Patch-profile fixture requires one rank");
+    cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
+    linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
+    const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
+    Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+    convection.add_system_async(target,boundary,status,flux,cv::NoReconstruction{},inflows,time);
+    (void)status.check(comm);matrix.commit();rhs.commit();
+    const auto b=snapshot(Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0),exec);rhs.commit();
+    for(std::size_t i=0;i<expected.size();++i)near(b(i),expected[i],2e-11,"Compact profile selected the wrong patch, index, stride or fallback");
+    Kokkos::View<double*,Space> field("profile field",a.mesh.view().sizes.n_cells),residual("profile residual",3);
+    Kokkos::deep_copy(exec,field,3.0);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
+    convection.add_residual_async(field,residual,boundary,status,flux,cv::NoReconstruction{},inflows,time);
+    (void)status.check(comm);compare_system_residual(matrix,rhs,field,residual,exec);
+}
+
+void patch_profiles(const Exec& exec)
+{
+    const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
+    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,7);
+    Kokkos::View<float**,Kokkos::LayoutRight,Space> storage("strided patch profile",4,2);
+    Kokkos::View<double*,Space> right("right patch profile",4),replacement("replacement profile",4);
+    auto hl=Kokkos::create_mirror(storage);auto hr=Kokkos::create_mirror(right);
+    for(std::size_t i=0;i<4;++i){hl(i,0)=999;hl(i,1)=static_cast<float>(i+1);hr(i)=10.0*static_cast<double>(i+1);}
+    Kokkos::deep_copy(exec,storage,hl);Kokkos::deep_copy(exec,right,hr);Kokkos::deep_copy(exec,replacement,6.0);
+    using Left=Kokkos::View<const float*,Kokkos::LayoutStride,Space,Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+    const Left left=Kokkos::subview(storage,Kokkos::ALL(),1);
+    const Kokkos::View<const double*,Space> readonly_right=right;
+    auto inflows=cv::make_inflow_profiles(boundary);inflows.set(0,left);inflows.set(1,readonly_right);
+    profile_system(a,boundary,inflows,VelocityFlux{3},{7.5,0,0},exec);
+    profile_system(a,boundary,inflows,VelocityFlux{-3},{0,0,75},exec);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{5,0,50},exec);
+    // Registered views are borrowed: changes to their data are visible without set().
+    Kokkos::deep_copy(exec,right,30.0);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{5,0,60},exec);
+    inflows.set(0,replacement);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{12,0,60},exec);
+    inflows.clear(0);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{4,0,60},exec);
+    inflows.clear(1);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{4,0,14},exec);
+}
+
+void profile_fallback(const Exec& exec)
+{
+    const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
+    Boundary boundary(f.host,a.mesh.view(),exec);
+    boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});
+    Kokkos::View<double*,Space> left("profile with analytic fallback",4);Kokkos::deep_copy(exec,left,10.0);
+    auto inflows=cv::make_inflow_profiles(boundary,TimedInflow{});inflows.set(0,left);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{20,0,14},exec,Real{2});
+    inflows.clear(0);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{8,0,14},exec,Real{2});
+}
+
+void profile_unlabelled(const Exec& exec)
+{
+    const auto comm=mpi::CommView::world();auto f=bar(comm,false,false,false,4);
+    for(auto& id:f.host.face_patch)if(id==1)id=-1;
+    f.host.n_labeled_bfaces_g=4;
+    Attached a(f,comm,exec);Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,7);
+    boundary.set_unlabelled(bc::NormalGradient<Real>{0});
+    Kokkos::View<double*,Space> values("unlabelled patch profile",4);auto h=Kokkos::create_mirror(values);
+    for(std::size_t i=0;i<4;++i)h(i)=10.0*static_cast<double>(i+1);
+    Kokkos::deep_copy(exec,values,h);
+    auto inflows=cv::make_inflow_profiles(boundary);inflows.set_unlabelled(values);
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{4,0,50},exec);
+    inflows.clear_unlabelled();boundary.set_unlabelled(bc::FixedValue<Real>{9});
+    profile_system(a,boundary,inflows,BoundaryInwardFlux{},{4,0,18},exec);
 }
 
 void divergent(const Exec& exec)
@@ -557,12 +649,17 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
     exchange.add_field(input.values.view());exchange.add_field(input.gradients.view());exchange.add_field(input.factors.view());exchange.prepare();exchange.exchange();
     const auto reconstruction=cv::make_reconstruction(a.plan,rec::Tvd{},input.data(),1);
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
+    const auto left_range=boundary.catalog().patches()[0].range,right_range=boundary.catalog().patches()[1].range;
+    Kokkos::View<double*,Space> left("distributed left profile",left_range.end-left_range.begin);
+    Kokkos::View<float*,Space> right("distributed right profile",right_range.end-right_range.begin);
+    Kokkos::deep_copy(exec,left,2.0);Kokkos::deep_copy(exec,right,static_cast<float>(2+2*f.total));
+    auto inflows=cv::make_inflow_profiles(boundary);inflows.set(0,left);inflows.set(1,right);
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
-    convection.add_system_async(target,boundary,status,VelocityFlux{},reconstruction);(void)status.check(comm);matrix.commit();rhs.commit();
+    convection.add_system_async(target,boundary,status,VelocityFlux{},reconstruction,inflows);(void)status.check(comm);matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("distributed convection residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
-    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{},reconstruction);(void)status.check(comm);
+    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{},reconstruction,inflows);(void)status.check(comm);
     compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
     const auto h=snapshot(residual,exec);double local=0,global=0;
     for(std::size_t i=0;i<h.extent(0);++i){near(h(i),-2.0,2e-11,"Incorrect interface donor or stale reconstruction ghosts");local+=h(i);}
@@ -571,7 +668,7 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
 }
 void distributed(const Exec& e){distributed_case(e);distributed_case(e,true);distributed_case(e,true,true);}
 void empty(const Exec& e){distributed_case(e,true,true);}
-enum class Reject { MassFlux,Inflow,ShortFlux,ShortInflow,ShortGradient,ShortFactors,Component,Reconstruction,InPlace,Pending,Overflow,Underflow,Batch,Time };
+enum class Reject { MassFlux,Inflow,ShortFlux,ShortInflow,LongInflow,UnknownPatch,ForeignProfiles,ProfileNan,NoUnlabelled,ShortGradient,ShortFactors,Component,Reconstruction,InPlace,Pending,Overflow,Underflow,Batch,Time };
 void rejection(const Exec& exec,Reject which)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -584,7 +681,21 @@ void rejection(const Exec& exec,Reject which)
     if(which!=Reject::Pending)status.begin_async();
     if(which==Reject::MassFlux)convection.add_system_async(target,boundary,status,cv::UniformMassFlux<>{Kokkos::quiet_NaN_v<Real>});
     else if(which==Reject::ShortFlux){Kokkos::View<Real*,Space> flux("short flux",f.host.n_faces-1);convection.add_system_async(target,boundary,status,cv::FaceMassFlux{flux});}
-    else if(which==Reject::ShortInflow){Kokkos::View<Real*,Space> values("short inflow",f.host.n_faces-1);convection.add_system_async(target,boundary,status,VelocityFlux{},cv::NoReconstruction{},cv::FaceInflowValues{values});}
+    else if(which==Reject::ShortInflow||which==Reject::LongInflow){
+        auto inflows=cv::make_inflow_profiles(boundary);
+        Kokkos::View<Real*,Space> values("wrong profile size",which==Reject::ShortInflow?0:2);inflows.set(0,values);
+    }else if(which==Reject::UnknownPatch){
+        auto inflows=cv::make_inflow_profiles(boundary);Kokkos::View<Real*,Space> values("profile",1);inflows.set(2,values);
+    }else if(which==Reject::ForeignProfiles){
+        Boundary other(f.host,a.mesh.view(),exec);conditions(other);auto inflows=cv::make_inflow_profiles(other);
+        convection.add_system_async(target,boundary,status,VelocityFlux{},cv::NoReconstruction{},inflows);
+    }else if(which==Reject::ProfileNan){
+        auto inflows=cv::make_inflow_profiles(boundary);Kokkos::View<Real*,Space> values("invalid profile",1);
+        Kokkos::deep_copy(exec,values,Kokkos::quiet_NaN_v<Real>);inflows.set(0,values);
+        convection.add_system_async(target,boundary,status,VelocityFlux{},cv::NoReconstruction{},inflows);
+    }else if(which==Reject::NoUnlabelled){
+        auto inflows=cv::make_inflow_profiles(boundary);Kokkos::View<Real*,Space> values;inflows.set_unlabelled(values);
+    }
     else if(which==Reject::ShortGradient){
         fields::FieldStorage<double,6,Exec> short_g("short gradients",static_cast<std::size_t>(f.host.n_cells-1),fields::FieldLocation::Custom,exec);
         const auto r=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},rec::data(rec::field_pack(input.values.view()),rec::gradient_pack(short_g.view())));
@@ -614,6 +725,11 @@ CONVECTION_REJECT_CASE(reject_mass_flux,MassFlux)
 CONVECTION_REJECT_CASE(reject_inflow,Inflow)
 CONVECTION_REJECT_CASE(reject_short_flux,ShortFlux)
 CONVECTION_REJECT_CASE(reject_short_inflow,ShortInflow)
+CONVECTION_REJECT_CASE(reject_long_inflow,LongInflow)
+CONVECTION_REJECT_CASE(reject_unknown_patch,UnknownPatch)
+CONVECTION_REJECT_CASE(reject_foreign_profiles,ForeignProfiles)
+CONVECTION_REJECT_CASE(reject_profile_nan,ProfileNan)
+CONVECTION_REJECT_CASE(reject_no_unlabelled,NoUnlabelled)
 CONVECTION_REJECT_CASE(reject_short_gradient,ShortGradient)
 CONVECTION_REJECT_CASE(reject_short_factors,ShortFactors)
 CONVECTION_REJECT_CASE(reject_component,Component)
@@ -638,6 +754,9 @@ int reject(int argc,char** argv)
     const std::array cases{
         test::Case{"reject_mass_flux",with_tpetra<reject_mass_flux>},test::Case{"reject_inflow",with_tpetra<reject_inflow>},
         test::Case{"reject_short_flux",with_tpetra<reject_short_flux>},test::Case{"reject_short_inflow",with_tpetra<reject_short_inflow>},
+        test::Case{"reject_long_inflow",with_tpetra<reject_long_inflow>},test::Case{"reject_unknown_patch",with_tpetra<reject_unknown_patch>},
+        test::Case{"reject_foreign_profiles",with_tpetra<reject_foreign_profiles>},test::Case{"reject_profile_nan",with_tpetra<reject_profile_nan>},
+        test::Case{"reject_no_unlabelled",with_tpetra<reject_no_unlabelled>},
         test::Case{"reject_short_gradient",with_tpetra<reject_short_gradient>},test::Case{"reject_short_factors",with_tpetra<reject_short_factors>},
         test::Case{"reject_component",with_tpetra<reject_component>},test::Case{"reject_reconstruction",with_tpetra<reject_reconstruction>},
         test::Case{"reject_in_place",with_tpetra<reject_in_place>},test::Case{"reject_pending",with_tpetra<reject_pending>},
@@ -654,7 +773,9 @@ int main(int argc,char** argv)
     const std::array cases{
         test::Case{"upwind",with_tpetra<upwind>},test::Case{"linear",with_tpetra<linear>},test::Case{"tvd",with_tpetra<tvd>},test::Case{"muscl",with_tpetra<muscl>},
         test::Case{"strided_float",with_tpetra<strided_float>},test::Case{"limiting",with_tpetra<limiting>},test::Case{"zero_flux",with_tpetra<zero_flux>},
-        test::Case{"inflow",with_tpetra<inflow>},test::Case{"face_inputs",with_tpetra<face_inputs>},test::Case{"divergent",with_tpetra<divergent>},test::Case{"bsr",with_tpetra<bsr>},test::Case{"additive",with_tpetra<additive>},
+        test::Case{"inflow",with_tpetra<inflow>},test::Case{"face_inputs",with_tpetra<face_inputs>},
+        test::Case{"patch_profiles",with_tpetra<patch_profiles>},test::Case{"profile_fallback",with_tpetra<profile_fallback>},test::Case{"profile_unlabelled",with_tpetra<profile_unlabelled>},
+        test::Case{"divergent",with_tpetra<divergent>},test::Case{"bsr",with_tpetra<bsr>},test::Case{"additive",with_tpetra<additive>},
         test::Case{"quick",with_tpetra<quick>},test::Case{"quadratic",with_tpetra<quadratic>},test::Case{"frozen_system",with_tpetra<frozen_system>},test::Case{"empty",with_tpetra<empty>}};
     const std::array mpi_cases{test::Case{"distributed",with_tpetra<distributed>}};
     if(argc==2&&std::string_view(argv[1])=="distributed")return test::run(argc,argv,"transport.scalar.convection",mpi_cases);

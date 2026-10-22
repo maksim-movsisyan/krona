@@ -4,7 +4,7 @@
 #include <Kokkos_NumericTraits.hpp>
 
 namespace krona::transport::scalar::convection {
- 
+
 /// @brief Integrated mass/time, signed along each rank's canonical owner-outward normal.
 /// Interface copies must describe the same physical flux with their respective normal signs.
 template<class View>
@@ -34,14 +34,17 @@ struct FixedValueInflow {
     { return Kokkos::quiet_NaN_v<Real>; }
 };
 
-/// @brief Optional borrowed face-indexed inflow values. The condition is deliberately ignored.
-/// A custom inflow(context, condition) can instead evaluate a profile or use extended field slots.
-template<class View>
-struct FaceInflowValues {
-    View values;
+/// @brief Device descriptor of one compact patch profile, selected/validated by InflowProfiles.
+/// Borrows a rank-one View's pointer/stride; the condition is deliberately ignored.
+/// The source allocation must outlive submitted work. No ownership or per-face patch lookup.
+template<class Value>
+struct PatchInflowValues {
+    const Value* values = nullptr;
+    std::size_t stride = 1;
+    LocalIndex face_begin = 0;
     template<class Real, class Condition>
-    KOKKOS_INLINE_FUNCTION auto operator()(const boundary::FaceContext<Real>& c, const Condition&) const
-    { return values(static_cast<std::size_t>(c.face)); }
+    KOKKOS_INLINE_FUNCTION Value operator()(const boundary::FaceContext<Real>& c, const Condition&) const
+    { return values[static_cast<std::size_t>(c.face-face_begin)*stride]; }
 };
 
 /// @brief No high-order increment; no reconstruction field/gradient input is needed for assembly.

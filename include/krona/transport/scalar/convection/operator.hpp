@@ -2,19 +2,21 @@
 
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/transport/scalar/convection/detail/kernels.hpp>
+#include <krona/transport/scalar/convection/inflow_profiles.hpp>
 #include <krona/transport/scalar/detail/views.hpp>
 
 #include <cmath>
 #include <utility>
 
 namespace krona::transport::scalar::convection {
- 
+
 /// @brief Local additive div(mass_flux*phi), with r=b-A*phi and integrated mass/time input.
 /// The matrix is donor-cell upwind; reconstruction increments are explicit RHS contributions.
 /// Supplied mass flux is frozen in the linearization; its dependence on unknowns is not differentiated.
 /// Outflow uses the interior trace, inflow uses inflow(context, condition), including backflow.
 /// No allocations, halo exchanges, fences, resets or algebra-wrapper commits during contributions.
-/// All providers are pure device-callable borrowed inputs; keep buffers alive and current.
+/// Device providers are pure borrowed inputs. Host-only InflowProfiles dispatch once per patch.
+/// Keep borrowed buffers alive and current; profile catalogs must outlive their bindings.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class ConvectionOperator {
     using Space = typename Exec::memory_space;
@@ -30,7 +32,7 @@ public:
     /// Scalar CSR and strided diagonal-component BSR slices use the same face-entry map.
     template<class Target, class Boundary, class Flux, class Reconstruction = NoReconstruction, class Inflow = FixedValueInflow>
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status, Flux flux,
-        Reconstruction reconstruction = {}, Inflow inflow = {}, Real time = 0) const
+        Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
     {
         validate_inputs(boundary, flux, reconstruction, inflow, time);
         const auto m = plan_.mesh_view();
@@ -48,9 +50,12 @@ public:
                 row_data(), target, flux, reconstruction, flags, time});
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
-            Kokkos::parallel_for("convection/add_boundary", Policy(exec, range.begin, range.end),
-                detail::AddBoundary<Space, Real, Target, C, Flux, Reconstruction, Inflow, decltype(flags)>{
-                    boundary.geometry_view(), target, condition, flux, reconstruction, inflow, flags, time});
+            detail::visit_inflow(inflow, range, [&](const auto& selected) {
+                using I = std::remove_cvref_t<decltype(selected)>;
+                Kokkos::parallel_for("convection/add_boundary", Policy(exec, range.begin, range.end),
+                    detail::AddBoundary<Space, Real, Target, C, Flux, Reconstruction, I, decltype(flags)>{
+                        boundary.geometry_view(), target, condition, flux, reconstruction, selected, flags, time});
+            });
         });
     }
 
@@ -59,7 +64,7 @@ public:
     /// Field/reconstruction inputs must not overlap output, including strided/partial aliases.
     template<class Field, class Output, class Boundary, class Flux, class Reconstruction = NoReconstruction, class Inflow = FixedValueInflow>
     void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        Flux flux, Reconstruction reconstruction = {}, Inflow inflow = {}, Real time = 0) const
+        Flux flux, Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
     {
         validate_inputs(boundary, flux, reconstruction, inflow, time);
         const auto m = plan_.mesh_view();
@@ -74,9 +79,12 @@ public:
                 row_data(), field, output, flux, reconstruction, flags, time});
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
-            Kokkos::parallel_for("convection/residual_boundary", Policy(exec, range.begin, range.end),
-                detail::ResidualBoundary<Space, Real, Field, Output, C, Flux, Reconstruction, Inflow, decltype(flags)>{
-                    boundary.geometry_view(), field, output, condition, flux, reconstruction, inflow, flags, time});
+            detail::visit_inflow(inflow, range, [&](const auto& selected) {
+                using I = std::remove_cvref_t<decltype(selected)>;
+                Kokkos::parallel_for("convection/residual_boundary", Policy(exec, range.begin, range.end),
+                    detail::ResidualBoundary<Space, Real, Field, Output, C, Flux, Reconstruction, I, decltype(flags)>{
+                        boundary.geometry_view(), field, output, condition, flux, reconstruction, selected, flags, time});
+            });
         });
     }
 
@@ -113,9 +121,13 @@ private:
     template<class Flux> void validate_flux(const Flux&) const {}
     template<class View> void validate_flux(FaceMassFlux<View> flux) const
     { scalar::detail::validate_view<Exec>(flux.values, static_cast<std::size_t>(plan_.mesh_view().sizes.n_faces)); }
-    template<class Inflow> void validate_inflow(const Inflow&) const {}
-    template<class View> void validate_inflow(FaceInflowValues<View> inflow) const
-    { scalar::detail::validate_view<Exec>(inflow.values, static_cast<std::size_t>(plan_.mesh_view().sizes.n_faces)); }
+    template<class Boundary, class Inflow> void validate_inflow(const Boundary&, const Inflow&) const {}
+    template<class Boundary, class ProfileExec, class Fallback>
+    void validate_inflow(const Boundary& boundary, const InflowProfiles<ProfileExec, Fallback>& inflow) const
+    {
+        static_assert(std::is_same_v<Exec, ProfileExec>, "Inflow profiles execution space mismatch");
+        inflow.require_catalog(boundary.catalog());
+    }
 
     template<class Boundary, class Flux, class Reconstruction, class Inflow>
     void validate_inputs(const Boundary& boundary, const Flux& flux, const Reconstruction& reconstruction,
@@ -134,7 +146,7 @@ private:
             b.normal_x.data() == g.face_normal_x.data() && b.normal_y.data() == g.face_normal_y.data() && b.normal_z.data() == g.face_normal_z.data() &&
             b.face_area.data() == g.face_area.data(), "Scalar convection: boundary manager must use the same compute mesh");
         validate_flux(flux);
-        validate_inflow(inflow);
+        validate_inflow(boundary, inflow);
         detail::validate_reconstruction<Exec>(reconstruction, static_cast<std::size_t>(m.sizes.n_cells));
     }
 };

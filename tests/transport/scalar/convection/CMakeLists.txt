@@ -4,7 +4,7 @@ if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Scalar convection tests require an MPI launcher")
 endif()
 
-foreach(case IN ITEMS upwind linear tvd muscl strided_float limiting zero_flux inflow face_inputs divergent bsr additive quick quadratic frozen_system empty)
+foreach(case IN ITEMS upwind linear tvd muscl strided_float limiting zero_flux inflow face_inputs patch_profiles profile_fallback profile_unlabelled divergent bsr additive quick quadratic frozen_system empty)
     add_test(NAME "transport.scalar.convection.${case}"
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS}
             "$<TARGET_FILE:krona_test_scalar_convection>" ${MPIEXEC_POSTFLAGS} "${case}")
@@ -15,11 +15,13 @@ foreach(ranks IN ITEMS 2 3)
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}" ${MPIEXEC_PREFLAGS}
             "$<TARGET_FILE:krona_test_scalar_convection>" ${MPIEXEC_POSTFLAGS} distributed)
     set_tests_properties("transport.scalar.convection.mpi${ranks}" PROPERTIES TIMEOUT 180 PROCESSORS "${ranks}" RUN_SERIAL TRUE)
-endforeach() 
+endforeach()
 
-set(cases mass_flux inflow short_flux short_inflow short_gradient short_factors component reconstruction in_place pending overflow underflow batch time)
+set(cases mass_flux inflow short_flux short_inflow long_inflow unknown_patch foreign_profiles profile_nan no_unlabelled short_gradient short_factors component reconstruction in_place pending overflow underflow batch time)
 set(expected "mass flux must be finite" "missing or nonfinite inflow value"
-    "invalid component extent or storage" "invalid component extent or storage"
+    "invalid component extent or storage" "profile extent must equal local patch size"
+    "profile extent must equal local patch size" "unknown inflow patch ID"
+    "profiles are bound to a different boundary catalog" "missing or nonfinite inflow value" "no unlabelled boundary patch"
     "reconstruction input extent is too short" "reconstruction input extent is too short"
     "invalid reconstruction component" "invalid reconstructed increment" "in-place residual"
     "call begin_async" "nonfinite or unrepresentable" "nonfinite or unrepresentable"
