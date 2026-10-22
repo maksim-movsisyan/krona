@@ -9,7 +9,7 @@
 
 namespace krona::transport::scalar::diffusion {
 
-/// @brief Borrowed TPFA spatial operator. No matrix/vector/graph, work-array allocation, or halo exchange.
+/// @brief Borrowed diffusion operator with an optional explicit nonorthogonal correction. No matrix/vector/graph, work-array allocation, or halo exchange.
 /// Integrated convention: r = b - A*phi; diffusion adds -outward_flux, sources are separate.
 /// Coefficients are frozen provider values; no derivatives of nonlinear models are assembled.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
@@ -27,8 +27,15 @@ public:
     template<class Target, class Boundary, class Coefficient = UniformCoefficient<Real>>
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
         IsotropicDiffusion<Coefficient> law = {}, Real time = 0) const
-    {
-        validate_inputs(boundary, law, time);
+    { add_system_async(target, boundary, status, law, NoCorrection{}, time); }
+
+    /// @brief Gradients are borrowed inputs; no reconstruction, allocation, fence or MPI is performed.
+    template<class Target, class Boundary, class Coefficient, class Correction>
+        requires (!std::is_arithmetic_v<Correction>)
+    void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
+    { 
+        validate_inputs(boundary, law, correction, time);
         const auto mesh = plan_.mesh_view();
         const auto rows = static_cast<std::size_t>(mesh.sizes.n_own);
         scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
@@ -40,12 +47,12 @@ public:
         const auto& exec = execution_space_instance();
         const auto flags = status.device_flags(exec);
         Kokkos::parallel_for("diffusion/add_rows", Policy(exec, 0, mesh.sizes.n_own),
-            detail::AddRows<Space, Real, Target, decltype(law), decltype(flags)>{row_data(), target, law, flags, time});
+            detail::AddRows<Space, Real, Target, decltype(law), Correction, decltype(flags)>{row_data(), target, law, correction, flags, time});
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
             Kokkos::parallel_for("diffusion/add_boundary", Policy(exec, range.begin, range.end),
-                detail::AddBoundary<Space, Real, Target, C, decltype(law), decltype(flags)>{
-                    boundary.geometry_view(), target, condition, law, flags, time});
+                detail::AddBoundary<Space, Real, Target, C, decltype(law), Correction, decltype(flags)>{
+                    boundary.geometry_view(), target, condition, law, correction, flags, time});
         });
     }
 
@@ -54,8 +61,15 @@ public:
     template<class Field, class Output, class Boundary, class Coefficient = UniformCoefficient<Real>>
     void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
         IsotropicDiffusion<Coefficient> law = {}, Real time = 0) const
+    { add_residual_async(field, output, boundary, status, law, NoCorrection{}, time); }
+
+    /// @brief Correction gradients, field and output must have disjoint backing storage where written.
+    template<class Field, class Output, class Boundary, class Coefficient, class Correction>
+        requires (!std::is_arithmetic_v<Correction>)
+    void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
     {
-        validate_inputs(boundary, law, time);
+        validate_inputs(boundary, law, correction, time);
         const auto mesh = plan_.mesh_view();
         scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(mesh.sizes.n_cells));
         scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(mesh.sizes.n_own));
@@ -64,21 +78,52 @@ public:
         const auto& exec = execution_space_instance();
         const auto flags = status.device_flags(exec);
         Kokkos::parallel_for("diffusion/residual_rows", Policy(exec, 0, mesh.sizes.n_own),
-            detail::ResidualRows<Space, Real, Field, Output, decltype(law), decltype(flags)>{row_data(), field, output, law, flags, time});
+            detail::ResidualRows<Space, Real, Field, Output, decltype(law), Correction, decltype(flags)>{row_data(), field, output, law, correction, flags, time});
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
             Kokkos::parallel_for("diffusion/residual_boundary", Policy(exec, range.begin, range.end),
-                detail::ResidualBoundary<Space, Real, Field, Output, C, decltype(law), decltype(flags)>{
-                    boundary.geometry_view(), field, output, condition, law, flags, time});
+                detail::ResidualBoundary<Space, Real, Field, Output, C, decltype(law), Correction, decltype(flags)>{
+                    boundary.geometry_view(), field, output, condition, law, correction, flags, time});
         });
+    }
+
+    /// @brief Adds corrected-RHS minus zero-correction RHS; matrix and prescribed base fluxes are untouched.
+    /// Reset output to the frozen base RHS for each outer iteration; do not accumulate old corrections.
+    /// Coefficients/conditions must match that base system, and boundary matrix slopes must not depend on increment.
+    template<class Output, class Boundary, class Coefficient, class Correction>
+    void add_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
+    {
+        validate_inputs(boundary, law, correction, time);
+        const auto mesh = plan_.mesh_view();
+        scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(mesh.sizes.n_own));
+        const auto& exec = execution_space_instance();
+        const auto flags = status.device_flags(exec);
+        if constexpr (detail::corrected<Correction>) {
+            Kokkos::parallel_for("diffusion/correction_rows", Policy(exec, 0, mesh.sizes.n_own),
+                detail::CorrectionRows<Space, Real, Output, decltype(law), Correction, decltype(flags)>{
+                    row_data(), output, law, correction, flags, time});
+            boundary.for_each_patch([&](auto range, const auto& condition) {
+                using C = std::remove_cvref_t<decltype(condition)>;
+                Kokkos::parallel_for("diffusion/correction_boundary", Policy(exec, range.begin, range.end),
+                    detail::CorrectionBoundary<Space, Real, Output, C, decltype(law), Correction, decltype(flags)>{
+                        boundary.geometry_view(), output, condition, law, correction, flags, time});
+            });
+        }
     }
 
     /// @brief Optional blocking collective diagnostic of the supplied field; source is volume density.
     template<class Field, class Boundary, class Coefficient = UniformCoefficient<Real>, class Source = UniformSource<Real>>
     [[nodiscard]] BalanceResult balance(Field field, const Boundary& boundary,
         IsotropicDiffusion<Coefficient> law = {}, Source source = {}, Real time = 0) const
+    { return balance(field, boundary, law, source, NoCorrection{}, time); }
+
+    template<class Field, class Boundary, class Coefficient, class Source, class Correction>
+        requires (!std::is_arithmetic_v<Correction>)
+    [[nodiscard]] BalanceResult balance(Field field, const Boundary& boundary,
+        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const
     {
-        validate_inputs(boundary, law, time);
+        validate_inputs(boundary, law, correction, time);
         const auto mesh = plan_.mesh_view();
         const auto& exec = execution_space_instance();
         scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(mesh.sizes.n_own));
@@ -90,7 +135,7 @@ public:
             using C = std::remove_cvref_t<decltype(condition)>;
             AccumulationReal sum = 0;
             Kokkos::parallel_reduce("diffusion/integrate_boundary", Policy(exec, range.begin, range.end),
-                detail::IntegrateBoundary<Space, Real, C, decltype(law), Field>{boundary.geometry_view(), condition, law, field, time}, sum);
+                detail::IntegrateBoundary<Space, Real, C, decltype(law), Field, Correction>{boundary.geometry_view(), condition, law, field, correction, time}, sum);
             boundary_sum += sum;
         });
         const std::array<double, 2> local{static_cast<double>(source_sum), static_cast<double>(boundary_sum)};
@@ -105,12 +150,13 @@ public:
 private:
     plan_type plan_;
     auto row_data() const { return detail::row_data(plan_.mesh_view(), plan_.connectivity_view(), plan_.geometry_view()); }
-    template<class Boundary, class Law>
-    void validate_inputs(const Boundary& boundary, const Law& law, Real time) const
+    template<class Boundary, class Law, class Correction>
+    void validate_inputs(const Boundary& boundary, const Law& law, const Correction& correction, Real time) const
     {
         detail::validate_boundary(plan_, boundary);
         mpi::require(std::isfinite(time), "Scalar diffusion: time must be finite");
         detail::validate_coefficient(plan_, law.coefficient);
+        detail::validate_correction(plan_, correction);
     }
 };
 

@@ -8,7 +8,7 @@
 
 namespace krona::transport::scalar {
 namespace detail {
-enum AssemblyFlag : int { BadSource, BadDiffusion, BadBoundary, HasAnchor, BadSystem, StatusCount };
+enum AssemblyFlag : int { BadSource, BadDiffusion, BadBoundary, BadCorrection, HasAnchor, BadSystem, StatusCount };
 template<class Flags>
 KOKKOS_INLINE_FUNCTION void flag(Flags flags, AssemblyFlag index)
 { Kokkos::atomic_exchange(&flags(static_cast<int>(index)), 1); }
@@ -23,7 +23,7 @@ KOKKOS_INLINE_FUNCTION void add_checked(View view, std::size_t i, Real increment
         flag(flags, BadSystem); return;
     }
     view(i) = result;
-}
+} 
 template<class View, class Real, class Flags>
 KOKKOS_INLINE_FUNCTION void atomic_add_checked(View view, std::size_t i, Real increment, Flags flags)
 {
@@ -82,6 +82,8 @@ public:
         mpi::require(global[detail::BadSource] == 0, "Scalar transport: source density must be finite");
         mpi::require(global[detail::BadDiffusion] == 0, "Scalar diffusion: coefficient must be finite and positive");
         mpi::require(global[detail::BadBoundary] == 0, "Scalar diffusion: invalid affine boundary flux");
+        mpi::require(global[detail::BadCorrection] == 0,
+            "Scalar diffusion: invalid correction data or correction-dependent boundary slope");
         mpi::require(global[detail::BadSystem] == 0, "Scalar transport: nonfinite or unrepresentable contribution/target");
         return {global[detail::HasAnchor] != 0};
     }

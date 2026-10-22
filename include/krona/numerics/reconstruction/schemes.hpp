@@ -2,6 +2,8 @@
 
 #include <krona/numerics/reconstruction/limiters.hpp>
 
+#include <Kokkos_NumericTraits.hpp>
+
 namespace krona::numerics::reconstruction {
 
 struct FirstOrder {
@@ -143,9 +145,9 @@ struct ThreePointStencil {
 template<class R>
 KOKKOS_INLINE_FUNCTION auto cell_average_quick_stencil(Kokkos::Array<std::size_t, 3> samples,
     Kokkos::Array<R, 3> centres, Kokkos::Array<R, 3> variances, R target,
-    R tolerance = R{64}*std::numeric_limits<R>::epsilon())
+    R tolerance = R{64}*Kokkos::epsilon_v<R>)
 {
-    const R nan = std::numeric_limits<R>::quiet_NaN();
+    const R nan = Kokkos::quiet_NaN_v<R>;
     ThreePointStencil<R> result{samples[1], samples, {nan, nan, nan}, false};
     if (!(tolerance >= R{0}) || !Kokkos::isfinite(tolerance) || !Kokkos::isfinite(target)) return result;
     for (std::size_t i = 0; i < 3; ++i)

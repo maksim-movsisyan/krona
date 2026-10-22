@@ -3,6 +3,7 @@
 #include <krona/transport/diffusion/isotropic.hpp>
 #include <krona/transport/scalar/source.hpp>
 #include <krona/transport/scalar/diffusion/plan.hpp>
+#include <krona/transport/scalar/diffusion/correction.hpp>
 
 namespace krona::transport::scalar::diffusion::detail {
 
@@ -26,6 +27,7 @@ struct RowData {
     Offset offsets;
     Metric cell_volume, face_x, face_y, face_z, normal_x, normal_y, normal_z, area;
     Metric distance, area_over_distance, owner_weight;
+    Metric non_ortho_x, non_ortho_y, non_ortho_z;
     bool has_weights = false;
 };
 
@@ -38,7 +40,22 @@ auto row_data(mesh::compute::MeshView<Space> mesh, mesh::compute::AuxConnectivit
         connectivity.cell_faces, connectivity.cell_faces_offsets, g.cell_volume,
         g.face_centroid_x, g.face_centroid_y, g.face_centroid_z, g.face_normal_x, g.face_normal_y, g.face_normal_z,
         g.face_area, geometry.face_normal_dist, geometry.face_area_over_normal_dist, geometry.face_interp_weight,
+        geometry.face_non_ortho_x, geometry.face_non_ortho_y, geometry.face_non_ortho_z,
         geometry.has_face_interp_weights()};
+}
+
+template<class Exec, class Real, class Correction>
+void validate_correction(const DiffusionPlan<Exec, Real>& plan, const Correction& correction)
+{
+    if constexpr (corrected<Correction>) {
+        const auto mesh = plan.mesh_view();
+        const auto geometry = plan.geometry_view();
+        mpi::require(geometry.has_face_non_ortho(),
+            "Scalar diffusion: correction requires attached FaceNonOrthogonalityVector");
+        mpi::require(mesh.sizes.n_inner_faces == 0 || geometry.has_face_interp_weights(),
+            "Scalar diffusion: correction requires attached FaceInterpolationWeights");
+        validate_gradients<Exec>(correction.gradients, static_cast<std::size_t>(mesh.sizes.n_cells));
+    }
 }
 
 template<class Real, class Space>

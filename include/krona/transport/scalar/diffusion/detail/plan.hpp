@@ -19,8 +19,8 @@ struct ValidateMetric {
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
     {
-        const std::size_t f = static_cast<std::size_t>(face);
-        const std::size_t i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
+        const auto f = static_cast<std::size_t>(face);
+        const auto i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
         const auto neighbour = mesh.connectivity.face_neigh(f);
         const auto j = neighbour < 0 ? std::size_t{0} : static_cast<std::size_t>(neighbour);
         const auto& g = mesh.geometry;
@@ -30,12 +30,12 @@ struct ValidateMetric {
         const Real nx = static_cast<Real>(g.face_normal_x(f)), ny = static_cast<Real>(g.face_normal_y(f)), nz = static_cast<Real>(g.face_normal_z(f));
         const Real h = dx*nx + dy*ny + dz*nz;
         const Real cached = static_cast<Real>(geometry.face_normal_dist(f));
-        const Real factor = static_cast<Real>(geometry.face_area_over_normal_dist(f));
+        const Real area_over_distance = static_cast<Real>(geometry.face_area_over_normal_dist(f));
         const Real tolerance = Real{128}*(static_cast<Real>(KokkosKernels::ArithTraits<GeometryReal>::epsilon()) +
                                                         KokkosKernels::ArithTraits<Real>::epsilon());
         bool valid = Kokkos::isfinite(h) && h > Real{0} && Kokkos::isfinite(cached) &&
-            Kokkos::abs(cached-h) <= tolerance*h && Kokkos::isfinite(factor) && factor > Real{0} &&
-            Kokkos::abs(factor*h-static_cast<Real>(g.face_area(f))) <= tolerance*static_cast<Real>(g.face_area(f));
+            Kokkos::abs(cached-h) <= tolerance*h && Kokkos::isfinite(area_over_distance) && area_over_distance > Real{0} &&
+            Kokkos::abs(area_over_distance*h-static_cast<Real>(g.face_area(f))) <= tolerance*static_cast<Real>(g.face_area(f));
         if (geometry.has_face_interp_weights()) {
             const Real left = (static_cast<Real>(g.face_centroid_x(f))-static_cast<Real>(g.cell_centroid_x(i)))*nx +
                               (static_cast<Real>(g.face_centroid_y(f))-static_cast<Real>(g.cell_centroid_y(i)))*ny +
@@ -44,6 +44,17 @@ struct ValidateMetric {
             const Real expected = neighbour < 0 ? Real{0} : (h-left)/h;
             valid = valid && Kokkos::isfinite(w) && w >= Real{0} && w <= Real{1} &&
                     Kokkos::abs(w-expected) <= tolerance;
+        }
+        if (geometry.has_face_non_ortho()) {
+            const Real area = static_cast<Real>(g.face_area(f));
+            const Real tx = static_cast<Real>(geometry.face_non_ortho_x(f));
+            const Real ty = static_cast<Real>(geometry.face_non_ortho_y(f));
+            const Real tz = static_cast<Real>(geometry.face_non_ortho_z(f));
+            const Real normal_scale = (nx*nx+ny*ny+nz*nz)/h;
+            valid = valid && Kokkos::isfinite(tx) && Kokkos::isfinite(ty) && Kokkos::isfinite(tz) &&
+                Kokkos::abs(tx-area*(nx-normal_scale*dx)) <= tolerance*area*(Real{1}+Kokkos::abs(normal_scale*dx)) &&
+                Kokkos::abs(ty-area*(ny-normal_scale*dy)) <= tolerance*area*(Real{1}+Kokkos::abs(normal_scale*dy)) &&
+                Kokkos::abs(tz-area*(nz-normal_scale*dz)) <= tolerance*area*(Real{1}+Kokkos::abs(normal_scale*dz));
         }
         if (options.require_orthogonal) {
             const Real tx = dx-h*nx, ty = dy-h*ny, tz = dz-h*nz;
@@ -78,14 +89,18 @@ void validate_plan(const mesh::MeshPart& host,
         const auto status = validation::validate<MeshData::FaceCells | MeshData::FaceGeometry,
             mesh::AuxConnType::CellFaces, metrics, true>(exec, mesh_view, connectivity, geometry);
         mpi::require(status.ok(), "Scalar diffusion: invalid mesh, cell-face incidence or normal metrics");
-        const std::size_t cells = static_cast<std::size_t>(s.n_cells);
-        const std::size_t owned = static_cast<std::size_t>(s.n_own);
+        const auto cells = static_cast<std::size_t>(s.n_cells);
+        const auto owned = static_cast<std::size_t>(s.n_own);
         const auto& g = mesh_view.geometry;
         mpi::require(mesh_view.has(MeshData::CellGeometry) && g.cell_centroid_x.extent(0) >= cells &&
             g.cell_centroid_y.extent(0) >= cells && g.cell_centroid_z.extent(0) >= cells && g.cell_volume.extent(0) >= owned,
             "Scalar diffusion: attach cell centres and owned volumes");
         mpi::require(!geometry.has_face_interp_weights() || geometry.face_interp_weight.extent(0) == static_cast<std::size_t>(s.n_faces),
                      "Scalar diffusion: interpolation weight extent mismatch");
+        const auto faces = static_cast<std::size_t>(s.n_faces);
+        mpi::require(!geometry.has_face_non_ortho() || (geometry.face_non_ortho_x.extent(0) == faces &&
+            geometry.face_non_ortho_y.extent(0) == faces && geometry.face_non_ortho_z.extent(0) == faces),
+            "Scalar diffusion: nonorthogonality vector extent mismatch");
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
         std::size_t bad = 0;
         Kokkos::parallel_reduce("diffusion/validate_normal_metric", Policy(exec, 0, s.n_faces),

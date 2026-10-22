@@ -48,6 +48,15 @@ public:
     [[nodiscard]] linalg::SolveResult solve_owned(const Boundary& boundary,
         IsotropicDiffusion<Coefficient> law = {}, Source source = {}, Real time = 0)
     {
+        return solve_owned(boundary, law, source, diffusion::NoCorrection{}, time);
+    }
+
+    /// @brief One frozen-gradient solve. External code updates field halos, gradients and outer iterations.
+    template<class Boundary, class Coefficient, class Source, class Correction>
+        requires (!std::is_arithmetic_v<Correction>)
+    [[nodiscard]] linalg::SolveResult solve_owned(const Boundary& boundary,
+        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0)
+    {
         const auto& exec = execution_space();
         // This solver owns a full rebuild; OverwriteAll avoids copying obsolete host values.
         const auto values = matrix_.overwrite_values(exec);
@@ -58,7 +67,7 @@ public:
         Kokkos::deep_copy(exec, target.values, Scalar{0});
         Kokkos::deep_copy(exec, target.rhs, Scalar{0});
         status_.begin_async();
-        operation_.add_system_async(target, boundary, status_, law, time);
+        operation_.add_system_async(target, boundary, status_, law, correction, time);
         source_.add_async(target.rhs, status_, source);
         using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
         const auto flags = status_.device_flags(exec);
@@ -75,11 +84,17 @@ public:
         if (result.converged) { solution_.copy_to_component(field_, exec); solution_.commit(); }
         return result;
     }
-
+ 
     template<class Boundary, class Coefficient = UniformCoefficient<Real>, class Source = UniformSource<Real>>
     [[nodiscard]] diffusion::BalanceResult balance(const Boundary& boundary,
         IsotropicDiffusion<Coefficient> law = {}, Source source = {}, Real time = 0) const
     { return operation_.balance(field_, boundary, law, source, time); }
+
+    template<class Boundary, class Coefficient, class Source, class Correction>
+        requires (!std::is_arithmetic_v<Correction>)
+    [[nodiscard]] diffusion::BalanceResult balance(const Boundary& boundary,
+        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const
+    { return operation_.balance(field_, boundary, law, source, correction, time); }
 
     [[nodiscard]] const Operator& operation() const noexcept { return operation_; }
     [[nodiscard]] const matrix_type& matrix() const noexcept { return matrix_; }

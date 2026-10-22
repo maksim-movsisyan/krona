@@ -84,7 +84,7 @@ struct Data {
     }
 };
 template<class V, class G = NoGradients, class L = UnitFactors, class H = NoHessians, class M = NoMoments>
-auto data(V values, G gradients = {}, L factors = {}, H hessians = {}, M moments = {})
+KOKKOS_INLINE_FUNCTION auto data(V values, G gradients = {}, L factors = {}, H hessians = {}, M moments = {})
 { return Data<V, G, L, H, M>{values, gradients, factors, hessians, moments}; }
 
 template<class Real>

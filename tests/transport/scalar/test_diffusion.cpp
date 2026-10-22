@@ -6,6 +6,7 @@
 #include <krona/mesh/compute/aux_storage.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/linalg/bsr_matrix.hpp>
+#include <krona/numerics/gradient/gradient_operator.hpp>
 
 #include <array>
 #include <limits>
@@ -95,9 +96,9 @@ struct Attached {
     mesh::compute::AuxGeometryStorage<Exec> geometry;
     td::DiffusionPlan<Exec, Real> plan;
     linalg::FaceAssemblyPlan<Exec> assembly;
-    Attached(const Fixture& f, mpi::CommView comm, Exec exec)
+    Attached(const Fixture& f, mpi::CommView comm, Exec exec, td::DiffusionOptions options = {})
         : mesh(f.host, {}, exec), connectivity(f.host, f.connectivity, exec), geometry(f.host, f.geometry, exec),
-          plan(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec), assembly(f.host, comm, exec) {}
+          plan(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec, options), assembly(f.host, comm, exec) {}
 };
 
 struct Robin {
@@ -499,7 +500,6 @@ void residual_case_impl(const Exec& exec) {
                     "matrix-free residual differs from b-A*phi or has incorrect volume/flux signs");
         else 
             test::near(static_cast<double>(hr(i,1)), 13.0, 0.0, "residual wrote a ghost/boundary slot");
-
         if(i<static_cast<std::size_t>(f.host.n_cells)){
             const double cx=f.host.cell_centroid_x[i];
             test::near(static_cast<double>(hq(i,1)),static_cast<double>(static_cast<Storage>(1+cx*cx+0.3*cx)),1e-5,"residual modified its input");
@@ -604,6 +604,8 @@ void rejected(const Exec& exec) {
     check(false, "invalid system unexpectedly accepted");
 }
 
+#include "test_nonorthogonal.hpp"
+
 template<auto Function>
 void with_tpetra(const Exec& exec) {
     mpi::guarded([&] {
@@ -616,6 +618,13 @@ void with_tpetra(const Exec& exec) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const std::array positive{
+        test::Case{"nonorthogonal_linear", with_tpetra<corrected_linear>},
+        test::Case{"nonorthogonal_mixed", with_tpetra<corrected_mixed>},
+        test::Case{"nonorthogonal_float", with_tpetra<corrected_float>},
+        test::Case{"nonorthogonal_orthogonal", with_tpetra<corrected_orthogonal>},
+        test::Case{"nonorthogonal_iterations", with_tpetra<corrected_iterations>},
+        test::Case{"nonorthogonal_weights", with_tpetra<corrected_weights>},
+        test::Case{"nonorthogonal_empty", with_tpetra<corrected_empty>},
         test::Case{"matrix_free", matrix_free_case},
         test::Case{"additive", with_tpetra<additive_case>},
         test::Case{"residual", with_tpetra<residual_case>},
@@ -626,7 +635,13 @@ int main(int argc, char** argv) {
         test::Case{"shared", with_tpetra<shared_case>}, test::Case{"shared_assembly", with_tpetra<assembly_case>}, test::Case{"nonconvergence", with_tpetra<nonconvergence>},
         test::Case{"duplicate_faces", with_tpetra<duplicates>}, test::Case{"strided_float", with_tpetra<strided_float>},
         test::Case{"empty", with_tpetra<empty>}, test::Case{"float_solver", with_tpetra<float_solver>}};
-    const std::array negative{
+    const std::array negative{ 
+        test::Case{"correction_no_vectors", with_tpetra<rejected_correction<0>>},
+        test::Case{"correction_no_weights", with_tpetra<rejected_correction<1>>},
+        test::Case{"correction_nan", with_tpetra<rejected_correction<2>>},
+        test::Case{"correction_stale", with_tpetra<rejected_correction<3>>},
+        test::Case{"correction_short", with_tpetra<rejected_correction<4>>},
+        test::Case{"correction_slope", with_tpetra<rejected_correction<5>>},
         test::Case{"pending", with_tpetra<rejected<0>>}, test::Case{"pure_neumann", with_tpetra<rejected<1>>},
         test::Case{"bad_coefficient", with_tpetra<rejected<2>>}, test::Case{"bad_source", with_tpetra<rejected<3>>},
         test::Case{"bad_metric", with_tpetra<rejected<4>>}, test::Case{"missing_weights", with_tpetra<rejected<5>>},

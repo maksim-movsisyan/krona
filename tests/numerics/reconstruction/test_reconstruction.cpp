@@ -6,8 +6,9 @@
 #include <krona/mesh/compute/aux_storage.hpp>
 #include <krona/halo/exchange.hpp>
 
+#include <Kokkos_NumericTraits.hpp>
+
 #include <array>
-#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -45,7 +46,7 @@ void first_order(const Exec& exec)
         Kokkos::parallel_for("test/first_order", IndexPolicy(exec, 0, 1), KOKKOS_LAMBDA(std::size_t) {
             LocalValues<double, 3> values{{{{2, 3, 4}, {7, 8, 9}, {}, {}}}};
             const auto inputs = rec::data(values); // No gradient/factor callable exists: unwanted access cannot compile.
-            const double nan = std::numeric_limits<double>::quiet_NaN();
+            const double nan = Kokkos::quiet_NaN_v<double>;
             const auto face = rec::face_geometry(0, 1, rec::Vector<double>{nan, nan, nan}, rec::Vector<double>{nan, nan, nan});
             const auto states = rec::evaluate(rec::FirstOrder{}, face, inputs);
             for (std::size_t c = 0; c < 3; ++c) { result(c) = states.left[c]; result(3+c) = states.right[c]; }
@@ -83,9 +84,12 @@ void affine_test(const Exec& exec)
     Kokkos::View<R**, Space> output("affine states", 4, 5);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/affine", IndexPolicy(exec, 0, 1), KOKKOS_LAMBDA(std::size_t) {
+            // Descriptor factories must also be callable from device kernels.
+            const auto local_gradients = rec::gradients(inputs.gradients.x, inputs.gradients.y, inputs.gradients.z);
+            const auto local_inputs = rec::data(inputs.values, local_gradients);
             const auto face = rec::face_geometry(0, 1, f-p, f-n, static_cast<R>(0.4));
-            const auto a = rec::evaluate<R>(rec::SecondOrderUpwind{}, face, inputs);
-            const auto b = rec::evaluate<R>(rec::Tvd{rec::tvd::VanLeer{}}, face, inputs);
+            const auto a = rec::evaluate<R>(rec::SecondOrderUpwind{}, face, local_inputs);
+            const auto b = rec::evaluate<R>(rec::Tvd{rec::tvd::VanLeer{}}, face, local_inputs);
             for (std::size_t c = 0; c < 5; ++c) {
                 output(0, c) = a.left[c]; output(1, c) = a.right[c];
                 output(2, c) = b.left[c]; output(3, c) = b.right[c];
@@ -106,14 +110,14 @@ void tvd_policy(const Exec& exec, L limiter)
     Kokkos::View<double*, Space> out("limiter curve", 10);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/tvd", IndexPolicy(exec, 0, 10), KOKKOS_LAMBDA(std::size_t i) {
-            const Kokkos::Array<double, 10> r{-3, 0, 0.1, 0.5, 1, 2, 10, 1e150, 1e300, std::numeric_limits<double>::infinity()};
+            const Kokkos::Array<double, 10> r{-3, 0, 0.1, 0.5, 1, 2, 10, 1e150, 1e300, Kokkos::infinity_v<double>};
             out(i) = limiter(r[i]);
         });
     });
     const auto h = host_copy(out, exec);
     test::near(h(0), 0.0, 0.0, "negative-r limiter"); test::near(h(1), 0.0, 0.0, "zero-r limiter");
     test::near(h(4), 1.0, 1e-15, "linear consistency psi(1)");
-    const std::array<double, 10> r{-3, 0, 0.1, 0.5, 1, 2, 10, 1e150, 1e300, std::numeric_limits<double>::infinity()};
+    const std::array<double, 10> r{-3, 0, 0.1, 0.5, 1, 2, 10, 1e150, 1e300, Kokkos::infinity_v<double>};
     for (std::size_t i = 2; i < r.size(); ++i)
         check(std::isfinite(h(i)) && h(i) >= 0 && h(i) <= std::min(2.0, 2*r[i])+1e-15, "TVD limiter outside Sweby region");
 }

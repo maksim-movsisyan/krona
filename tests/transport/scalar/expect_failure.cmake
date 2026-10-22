@@ -6,7 +6,7 @@ endforeach()
 
 if(NOT DEFINED RANKS)
     set(RANKS 1)
-endif()
+endif() 
 execute_process(
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${RANKS}"
         ${MPIEXEC_PREFLAGS} "${PROGRAM}" ${MPIEXEC_POSTFLAGS} "${CASE}"

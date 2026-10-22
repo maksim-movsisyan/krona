@@ -80,7 +80,7 @@ struct GradientPack {
     { return Vector<value_type>{x(cell, c), y(cell, c), z(cell, c)}; }
 };
 template<class X, class Y, class Z>
-auto gradients(X x, Y y, Z z) { return GradientPack<X, Y, Z>{x, y, z}; }
+KOKKOS_INLINE_FUNCTION auto gradients(X x, Y y, Z z) { return GradientPack<X, Y, Z>{x, y, z}; }
 
 /// @brief Adapts the gradient module's 3*c+axis component order without copying data.
 template<class Field>
