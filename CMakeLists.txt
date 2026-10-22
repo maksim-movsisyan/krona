@@ -720,6 +720,14 @@ if(KRONA_BUILD_APPLICATIONS)
     target_link_libraries(krona_scalar_diffusion PRIVATE
         krona::transport_scalar krona::mesh_io krona::warnings)
 
+    #============================================
+    #=== STEADY CONVECTION DIFFUSION EQUATION ===
+    #============================================
+    add_executable(krona_scalar_convection_diffusion apps/scalar_convection_diffusion.cpp)
+    target_link_libraries(krona_scalar_convection_diffusion PRIVATE
+        krona::transport_scalar krona::mesh_io krona::warnings)
+    
+
 endif()
     
 #==================================================================

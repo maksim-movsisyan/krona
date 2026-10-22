@@ -1,0 +1,39 @@
+# Orthogonal heat-conduction bar: 1 x 0.25 x 0.125 m, 8192 hexahedra.
+# Boundary order defines patch IDs: cold=0, hot=1, insulated=2.
+[mesh]
+name = "LinearBar"
+scale = 1.0
+vertices = [
+  [0.0, 0.0, 0.0],       # 0
+  [1.0, 0.0, 0.0],       # 1
+  [1.0, 0.25, 0.0],      # 2
+  [0.0, 0.25, 0.0],      # 3
+  [0.0, 0.0, 0.125],     # 4
+  [1.0, 0.0, 0.125],     # 5
+  [1.0, 0.25, 0.125],    # 6
+  [0.0, 0.25, 0.125]     # 7
+]
+
+[[blocks]]
+name = "bar"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [320, 80, 40]
+grading_type = ["uniform", "uniform", "uniform"]
+grading = [1.0, 1.0, 1.0]
+
+[[boundaries]]
+name = "cold"
+faces = [[0, 4, 7, 3]]       # x=0, outward normal -x
+
+[[boundaries]]
+name = "hot"
+faces = [[1, 2, 6, 5]]       # x=1, outward normal +x
+
+[[boundaries]]
+name = "insulated"
+faces = [
+  [0, 1, 5, 4],             # y=0
+  [3, 7, 6, 2],             # y=0.25
+  [0, 3, 2, 1],             # z=0
+  [4, 5, 6, 7]              # z=0.125
+]

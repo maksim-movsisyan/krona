@@ -1,0 +1,19 @@
+[[boundary_condition]]
+patch_id = 0
+name = "cold"
+[boundary_condition.scalar.scalar]
+type = "FIXED_VALUE"
+value = 0.0
+
+[[boundary_condition]]
+patch_id = 1
+name = "hot"
+[boundary_condition.scalar.scalar]
+type = "FIXED_VALUE"
+value = 1.0
+
+[[boundary_condition]]
+patch_id = 2
+name = "insulated"
+[boundary_condition.scalar.scalar]
+type = "ZERO_GRADIENT"
