@@ -506,13 +506,13 @@ For an array indexed as `field(entity, component)`:
 
 For an unpadded two-dimensional array:
 
-\[
+$$
 \operatorname{offset}_{\text{Left}}(i,c)=i+N_{\text{entities}}c,
-\]
+$$
 
-\[
+$$
 \operatorname{offset}_{\text{Right}}(i,c)=iN_{\text{components}}+c.
-\]
+$$
 
 Thus `LayoutLeft` gives component-wise streams of entities, commonly described as SoA-like storage. `LayoutRight` groups an entity’s components, commonly described as AoS-like storage.
 
@@ -565,9 +565,9 @@ is only equivalent to `component(i)` when the component stride is one.
 
 For a regular AoS-style field with three components, a selected component typically has stride three:
 
-\[
+$$
 \text{address}(i)=\text{data}+3i.
-\]
+$$
 
 Use the view’s indexing operator unless a low-level interface explicitly requires a pointer and stride.
 

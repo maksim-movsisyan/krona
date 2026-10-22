@@ -1,6 +1,6 @@
 if(NOT KRONA_ENABLE_TRILINOS)
     return()
-endif() 
+endif()
 add_executable(krona_test_scalar_diffusion test_diffusion.cpp test_nonorthogonal.hpp)
 target_link_libraries(krona_test_scalar_diffusion PRIVATE krona_test_support krona::transport_scalar)
 if(NOT MPIEXEC_EXECUTABLE)
@@ -37,3 +37,4 @@ foreach(i RANGE "${last}")
     set_tests_properties("transport.scalar.reject_${name}" PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 endforeach()
  
+add_subdirectory(convection)
