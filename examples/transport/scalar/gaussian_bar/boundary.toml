@@ -1,0 +1,20 @@
+# End-patch values are placeholders: the app sets the exact Gaussian trace at each time.
+[[boundary_condition]]
+patch_id = 0
+name = "left"
+[boundary_condition.scalar.scalar]
+type = "FIXED_VALUE"
+value = 0.0
+
+[[boundary_condition]]
+patch_id = 1
+name = "right"
+[boundary_condition.scalar.scalar]
+type = "FIXED_VALUE"
+value = 0.0
+
+[[boundary_condition]]
+patch_id = 2
+name = "side_walls"
+[boundary_condition.scalar.scalar]
+type = "ZERO_GRADIENT"
