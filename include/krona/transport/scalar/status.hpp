@@ -10,7 +10,7 @@ namespace krona::transport::scalar {
 namespace detail {
 enum AssemblyFlag : int {
     BadSource, BadDiffusion, BadBoundary, BadCorrection, HasAnchor, BadSystem,
-    BadMassFlux, BadInflow, BadReconstruction, StatusCount
+    BadMassFlux, BadInflow, BadReconstruction, BadTemporalMass, BadTemporalState, StatusCount
 };
 template<class Flags>
 KOKKOS_INLINE_FUNCTION void flag(Flags flags, AssemblyFlag index)
@@ -18,13 +18,13 @@ KOKKOS_INLINE_FUNCTION void flag(Flags flags, AssemblyFlag index)
 
 template<class View, class Real, class Flags>
 KOKKOS_INLINE_FUNCTION void add_checked(View view, std::size_t i, Real increment, Flags flags)
-{ 
+{
     using Value = typename View::non_const_value_type;
     const Value value = static_cast<Value>(increment);
     const Value result = view(i)+value;
     if (!Kokkos::isfinite(increment) || !Kokkos::isfinite(value) || !Kokkos::isfinite(result)) {
         flag(flags, BadSystem); return;
-    }
+    } 
     view(i) = result;
 }
 template<class View, class Real, class Flags>
@@ -90,6 +90,8 @@ public:
         mpi::require(global[detail::BadMassFlux] == 0, "Scalar convection: mass flux must be finite");
         mpi::require(global[detail::BadInflow] == 0, "Scalar convection: missing or nonfinite inflow value");
         mpi::require(global[detail::BadReconstruction] == 0, "Scalar convection: invalid reconstructed increment");
+        mpi::require(global[detail::BadTemporalMass] == 0, "Scalar transient: cell mass must be finite and positive");
+        mpi::require(global[detail::BadTemporalState] == 0, "Scalar transient: time-layer values must be finite");
         mpi::require(global[detail::BadSystem] == 0, "Scalar transport: nonfinite or unrepresentable contribution/target");
         return {global[detail::HasAnchor] != 0};
     }

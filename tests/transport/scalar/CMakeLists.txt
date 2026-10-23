@@ -38,3 +38,4 @@ foreach(i RANGE "${last}")
 endforeach()
  
 add_subdirectory(convection)
+add_subdirectory(transient)
