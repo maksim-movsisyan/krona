@@ -1,0 +1,28 @@
+# Unit cube, 64,000 Cartesian hexahedra. One patch covers the complete boundary.
+[mesh]
+name = "Gaussian3D"
+scale = 1.0
+vertices = [
+  [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+  [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0], [1.0, 0.0, 1.0],
+  [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]
+]
+
+[[blocks]]
+name = "cube"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [80, 80, 80]
+grading_type = ["uniform", "uniform", "uniform"]
+grading = [1.0, 1.0, 1.0]
+
+[[boundaries]]
+name = "exact_boundary"
+faces = [
+  [0, 4, 7, 3], # x=0, outward -x
+  [1, 2, 6, 5], # x=1, outward +x
+  [0, 1, 5, 4], # y=0, outward -y
+  [3, 7, 6, 2], # y=1, outward +y
+  [0, 3, 2, 1], # z=0, outward -z
+  [4, 5, 6, 7]  # z=1, outward +z
+]

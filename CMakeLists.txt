@@ -734,6 +734,15 @@ if(KRONA_BUILD_APPLICATIONS)
     target_link_libraries(krona_scalar_transient_convection_diffusion PRIVATE
         krona::transport_scalar krona::mesh_io krona::warnings)
 
+    #==================================================
+    #=== 3D TRANSIENT CONVECTION DIFFUSION EQUATION ===
+    #==================================================
+    add_executable(krona_scalar_transient_gaussian_3d apps/scalar_transient_gaussian_3d.cpp)
+    target_link_libraries(krona_scalar_transient_gaussian_3d PRIVATE
+        krona::transport_scalar krona::mesh_io krona::warnings)
+
+
+
 endif()
     
 #==================================================================

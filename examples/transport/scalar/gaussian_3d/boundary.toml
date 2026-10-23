@@ -1,0 +1,8 @@
+# The app replaces this placeholder with its custom GaussianDirichlet condition.
+# One profile supplies all faces; values depend on x, y, z and physical time.
+[[boundary_condition]]
+patch_id = 0
+name = "exact_boundary"
+[boundary_condition.scalar.scalar]
+type = "FIXED_VALUE"
+value = 0.0
