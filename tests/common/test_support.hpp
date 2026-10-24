@@ -71,10 +71,8 @@ struct Case {
 /// @brief Runs one named case or the whole suite in a single MPI process.
 inline int run(int argc, char** argv, std::string_view suite, std::span<const Case> cases)
 {
-    std::cerr << "[test] Before MPI initialization\n" << std::flush;
     mpi::Runtime mpi_runtime{argc, argv, mpi::ThreadLevel::funneled};
-    std::cerr << "[test] After MPI initialization\n" << std::flush;
-
+    
     try {
         Kokkos::ScopeGuard kokkos{argc, argv};
         check(argc <= 2, "Expected at most one test-case name");
