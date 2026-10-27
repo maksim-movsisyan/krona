@@ -383,4 +383,6 @@ does not replace the regular validator's guarded sequence of checks.
 - An asynchronous validation interface would need deferred result consumption
   and the same shape/index gates before incidence gathers. Returning an
   immediately usable host `Result` requires a completion boundary.
+- Aux geometry and storage not necessarily need host mesh object, delete it in future
+architecture refactoring to minimize dependencies among modules.
 

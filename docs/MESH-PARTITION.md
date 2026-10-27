@@ -370,11 +370,11 @@ The source dual graph is released before migration; target-rank storage is relea
 Example production invocation:
 
 ```bash
-mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --reorder RCM -v
-mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --reorder SFC --bc mesh.toml --vtu vtk -v
+mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --reorder=RCM -v
+mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --reorder=SFC --bc=mesh.toml --vtu=vtk -v
 ```
 
-Both `--bc` and `--vtu` are optional. Visualization is an output view of the mesh and cannot replace the solver snapshot.
+All `--reorder`, `--bc` and `--vtu` are optional. Visualization is an output view of the mesh and cannot replace the solver snapshot.
 
 ## 6. Reuse for moving and adaptive meshes
 
@@ -405,30 +405,6 @@ Adaptation must supply new cells, nodes, boundary labels, and valid positive ori
 After rebuilding faces and adjacency, a rebalance can reuse graph partitioning and migration. The present partitioner performs a fresh partition, not incremental repartitioning with migration-cost minimization. Migration reconstructs mesh data and halo maps; transferring solution fields, conservative remapping, and prolongation/restriction require separate operations.
 
 Nonconforming AMR is outside the current contract. Sorted full-face node keys cannot match one coarse face to several fine faces. Supporting such interfaces requires subface topology and coarse/fine relations, extended flux coupling and communication maps, and any constraints required by the numerical method. Refinement trees, parent/child IDs, hanging-node constraints, and adaptation history are absent from the current file schema.
-
-## 7. Reader/writer consistency review
-
-### Result and scope
-
-**No field omission or reader/writer layout mismatch was found for a valid, grouped `MeshPart` using the supported build types and the saved communicator size/rank mapping.** Both implementations call the same `detail::visit_arrays`, so dataset names, collective traversal order, and category selection agree for all 34 persistent vector arrays.
-
-The review used the corrected supplied `localmesh(3).hpp`, `element(3).hpp`, `hdf5_detail(1).hpp`, `hdf5_reader(1).cpp`, `hdf5_writer(1).cpp`, and `mesh_partitioner(2).cpp`. Pipeline module behavior is described from the application's calls and comments. The included `raw_mesh.hpp`, configuration, MPI wrappers, and module implementations were not supplied in this corrected set.
-
-Checks included field coverage, all 19 directory columns, header correspondence, independent category prefixes, full local CSR blocks, and patch-string ordering. A layout model exercised unequal payload lengths, a nonidentity partition permutation, an empty partition, and empty/non-ASCII strings. This was **source inspection and a layout-model check**, not an executed C++ MPI/HDF5 round-trip: the review environment did not provide the required MPI/parallel-HDF5 dependencies or complete project.
-
-| `MeshPart` state | Export | Import |
-| --- | --- | --- |
-| 34 vector arrays | Shared `visit_arrays` traversal | Same traversal and category prefixes |
-| Cell/node ownership boundaries and face-region counts | Directory scalar columns | Corresponding counts restored with local-range checks |
-| `faces_grouped` | Requires true; writes `1` | Requires directory value `1`; restores true |
-| `n_flipped` | Directory column 18 | Restored without recomputation |
-| Seven global counts | Header indices 7–13 | Same fields restored |
-| Bounding box | `/meta/bbox_lo`, `/meta/bbox_hi` | Same arrays read |
-| Patch metadata | Three strings per patch, byte offsets | Same string sequence reconstructed |
-| `rank`, `nprocs` | Checked against `comm`; saved size and mapping describe placement | Set from the current communicator, whose size must match |
-| `n_neighbors()` | No separate stored field | Derived from restored `nb_ranks` |
-
-Topology and ordering are preserved; metric values are loaded rather than recomputed. Vector capacity, allocator state, temporary face records, source distributions, the partition graph, input-file provenance, and solver fields are not part of the snapshot.
 
 ### Preconditions and hardening gaps
 

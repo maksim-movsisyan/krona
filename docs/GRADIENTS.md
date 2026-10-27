@@ -324,6 +324,6 @@ a separate accumulation buffer.
 - Large fused batches increase per-thread working storage. Choose batch sizes
   through profiling rather than assuming that larger batches are always faster.
 
-`required_input_size()` reports the extended input extent.
+*Note*: `required_input_size()` reports the extended input extent.
 `coefficient_bytes()` reports allocated LS coefficient bytes; Green–Gauss
 plans have no coefficient allocation.

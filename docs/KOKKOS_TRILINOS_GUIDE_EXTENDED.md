@@ -16,8 +16,6 @@ Most examples are fragments to be used inside an initialized application. Sectio
 
 This is a guide to the underlying libraries and their connection to KRONA. Numerical discretizations and complete operator contracts belong in the individual module documents.
 
-**Verification scope.** The standalone Kokkos example and selected Kokkos/C++ examples were compiled and executed with Kokkos 5.2.1, the Serial backend, and C++20. Tpetra/Belos examples and KRONA-specific access paths were checked against the supplied headers and Trilinos 17.2.1 source; they were not compiled or executed in this revision because the available environment had no MPI development toolchain. CUDA/HIP execution and multi-rank execution were not verified by these checks.
-
 Fragments reuse names such as `Exec`, `Mem`, `Policy`, and `exec` from the surrounding discussion. A fragment that shows a handoff or wrapper call assumes the required objects already exist. Sections 12.9 and 23 contain standalone programs.
 
 <details>
@@ -52,7 +50,6 @@ Fragments reuse names such as `Exec`, `Mem`, `Policy`, and `exec` from the surro
 - [27. Reading KRONA source code](#27-reading-krona-source-code)
 - [28. C++ syntax frequently used in these interfaces](#28-c-syntax-frequently-used-in-these-interfaces)
 - [29. Common mistakes](#29-common-mistakes)
-- [30. Performance habits that follow from the model](#30-performance-habits-that-follow-from-the-model)
 - [31. Further reading](#31-further-reading)
 
 </details>
@@ -723,9 +720,9 @@ Strided field(
 
 The pairs are `(entities, 3)` and `(3, 1)`, so:
 
-\[
+$$
 \operatorname{address}(i,c)=\operatorname{pointer}+3i+c.
-\]
+$$
 
 The equivalent unpadded component-major mapping uses:
 
@@ -1834,11 +1831,11 @@ Row 0 uses entries `[0, 2)`. Row 1 uses entries `[2, 5)`.
 
 The local multiplication is:
 
-\[
+$$
 y_i=
 \sum_{k=\mathrm{offsets}(i)}^{\mathrm{offsets}(i+1)-1}
 a_k\,x_{\mathrm{columns}(k)}.
-\]
+$$
 
 After graph finalization, the column indices refer to the local column map.
 
@@ -1905,9 +1902,9 @@ After finalization, entry order can differ from the caller’s original CSR orde
 
 A precomputed permutation or assembly map can translate:
 
-\[
+$$
 \text{application entry}\longrightarrow\text{native coefficient slot}.
-\]
+$$
 
 Such a map depends on the exact finalized graph and indexing. It cannot be reused merely because two matrices have the same number of entries.
 
@@ -2228,10 +2225,10 @@ For \(B\) unknowns per cell:
 
 The block multiplication is:
 
-\[
+$$
 \mathbf y_i=\sum_j A_{ij}\mathbf x_j,
 \qquad A_{ij}\in\mathbb R^{B\times B}.
-\]
+$$
 
 ### 21.1 What BSR saves
 
@@ -2247,15 +2244,15 @@ BSR mainly reduces index and graph overhead and exposes block structure. It does
 
 KRONA’s cell-major ordering uses:
 
-\[
+$$
 \operatorname{pointGID}(g,c)=gB+c.
-\]
+$$
 
 Locally:
 
-\[
+$$
 \operatorname{pointLID}(i,c)=iB+c.
-\]
+$$
 
 For \(B=3\):
 
@@ -3473,85 +3470,6 @@ The operator's host-level virtual call can launch an internally specialized para
 | Reusing a preconditioner solely because the graph is unchanged | Its numerical data can also depend on coefficients |
 | Modifying native objects while ignoring wrapper state | Preserve KRONA’s access, commit, and revision contracts |
 
-## 30. Performance habits that follow from the model
-
-Allocate persistent work arrays outside repeated face or cell loops.
-
-Keep data in the memory space where it is consumed. Avoid alternating host and device access when one longer phase on each side is sufficient.
-
-Pass small descriptors to kernels. Leave storage ownership in longer-lived objects.
-
-Use execution instances consistently so dependencies do not require unnecessary host waits.
-
-Choose gathering or atomic accumulation deliberately. Measure the actual workload instead of assuming atomics or row-based assembly always wins.
-
-Reuse a finalized graph when its structure remains valid. Reuse numerical setup according to the selected algorithm’s contract.
-
-Remember that a solve contains more than sparse matrix-vector multiplication:
-
-- Krylov vector updates.
-- Dot products and global reductions.
-- Orthogonalization.
-- Preconditioner applications.
-- Setup and communication.
-
-A small case can be dominated by launch overhead, communication latency, or solver vector operations. This can limit scaling even when application kernels are efficient.
-
-When measuring asynchronous work, include the intended completion boundary. Otherwise the measurement may capture submission time rather than execution time.
-
-### 30.1 A reading route through the supplied linalg headers
-
-The following paths are relative to the KRONA source tree. They identify the implementation behind concepts introduced here:
-
-| Header | Read it to understand |
-|---|---|
-| `include/krona/execution/types.hpp` | Build-selected execution space and memory alias |
-| `include/krona/linalg/types.hpp` | Native Node/ETI and scalar-dependent type families |
-| `include/krona/linalg/distribution.hpp` | Owned global IDs, map construction, expanded point maps |
-| `include/krona/linalg/csr_pattern.hpp` | Finalized graph and original-input-to-native permutation |
-| `include/krona/linalg/bsr_pattern.hpp` | Shared block graph, fixed width, and point distribution |
-| `include/krona/linalg/vector.hpp` | Local access phases, fill, commit, component transfer |
-| `include/krona/linalg/csr_matrix.hpp` | Native scalar values, revisions, graph sharing |
-| `include/krona/linalg/bsr_matrix.hpp` | Flat block values and unmanaged rank-three adapters |
-| `include/krona/linalg/face_assembly.hpp` | Mesh-face-to-graph-entry positions shared by compatible matrices |
-| `include/krona/linalg/field_transfer.hpp` | Field/component packs and owned-prefix transfers |
-| `include/krona/linalg/preconditioner.hpp` | Revision-aware preparation and native setup choices |
-| `include/krona/linalg/detail/precision_operator.hpp` | Multivector conversion around an inner operator |
-| `include/krona/linalg/solver.hpp` | Belos manager, initial guess, and true-residual verification |
-
-Read the public wrappers before their `detail` helpers. The module's own documentation provides complete system construction and configuration examples; this guide explains the library mechanisms that those examples rely on.
-
-### 30.2 Questions to answer before adding a new kernel phase
-
-For a concrete extension, identify:
-
-1. The actual view types, element types, shapes, and strides.
-2. Which objects own or borrow each allocation.
-3. Which execution instance produces and consumes each array.
-4. Whether an operation crosses into host access, MPI, or a native library.
-5. Which values must be preserved and which will be completely overwritten.
-6. Whether a wrapper revision or pending state must change.
-7. Which counts are cells, point DOFs, blocks, or scalar coefficient positions.
-
-These answers determine correctness of the integration. Knowing only that an argument is “a view” or “an operator” is insufficient.
-
-### 30.3 Verification notes for this revision
-
-The small Kokkos validation programs exercised:
-
-- Shared managed descriptors versus raw-pointer/unmanaged wrapping.
-- Independent mirrors versus aliasing mirror views in HostSpace.
-- Strided component access and explicit rank-two/rank-three mappings.
-- Layout/scalar conversion on an accessible execution space.
-- A reduction into a scalar view followed by a dependent kernel.
-- A built-in minimum reduction and a plain DualView modification/synchronization cycle.
-- The standalone program in Section 12.9.
-- The host-side variant/overload/deduction mechanisms illustrated in Section 28.
-
-These checks used Serial, so they verify the exercised semantics and compilation, not GPU concurrency or CUDA compiler acceptance. In particular, no observation of immediate CPU completion establishes a GPU ordering guarantee.
-
-The native matrix/vector accessors, BSR constructor/maps/layout, Node aliases, and Belos/preconditioner lifecycle were inspected in the matching Trilinos source. Full native Tpetra/Belos examples, actual distributed execution, and KRONA wrapper examples were not compiled/run in this revision because the MPI development toolchain was unavailable. They should be built with the project's configured Trilinos/MPI stack before being treated as executable regression tests.
-
 ## 31. Further reading
 
 The official references below provide the detailed contracts behind this guide.
@@ -3570,8 +3488,6 @@ The official references below provide the detailed contracts behind this guide.
 - [Belos LinearProblem reference](https://trilinos.github.io/docs/belos/class_belos_1_1_linear_problem.html)
 - [Ifpack2 overview](https://trilinos.github.io/docs/ifpack2/index.html)
 - [MueLu overview](https://trilinos.github.io/docs/muelu/index.html)
-
-After this guide, read KRONA’s mesh, fields, exchange, gradient, boundary-condition, and linear-algebra documentation. Those documents define the application-specific ownership, indexing, asynchronous execution, and commit contracts layered over the native libraries.
 
 ### Additional API and version-pinned implementation references
 

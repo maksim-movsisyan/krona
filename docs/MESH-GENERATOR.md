@@ -9,7 +9,7 @@ This document formalizes the topological, geometric, and numerical specification
 * **Coordinate Frame:** 3D Right-Handed Cartesian coordinate system $(x, y, z)$.
 * **Units:** All input coordinates are multiplied by the global scalar `scale` to convert them to SI meters ($m$).
 * **Indexing in Configuration:** All vertex indices in the input file are 0-based.
-* **Indexing in CGNS Output:** All node indices, element ranges, and section connectivity arrays are strictly 1-based (CGNS SIDS compliance).
+* **Indexing in CGNS Output:** All node indices, element ranges, and section connectivity arrays are strictly **1-based (CGNS SIDS compliance)**.
 
 ---
 

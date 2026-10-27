@@ -245,19 +245,6 @@ block. Complete any separate users of the fields before destroying their owners.
 With `MPI_THREAD_FUNNELED`, call the host API from the thread that initialized
 MPI. A single exchanger has no internal thread-safety mechanism.
 
-## Tests
-
-The halo CTest cases cover loopback on one rank, roundtrip/one-way/integer and
-selected-component exchanges on two ranks, and multiple peers or an isolated
-empty rank on three ranks. They exercise SoA and AoS fields, reverse scatter
-maps, concurrent groups with distinct tags, repeated use, queued consumers,
-destructor completion, and preservation of unregistered/boundary entries.
-GPU configurations use host staging; they do not test GPU-aware direct MPI.
-
-```bash
-ctest --test-dir build -R '^halo\.' --output-on-failure
-```
-
 ## Current limits and potential improvements
 
 - **Progress API:** `test()` or `progress()` could poll MPI and queue unpacking
@@ -276,5 +263,3 @@ ctest --test-dir build -R '^halo\.' --output-on-failure
   descriptors are fixed. Reordering, adaptation, or field reallocation requires
   rebuilding the exchanger. Mesh motion that preserves numbering and allocation
   addresses does not change the exchange plan.
-
-These are possible extensions; they are not part of the current API.

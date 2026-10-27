@@ -267,5 +267,3 @@ example](https://kokkos.org/kokkos-core-wiki/API/core/view/deep_copy.html).
   Halo exchange, boundary-value updates, and mappings for appended boundary
   entries belong to their respective consumers; the fields module provides no
   automatic updates.
-
-These are extension points, not additional facilities in the current API.
