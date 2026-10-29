@@ -1,13 +1,33 @@
 #pragma once
 
 #include <array>
+#include <cmath>
+#include <limits>
 
-#include "krona/mesh_generation/config.hpp"
+#include "krona/mesh/generation/config.hpp"
 
-namespace krona::mesh_generation {
+namespace krona::mesh::generation {
 
 class TFI {
 public:
+    // Derivatives of the trilinear map, normalized to avoid a dimensional cutoff.
+    [[nodiscard]] static bool positive_jacobian(const std::array<Vec3, 8>& p,
+                                               double u, double v, double w) noexcept {
+        const Vec3 du = (p[1]-p[0])*((1-v)*(1-w)) + (p[2]-p[3])*(v*(1-w)) +
+                        (p[5]-p[4])*((1-v)*w) + (p[6]-p[7])*(v*w);
+        const Vec3 dv = (p[3]-p[0])*((1-u)*(1-w)) + (p[2]-p[1])*(u*(1-w)) +
+                        (p[7]-p[4])*((1-u)*w) + (p[6]-p[5])*(u*w);
+        const Vec3 dw = (p[4]-p[0])*((1-u)*(1-v)) + (p[5]-p[1])*(u*(1-v)) +
+                        (p[7]-p[3])*((1-u)*v) + (p[6]-p[2])*(u*v);
+        const double a = std::hypot(du.x, du.y, du.z);
+        const double b = std::hypot(dv.x, dv.y, dv.z);
+        const double c = std::hypot(dw.x, dw.y, dw.z);
+        if (!(a > 0 && b > 0 && c > 0) || !std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c))
+            return false;
+        const double determinant = (du/a).cross(dv/b).dot(dw/c);
+        return std::isfinite(determinant) && determinant > 64 * std::numeric_limits<double>::epsilon();
+    }
+
     // 1D Linear edge interpolation between two points: s in [0, 1]
     [[nodiscard]] static constexpr Vec3 interpolate_edge(const Vec3& p0, const Vec3& p1, double s) noexcept {
         return p0 * (1.0 - s) + p1 * s;
@@ -55,4 +75,4 @@ public:
     }
 };
 
-} // namespace krona::mesh_generation
+} // namespace krona::mesh::generation 

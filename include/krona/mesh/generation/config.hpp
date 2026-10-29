@@ -8,12 +8,12 @@
 #include <string_view>
 #include <vector>
 
-#include <mpi.h>
+#include <krona/mpi/communicator.hpp>
 #include "krona/mpi/error.hpp"
 
 
-namespace krona::mesh_generation {
-
+namespace krona::mesh::generation {
+ 
 struct Vec3 {
     double x{0.0};
     double y{0.0};
@@ -71,22 +71,22 @@ enum class GradingType : std::uint8_t {
     return "unknown";
 }
 
-[[nodiscard]] inline GradingType parse_grading_type(std::string_view str) {
+[[nodiscard]] inline GradingType parse_grading_type(std::string_view str) noexcept {
     if (str == "uniform")    return GradingType::UNIFORM;
     if (str == "geometric")  return GradingType::GEOMETRIC;
     if (str == "tanh_start") return GradingType::TANH_START;
     if (str == "tanh_end")   return GradingType::TANH_END;
     if (str == "tanh_both")  return GradingType::TANH_BOTH;
-    mpi::fatal("Unknown grading type: " + std::string(str));
+    mpi::fatal("Unknown grading type (expected uniform, geometric, tanh_start, tanh_end or tanh_both)");
     return static_cast<GradingType>(0);
 }
 
 struct MacroBlock {
     std::string name;
     std::array<std::size_t, 8> vertices{};
-    std::array<std::size_t, 3> cells{};         // Nx, Ny, Nz
-    std::array<GradingType, 3> grading_type{};  // Along xi, eta, zeta
-    std::array<double, 3> grading{};            // Strengths / ratios
+    std::array<std::size_t, 3> cells{};                         // Nx, Ny, Nz
+    std::array<GradingType, 3> grading_type{};                  // Along xi, eta, zeta
+    std::array<double, 3> grading{1.0, 1.0, 1.0};   // Strengths / ratios
 };
 
 struct MacroFace {
@@ -106,6 +106,9 @@ struct GeneratorConfig {
     std::vector<BoundaryPatch> boundaries;
 };
 
-GeneratorConfig parse_generator_config(const std::string& path, const MPI_Comm comm);
+GeneratorConfig parse_generator_config(const std::string& path, mpi::CommView comm) noexcept;
 
-} // namespace krona::mesh_generation
+// Also used by MacroTopology::build for configurations constructed in C++.
+void validate_generator_config(const GeneratorConfig& config) noexcept;
+
+} // namespace krona::mesh::generation

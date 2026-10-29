@@ -6,17 +6,17 @@
 #include <vector>
 #include <utility>
 
-#include <mpi.h>
-#include "krona/mesh_generation/config.hpp"
+#include <krona/mpi/communicator.hpp>
+#include "krona/mesh/generation/config.hpp"
 
-namespace krona::mesh_generation {
+namespace krona::mesh::generation {
 
 struct NodeSource {
     std::size_t block_idx{0};
     std::size_t i{0};
     std::size_t j{0};
     std::size_t k{0};
-};
+}; 
 
 struct MacroEdge {
     std::size_t v0{0};
@@ -27,6 +27,7 @@ struct MacroEdge {
 
 struct MacroFaceDesc {
     std::array<std::size_t, 4> vertices{};
+    std::size_t incident_blocks{1};
     std::size_t cells_u{0};
     std::size_t cells_v{0};
     std::uint64_t global_start_id{0};
@@ -34,7 +35,7 @@ struct MacroFaceDesc {
 
 class MacroTopology {
 public:
-    void build(const GeneratorConfig& config, MPI_Comm comm);
+    void build(const GeneratorConfig& config, mpi::CommView comm) noexcept;
 
     [[nodiscard]] std::uint64_t get_node_id(std::size_t block_idx,
                                            std::size_t i,
@@ -63,6 +64,11 @@ public:
                                 std::size_t& j,
                                 std::size_t& k) const noexcept;
 
+    // Validated user patches, followed by one automatic patch if faces were omitted.
+    [[nodiscard]] const std::vector<BoundaryPatch>& boundary_patches() const noexcept {
+        return boundary_patches_;
+    }
+
     [[nodiscard]] std::uint64_t total_nodes() const noexcept { return total_nodes_; }
     [[nodiscard]] std::uint64_t total_cells() const noexcept { return total_cells_; }
 
@@ -72,11 +78,18 @@ private:
 
     std::vector<MacroEdge> edges_;
     std::vector<MacroFaceDesc> faces_;
+    std::vector<BoundaryPatch> boundary_patches_;
 
     struct BlockTopo {
         std::array<std::size_t, 8> vertices{};
         std::array<std::pair<std::size_t, bool>, 12> edges;
-        std::array<std::size_t, 6> faces;
+        struct FaceRef {
+            std::size_t index{0};
+            bool swap_uv{false};
+            bool reverse_u{false};
+            bool reverse_v{false};
+        };
+        std::array<FaceRef, 6> faces;
         std::uint64_t vol_start_id{0};
         std::size_t vol_count{0};
         std::vector<double> dist_x;
@@ -94,6 +107,7 @@ private:
         std::array<std::size_t, 3> origin{};
         std::array<std::size_t, 3> shape{1, 1, 1};
         bool reversed{false};
+        std::size_t axis{0};
     };
     std::vector<NodeSource> vertex_sources_;
     std::vector<NodeRange> node_ranges_;
@@ -102,7 +116,7 @@ private:
 
     std::size_t find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells);
     std::size_t find_or_add_face(const std::array<std::size_t, 4>& quad_v,
-                                 std::size_t cu, std::size_t cv, MPI_Comm comm);
+                                 std::size_t cu, std::size_t cv);
 };
 
-} // namespace krona::mesh_generation
+} // namespace krona::mesh::generation

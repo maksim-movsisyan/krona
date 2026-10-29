@@ -19,7 +19,7 @@ endif()
 project(
     KRONA
     VERSION 0.1.0
-    DESCRIPTION "Portable distributed scientific computing" 
+    DESCRIPTION "Kokkos-based Reusable Operators for Numerical Applications" 
     LANGUAGES C CXX
 )
 
@@ -183,7 +183,8 @@ add_library(krona_build_config INTERFACE)
 add_library(krona::build_config ALIAS krona_build_config)
 target_compile_features(krona_build_config INTERFACE cxx_std_20)
 target_include_directories(krona_build_config INTERFACE
-    "$<BUILD_INTERFACE:${_krona_generated_include}>")
+    "$<BUILD_INTERFACE:${_krona_generated_include}>"
+    "$<INSTALL_INTERFACE:include>")
     
 #==================================================================
 #==== USFUL HELPERS ===============================================
@@ -201,6 +202,13 @@ function(krona_interface name)
     target_link_libraries(krona_${name} INTERFACE ${ARGN})
 endfunction()
 
+function(krona_require_target name)
+    if(NOT TARGET "${name}")
+        message(FATAL_ERROR
+            "Required dependency target '${name}' was not exported by the selected installation.")
+    endif()
+endfunction()
+
 #==================================================================
 #==== COMPILER WARNINGS & CODE QUALITY CONTROLS ===================
 #==================================================================
@@ -216,13 +224,6 @@ if(KRONA_WARNINGS_AS_ERRORS)
         "$<$<COMPILE_LANG_AND_ID:CXX,NVIDIA>:-Werror=all-warnings;-Xcompiler=-Werror>"
         "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/WX>")
 endif()
-
-function(krona_require_target name)
-    if(NOT TARGET "${name}")
-        message(FATAL_ERROR
-            "Required dependency target '${name}' was not exported by the selected installation.")
-    endif()
-endfunction()
 
 #==================================================================
 #==== ACTIVE DEPENDENCY VERIFICATION & SANITY CHECKS ==============
@@ -531,9 +532,9 @@ endif()
     #=======================
 if(KRONA_ENABLE_CGNS)
     add_library(krona_mesh_generation STATIC
-        src/mesh_generation/config.cpp
-        src/mesh_generation/topology.cpp
-        src/mesh_generation/writer.cpp)
+        src/mesh/generation/config.cpp
+        src/mesh/generation/topology.cpp
+        src/mesh/generation/writer.cpp)
     add_library(krona::mesh_generation ALIAS krona_mesh_generation)
     krona_public_headers(krona_mesh_generation PUBLIC)
     target_link_libraries(krona_mesh_generation

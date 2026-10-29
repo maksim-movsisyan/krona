@@ -1,0 +1,40 @@
+[mesh]
+name = "Unit cube"
+scale = 1.0
+vertices = [
+    [0.0, 0.0, 0.0], # 0
+    [1.0, 0.0, 0.0], # 1
+    [1.0, 1.0, 0.0], # 2
+    [0.0, 1.0, 0.0], # 3
+    [0.0, 0.0, 1.0], # 4
+    [1.0, 0.0, 1.0], # 5
+    [1.0, 1.0, 1.0], # 6
+    [0.0, 1.0, 1.0], # 7
+]
+
+[[blocks]]
+name = "cube"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [10, 8, 6]
+# Omitting grading_type and grading gives uniform spacing.
+
+[[boundaries]]
+name = "bottom"
+faces = [[0, 3, 2, 1]]
+
+[[boundaries]]
+name = "front"
+faces = [[0, 1, 5, 4]]
+
+[[boundaries]]
+name = "right"
+faces = [[1, 2, 6, 5]]
+
+[[boundaries]]
+name = "back"
+faces = [[2, 3, 7, 6]]
+
+[[boundaries]]
+name = "left"
+faces = [[3, 0, 4, 7]]
+

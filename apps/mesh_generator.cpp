@@ -1,16 +1,16 @@
-#include "krona/mpi/collective_status.hpp"
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/mpi/error.hpp>
-#include <krona/mesh_generation/config.hpp>
-#include <krona/mesh_generation/topology.hpp>
-#include <krona/mesh_generation/writer.hpp>
+#include <krona/mesh/generation/config.hpp>
+#include <krona/mesh/generation/topology.hpp>
+#include <krona/mesh/generation/writer.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -39,8 +39,8 @@ void usage(std::FILE* stream) noexcept {
         "KRONA distributed mesh generator\n"
         "\n"
         "Usage:\n"
-        "  mpirun -np N mesh_generation <in.toml> <out.cgns> [options]\n"
-        "  mesh_generation --help\n"
+        "  mpirun -np N krona_mesh_generator <in.toml> <out.cgns> [options]\n"
+        "  krona_mesh_generator --help\n"
         "\n"
         "Options:\n"
         "  -v, --verbose      Summary diagnostics.\n"
@@ -49,8 +49,8 @@ void usage(std::FILE* stream) noexcept {
         "  --                 End options; remaining arguments are paths.\n"
         "\n"
         "Examples:\n"
-        "  mpirun -np 4 mesh_generation mesh_config.toml result_mesh.cgns\n"
-        "  mpirun -np 4 mesh_generation mesh_config.toml result_mesh.cgns --verbose\n",
+        "  mpirun -np 4 krona_mesh_generator mesh_config.toml result_mesh.cgns\n"
+        "  mpirun -np 4 krona_mesh_generator mesh_config.toml result_mesh.cgns --verbose\n",
         stream);
 }
 
@@ -90,6 +90,10 @@ void usage(std::FILE* stream) noexcept {
             continue;
         }
 
+        if (!positional_only && token.starts_with('-')) {
+            fail("Unknown option", token);
+            return result;
+        }
         if (token.empty()) {
             fail("Input and output paths must not be empty");
             return result;
@@ -113,6 +117,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     std::array<int, 3> header{};
 
     if (comm.rank() == 0) {
+        krona::mpi::require(options.input.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
+                            options.output.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
+                            "Command-line path exceeds MPI count range");
         header[0] = static_cast<int>(options.input.size());
         header[1] = static_cast<int>(options.output.size());
         header[2] = static_cast<int>(options.verbosity);
@@ -133,7 +140,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     if (comm.rank() == 0) {
         if (options.verbosity > Verbosity::quiet) {
             std::fprintf(stderr,
-                "KRONA mesh_generation: input=%s output=%s ranks=%d verbosity=%d\n",
+                "KRONA mesh generator: input=%s output=%s ranks=%d verbosity=%d\n",
                 options.input.c_str(), options.output.c_str(), comm.size(),
                 static_cast<int>(options.verbosity));
         }
@@ -141,20 +148,18 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
 
 
     // Parse configuration and validate all design contracts collectively
-    const krona::mesh_generation::GeneratorConfig cfg 
-        = krona::mesh_generation::parse_generator_config(options.input, comm.native());
+    const krona::mesh::generation::GeneratorConfig cfg 
+        = krona::mesh::generation::parse_generator_config(options.input, comm);
+
+    krona::mesh::generation::MacroTopology topo;
+    topo.build(cfg, comm);
 
     if (options.verbosity >= Verbosity::summary) {
         // Compute mesh volume statistics
-        std::uint64_t total_volume_cells = 0;
-        for (const auto& block : cfg.blocks) {
-            total_volume_cells += static_cast<std::uint64_t>(block.cells[0]) *
-                                static_cast<std::uint64_t>(block.cells[1]) *
-                                static_cast<std::uint64_t>(block.cells[2]);
-        }
+        const std::uint64_t total_volume_cells = topo.total_cells();
 
         std::uint64_t total_boundary_faces = 0;
-        for (const auto& patch : cfg.boundaries) {
+        for (const auto& patch : topo.boundary_patches()) {
             total_boundary_faces += patch.faces.size();
         }
 
@@ -162,10 +167,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
         if (comm.rank() == 0) {
             std::fprintf(stdout, "\n[Config Validation Succeeded]\n");
             std::fprintf(stdout, "  Mesh Name:         %s\n", cfg.name.c_str());
-            std::fprintf(stdout, "  Scaling Factor:    %f\n", cfg.scale); // Используйте %.f, если нужна точность
+            std::fprintf(stdout, "  Scaling Factor:    %f\n", cfg.scale);
             std::fprintf(stdout, "  Macro Vertices:    %zu\n", cfg.vertices.size());
             std::fprintf(stdout, "  Macro Blocks:      %zu\n", cfg.blocks.size());
-            std::fprintf(stdout, "  Boundary Patches:  %zu\n", cfg.boundaries.size());
+            std::fprintf(stdout, "  Boundary Patches:  %zu\n", topo.boundary_patches().size());
             std::fprintf(stdout, "  Total Hex Cells:   %llu\n", static_cast<unsigned long long>(total_volume_cells));
             std::fprintf(stdout, "  Macro Bnd Faces:   %llu\n", static_cast<unsigned long long>(total_boundary_faces));
 
@@ -181,9 +186,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
                                             static_cast<unsigned long long>(b.cells[2]), 
                          static_cast<unsigned long long>(b_cells));
 
-                    std::string type0{ krona::mesh_generation::to_string(b.grading_type[0]) };
-                    std::string type1{ krona::mesh_generation::to_string(b.grading_type[1]) };
-                    std::string type2{ krona::mesh_generation::to_string(b.grading_type[2]) };
+                    std::string type0{ krona::mesh::generation::to_string(b.grading_type[0]) };
+                    std::string type1{ krona::mesh::generation::to_string(b.grading_type[1]) };
+                    std::string type2{ krona::mesh::generation::to_string(b.grading_type[2]) };
 
                     std::fprintf(stdout, "      Grading Types: [%s, %s, %s]\n",
                                  type0.c_str(), type1.c_str(), type2.c_str());
@@ -193,19 +198,14 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
                 }
 
                 std::fprintf(stdout, "\n === Boundary Patches ===\n");
-                for (const auto& patch : cfg.boundaries) {
+                for (const auto& patch : topo.boundary_patches()) {
                     std::fprintf(stdout, "  Patch '%s': %zu macro-faces\n", patch.name.c_str(), patch.faces.size());
                 }
             }
         }
     }
 
-    // Building mesh macro topology
-    krona::mesh_generation::MacroTopology topo;
-    topo.build(cfg, MPI_COMM_WORLD);
-
-    // Output mesh
-    krona::mesh_generation::write(options.output, cfg, topo, MPI_COMM_WORLD);
+    krona::mesh::generation::write(options.output, cfg, topo, comm);
 
     return EXIT_SUCCESS;
 }
@@ -213,16 +213,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
 [[nodiscard]] int execute(int argc, char* const* argv, krona::mpi::CommView comm) {
     // parsing input arguments on master-rank
     ParseResult parsed;
-    krona::mpi::LocalError local_err{};
-
-    try {
-        if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
-    } catch (const std::exception& error) {
-        krona::mpi::set_local_error(local_err, error.what());
-    } catch (...) {
-        krona::mpi::set_local_error(local_err, "Unhandled arguments parsing exception");
-    }
-    krona::mpi::require_collective_success(comm, local_err, "Parsing Command Line Arguments");
+    if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
 
     // broadcast data to other ranks
     int action = static_cast<int>(parsed.action);
@@ -234,7 +225,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm) {
     if (action == static_cast<int>(CliAction::error)) {
         if (comm.rank() == 0) {
             constexpr std::size_t limit = 512;
-            std::fprintf(stderr, "mesh_partition: %.*s",
+            std::fprintf(stderr, "krona_mesh_generator: %.*s",
                 static_cast<int>(std::min(parsed.error.size(), limit)), parsed.error.data());
             if (!parsed.argument.empty()) {
                 std::fprintf(stderr, ": '%.*s'%s",
@@ -261,12 +252,6 @@ int main(int argc, char** argv) {
     krona::mpi::Comm communicator = krona::mpi::Comm::duplicate(krona::mpi::CommView::world());
     const krona::mpi::CommView comm = communicator.view();
 
-    // Execution try-catch
-    try {
-        return execute(argc, argv, comm);
-    } catch (const std::exception& error) {
-        krona::mpi::fatal(error.what());
-    } catch (...) {
-        krona::mpi::fatal("Unhandled mesh_partitioner exception");
-    }
+    // Catch before communicator destruction; never unwind into collective cleanup.
+    return krona::mpi::guarded([&] { return execute(argc, argv, comm); });
 }

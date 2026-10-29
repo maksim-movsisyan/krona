@@ -1,0 +1,63 @@
+# Adjacent blocks with swapped/reversed local face axes.
+# Right block: local xi=+x, eta=+z, zeta=-y; cell counts are permuted.
+# Reversed geometric direction uses the reciprocal ratio.
+# Shared vertices use the SAME global indices; the interface is not a boundary.
+# Run: mpirun -np 4 krona_mesh_generator rotated_two_blocks.toml rotated_two_blocks.cgns -v
+# Vertex indices are zero-based; each block follows HEXA_8 order.
+
+[mesh]
+name = "Rotated two-block channel"
+scale = 1.0
+vertices = [
+  [0, 0, 0], # 0
+  [1, 0, 0], # 1
+  [1, 1, 0], # 2
+  [0, 1, 0], # 3
+  [0, 0, 1], # 4
+  [1, 0, 1], # 5
+  [1, 1, 1], # 6
+  [0, 1, 1], # 7
+  [2, 0, 0], # 8
+  [2, 1, 0], # 9
+  [2, 1, 1], # 10
+  [2, 0, 1], # 11
+]
+
+[[blocks]]
+name = "left"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [8, 12, 6]
+grading_type = ["uniform", "geometric", "uniform"]
+grading = [1.0, 3.0, 1.0]
+
+[[blocks]]
+name = "right_rotated"
+vertices = [2, 9, 10, 6, 1, 8, 11, 5]
+cells = [10, 6, 12]
+grading_type = ["uniform", "uniform", "geometric"]
+grading = [1.0, 1.0, 0.3333333333333333]
+
+[[boundaries]]
+name = "inlet"
+faces = [
+  [3, 0, 4, 7],
+]
+
+[[boundaries]]
+name = "outlet"
+faces = [
+  [8, 9, 10, 11],
+]
+
+[[boundaries]]
+name = "walls"
+faces = [
+  [0, 3, 2, 1],
+  [0, 1, 5, 4],
+  [2, 3, 7, 6],
+  [4, 5, 6, 7],
+  [1, 2, 9, 8],
+  [1, 8, 11, 5],
+  [9, 2, 6, 10],
+  [5, 11, 10, 6],
+]

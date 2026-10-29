@@ -1,0 +1,58 @@
+# Unit cube with uniform spacing. Omitting grading uses uniform defaults.
+# Run: mpirun -np 4 krona_mesh_generator unit_cube.toml unit_cube.cgns -v
+# Vertex indices are zero-based; each block follows HEXA_8 order.
+
+[mesh]
+name = "Unit cube"
+scale = 1.0
+vertices = [
+  [0, 0, 0], # 0
+  [1, 0, 0], # 1
+  [1, 1, 0], # 2
+  [0, 1, 0], # 3
+  [0, 0, 1], # 4
+  [1, 0, 1], # 5
+  [1, 1, 1], # 6
+  [0, 1, 1], # 7
+]
+
+[[blocks]]
+name = "cube"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [16, 16, 16]
+
+[[boundaries]]
+name = "bottom"
+faces = [
+  [0, 3, 2, 1],
+]
+
+[[boundaries]]
+name = "front"
+faces = [
+  [0, 1, 5, 4],
+]
+
+[[boundaries]]
+name = "right"
+faces = [
+  [1, 2, 6, 5],
+]
+
+[[boundaries]]
+name = "back"
+faces = [
+  [2, 3, 7, 6],
+]
+
+[[boundaries]]
+name = "left"
+faces = [
+  [3, 0, 4, 7],
+]
+
+[[boundaries]]
+name = "top"
+faces = [
+  [4, 5, 6, 7],
+]
