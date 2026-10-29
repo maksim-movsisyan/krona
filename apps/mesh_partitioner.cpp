@@ -63,7 +63,7 @@ void usage(std::FILE* stream) noexcept
         "KRONA distributed mesh partitioner\n"
         "\n"
         "Usage:\n"
-        "  mpirun -np N krona_mesh_partition <in.cgns> <out.h5> [options]\n"
+        "  mpirun -np N krona_mesh_partitioner <in.cgns> <out.h5> [options]\n"
         "  krona_mesh_partition --help\n"
         "\n"
         "Options:\n"
@@ -79,9 +79,9 @@ void usage(std::FILE* stream) noexcept
         "Named options also accept --option=value.\n"
         "\n"
         "Examples:\n"
-        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5\n"
-        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --bc mesh.toml\n"
-        "  mpirun -np 4 krona_mesh_partition mesh.cgns mesh.h5 --vtu vtk --reorder RCM -v\n"
+        "  mpirun -np 4 krona_mesh_partitioner mesh.cgns mesh.h5\n"
+        "  mpirun -np 4 krona_mesh_partitioner mesh.cgns mesh.h5 --bc mesh.toml\n"
+        "  mpirun -np 4 krona_mesh_partitioner mesh.cgns mesh.h5 --vtu vtk --reorder RCM -v\n"
         "\n",
         stream);
 }
