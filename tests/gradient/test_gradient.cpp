@@ -2,8 +2,8 @@
 
 #include <krona/fields/field_storage.hpp>
 #include <krona/halo/exchange.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
 #include <krona/mpi/communicator.hpp>
 
@@ -16,11 +16,11 @@
 
 namespace {
 using namespace krona::test;
-using namespace krona::mesh::compute;
+using namespace krona::mesh::device;
 namespace gradient = krona::numerics::gradient;
-using krona::mesh::MeshPart;
-using krona::mesh::MeshAuxConnectivity;
-using krona::mesh::MeshAuxGeometry;
+using krona::mesh::host::MeshPart;
+using krona::mesh::host::MeshAuxConnectivity;
+using krona::mesh::host::MeshAuxGeometry;
 using Vec = std::array<double, 3>;
 constexpr std::array schemes{gradient::Scheme::GreenGaussCell,
                             gradient::Scheme::GreenGaussFace,
@@ -104,6 +104,7 @@ Fixture fixture(int rank = 0, int ranks = 1, bool unequal = false, bool skew = f
     }
     result.geometry.active_mask = krona::mesh::AuxGeomType::FaceInterpolationWeights | krona::mesh::AuxGeomType::FaceCellDistanceVector;
     result.geometry.n_faces = m.n_faces;
+    result.geometry.n_cells = m.n_cells;
     if (ranks == 2) {
         m.nb_ranks = {1-rank}; m.send_owned_local = {0}; m.recv_ghost_local = {1};
         m.send_offsets = {0, 1}; m.recv_offsets = {0, 1};
@@ -119,8 +120,8 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
     krona::mpi::CommView comm = krona::mpi::CommView::world();
     const auto& m = data.mesh;
     MeshStorage<> mesh(m, {.data = MeshData::FiniteVolume}, exec);
-    AuxConnectivityStorage<> connectivity(m, data.connectivity, exec);
-    AuxGeometryStorage<> geometry(m, data.geometry, exec);
+    AuxConnectivityStorage<> connectivity(data.connectivity, exec);
+    AuxGeometryStorage<> geometry(data.geometry, exec);
     gradient::GradientOperator<Exec, Coefficient, Accumulator> op(mesh.view(), connectivity.view(),
         use_geometry ? geometry.view() : AuxGeometryView<>{}, options, exec);
     const auto n = op.required_input_size(), owned = static_cast<std::size_t>(m.n_own);
@@ -217,8 +218,8 @@ void layouts_case(const Exec& exec)
     const auto& m = data.mesh;
 
     MeshStorage<> mesh(m, {}, exec);
-    AuxConnectivityStorage<> connectivity(m, data.connectivity, exec);
-    AuxGeometryStorage<> geometry(m, data.geometry, exec);
+    AuxConnectivityStorage<> connectivity(data.connectivity, exec);
+    AuxGeometryStorage<> geometry(data.geometry, exec);
 
     using Memory = typename Exec::memory_space;
     const auto owned = static_cast<std::size_t>(m.n_own);

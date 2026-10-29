@@ -544,23 +544,32 @@ endif()
 
 
     #=================
-    #=== MESH CORE ===
+    #=== MESH HOST ===
     #=================
-add_library(krona_mesh_core STATIC
-    src/mesh/extrusion.cpp
-    src/mesh/faces.cpp
-    src/mesh/localmesh.cpp
-    src/mesh/geometry.cpp
-    src/mesh/reorder.cpp
-    src/mesh/bc_config.cpp
-    src/mesh/validate.cpp
-    src/mesh/aux_connectivity.cpp
-    src/mesh/aux_geometry.cpp
-    src/mesh/wall_distance.cpp)
-add_library(krona::mesh_core ALIAS krona_mesh_core)
-krona_public_headers(krona_mesh_core PUBLIC)
-target_link_libraries(krona_mesh_core
-    PUBLIC krona::build_config krona::mpi
+krona_interface(graph krona::build_config)
+krona_interface(mesh_types krona::build_config)
+
+add_library(krona_mesh_host STATIC
+    src/mesh/host/extrusion.cpp
+    src/mesh/host/faces.cpp
+    src/mesh/host/migrate.cpp
+    src/mesh/host/geometry.cpp
+    src/mesh/host/reorder.cpp
+    src/mesh/host/validate.cpp
+    src/mesh/host/aux_connectivity.cpp
+    src/mesh/host/aux_geometry.cpp
+    src/mesh/host/wall_distance.cpp)
+add_library(krona::mesh_host ALIAS krona_mesh_host)
+krona_public_headers(krona_mesh_host PUBLIC)
+target_link_libraries(krona_mesh_host
+    PUBLIC krona::mesh_types krona::graph krona::mpi
+    PRIVATE krona::warnings)
+
+add_library(krona_boundary_config_io STATIC src/io/boundary_config/writer.cpp)
+add_library(krona::boundary_config_io ALIAS krona_boundary_config_io)
+krona_public_headers(krona_boundary_config_io PUBLIC)
+target_link_libraries(krona_boundary_config_io
+    PUBLIC krona::mesh_host
     PRIVATE krona::warnings)
 
 
@@ -574,14 +583,14 @@ add_library(krona_mesh_io STATIC
 add_library(krona::mesh_io ALIAS krona_mesh_io)
 krona_public_headers(krona_mesh_io PUBLIC)
 target_link_libraries(krona_mesh_io
-    PUBLIC krona::build_config krona::mpi krona::mesh_core
+    PUBLIC krona::build_config krona::mpi krona::mesh_host
     PRIVATE krona::warnings krona::hdf5)
 
 
     #======================
-    #=== MESH EXECUTION ===
+    #=== MESH DEVICE ===
     #======================
-krona_interface(mesh_compute krona::execution krona::mpi)
+krona_interface(mesh_device krona::mesh_types krona::execution krona::mpi)
 
 
     #==============
@@ -593,19 +602,19 @@ krona_interface(fields krona::execution krona::mpi)
     #=====================
     #=== HALO EXHANGER ===
     #=====================
-krona_interface(halo krona::execution krona::mpi krona::mesh_compute krona::fields)
+krona_interface(halo krona::execution krona::mpi krona::mesh_device krona::fields)
 
 
     #===================================================
     #=== GRADIENT OPERATOR (DIFF OPERATOR IN FUTURE) ===
     #===================================================
-krona_interface(gradient krona::mesh_compute krona::fields)
+krona_interface(gradient krona::mesh_device krona::fields)
 
 
     #=======================
     #=== RECONSTRUCTIONs ===
     #=======================
-krona_interface(reconstruction krona::mesh_compute krona::fields)
+krona_interface(reconstruction krona::mesh_device krona::fields)
 
 
     #======================
@@ -633,7 +642,7 @@ add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
 target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_scalar PUBLIC)
 target_link_libraries(krona_boundary_scalar
-    PUBLIC krona::mesh_compute krona::fields krona::mpi
+    PUBLIC krona::mesh_device krona::fields krona::mpi
     PRIVATE krona::warnings krona::tomlplusplus)
 
     
@@ -652,7 +661,7 @@ target_link_libraries(krona_boundary_physical
     #========================
     #=== SCALAR TRANSPORT ===
     #========================
-krona_interface(transport_scalar krona::mesh_compute krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+krona_interface(transport_scalar krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
 
 
     #===============
@@ -663,7 +672,7 @@ if(KRONA_ENABLE_CGNS)
     add_library(krona::cgns_io ALIAS krona_cgns_io)
     krona_public_headers(krona_cgns_io PUBLIC)
     target_link_libraries(krona_cgns_io
-        PUBLIC krona::mesh_core krona::mpi
+        PUBLIC krona::mesh_host krona::mpi
         PRIVATE krona::cgns krona::warnings)
 endif()
 
@@ -672,7 +681,7 @@ endif()
     #=== MESH PARTITION ===
     #======================
 if(KRONA_ENABLE_PARTITIONING)
-    add_library(krona_mesh_partition STATIC src/mesh_partition/partition.cpp)
+    add_library(krona_mesh_partition STATIC src/mesh/partition/partition.cpp)
     add_library(krona::mesh_partition ALIAS krona_mesh_partition)
     krona_public_headers(krona_mesh_partition PUBLIC)
     if(_KRONA_CHECK_HOST_ONLY)
@@ -680,7 +689,7 @@ if(KRONA_ENABLE_PARTITIONING)
             "$<$<COMPILE_LANGUAGE:CXX>:--host-only>")
     endif()
     target_link_libraries(krona_mesh_partition
-        PUBLIC krona::mesh_core krona::mpi
+        PUBLIC krona::graph krona::mpi
         PRIVATE krona::partitioning krona::warnings)
 endif()
 
@@ -704,7 +713,7 @@ if(KRONA_BUILD_APPLICATIONS)
     if(KRONA_ENABLE_CGNS AND KRONA_ENABLE_PARTITIONING)
         add_executable(krona_mesh_partitioner apps/mesh_partitioner.cpp)
         target_link_libraries(krona_mesh_partitioner PRIVATE
-            krona::cgns_io krona::mesh_partition krona::mesh_io krona::warnings)
+            krona::cgns_io krona::mesh_partition krona::mesh_io krona::boundary_config_io krona::warnings)
     endif()
 
     #============================
@@ -712,7 +721,7 @@ if(KRONA_BUILD_APPLICATIONS)
     #============================
     add_executable(krona_plug apps/plug.cpp)
     target_link_libraries(krona_plug PRIVATE
-            krona::mesh_io krona::mesh_compute krona::warnings krona::fields)
+            krona::mesh_io krona::mesh_device krona::warnings krona::fields)
 
     #================================
     #=== SCALAR TRANSPORT EXAMPLE ===

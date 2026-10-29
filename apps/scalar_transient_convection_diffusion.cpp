@@ -5,8 +5,8 @@
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
 #include <krona/io/vtu/vtu.hpp>
 #include <krona/linalg/solver.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
@@ -74,8 +74,8 @@ class HighOrderState {
     Exec exec_;
 public:
     HighOrderState(const cv::ConvectionPlan<Exec, Real>& plan,
-        krona::mesh::compute::AuxGeometryView<Space> geometry,
-        krona::mesh::compute::HaloPlanView halo_plan, krona::mpi::CommView comm, const Exec& exec)
+        krona::mesh::device::AuxGeometryView<Space> geometry,
+        krona::mesh::host::HaloPlanView halo_plan, krona::mpi::CommView comm, const Exec& exec)
         : stencil_(plan.mesh_view(), plan.connectivity_view()),
           gradient_(plan.mesh_view(), plan.connectivity_view(), geometry,
               {.scheme = grad::Scheme::GreenGaussCell, .interpolation = grad::Interpolation::Arithmetic}, exec),
@@ -352,13 +352,13 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
 {
     const auto host_mesh = krona::io::solver_mesh::import_mesh_hdf5(paths[0],comm);
     Exec exec{};
-    const krona::mesh::compute::MeshStorage<Exec> mesh{
-        host_mesh,{.data=krona::mesh::compute::MeshData::FiniteVolume},exec};
-    const auto host_connectivity = krona::mesh::build_aux_connectivity(host_mesh,krona::mesh::AuxConnType::CellFaces);
-    const auto host_geometry = krona::mesh::build_aux_geometry(host_mesh,
+    const krona::mesh::device::MeshStorage<Exec> mesh{
+        host_mesh,{.data=krona::mesh::device::MeshData::FiniteVolume},exec};
+    const auto host_connectivity = krona::mesh::host::build_aux_connectivity(host_mesh,krona::mesh::AuxConnType::CellFaces);
+    const auto host_geometry = krona::mesh::host::build_aux_geometry(host_mesh,
         krona::mesh::AuxGeomType::FaceNormalDistance|krona::mesh::AuxGeomType::FaceAreaOverNormalDistance);
-    const krona::mesh::compute::AuxConnectivityStorage<Exec> connectivity{host_mesh,host_connectivity,exec};
-    const krona::mesh::compute::AuxGeometryStorage<Exec> geometry{host_mesh,host_geometry,exec};
+    const krona::mesh::device::AuxConnectivityStorage<Exec> connectivity{host_connectivity,exec};
+    const krona::mesh::device::AuxGeometryStorage<Exec> geometry{host_geometry,exec};
     const df::DiffusionPlan<Exec,Real> diffusion_plan{
         host_mesh,mesh.view(),connectivity.view(),geometry.view(),comm,exec};
     const cv::ConvectionPlan<Exec,Real> convection_plan{host_mesh,mesh.view(),connectivity.view(),comm,exec};

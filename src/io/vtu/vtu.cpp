@@ -321,7 +321,7 @@ void write_parallel_vtu(GridView grid, const std::filesystem::path& directory,
 }
 
 /// @brief Exports owned cells and boundary faces using borrowed contiguous views of MeshPart arrays.
-void write_vtu(const mesh::MeshPart& m, const std::filesystem::path& directory,
+void write_vtu(const mesh::host::MeshPart& m, const std::filesystem::path& directory,
                std::string_view stem, mpi::CommView comm, MeshFields extra)
 {
     mpi::require(m.faces_grouped && m.rank == comm.rank() && m.nprocs == comm.size(),

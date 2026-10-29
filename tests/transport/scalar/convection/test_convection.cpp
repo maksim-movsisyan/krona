@@ -6,8 +6,8 @@
 #include <krona/linalg/bsr_matrix.hpp>
 #include <krona/linalg/solver.hpp>
 #include <krona/fields/field_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
 #include <krona/halo/exchange.hpp>
 
 #include <Kokkos_NumericTraits.hpp>
@@ -41,9 +41,9 @@ void near(double actual,double expected,double tolerance,std::string_view messag
 }
 
 struct Fixture {
-    mesh::MeshPart host;
-    mesh::MeshAuxConnectivity connectivity;
-    mesh::MeshAuxGeometry geometry;
+    mesh::host::MeshPart host;
+    mesh::host::MeshAuxConnectivity connectivity;
+    mesh::host::MeshAuxGeometry geometry;
     int first = 0, total = 0;
 };
 
@@ -108,18 +108,19 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
     f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance |
                              mesh::AuxGeomType::FaceInterpolationWeights;
     f.geometry.n_faces = m.n_faces;
+    f.geometry.n_cells = m.n_cells;
     return f;
 }
 
 
 
 struct Attached {
-    mesh::compute::MeshStorage<Exec> mesh;
-    mesh::compute::AuxConnectivityStorage<Exec> connectivity;
+    mesh::device::MeshStorage<Exec> mesh;
+    mesh::device::AuxConnectivityStorage<Exec> connectivity;
     cv::ConvectionPlan<Exec> plan;
     linalg::FaceAssemblyPlan<Exec> assembly;
     Attached(const Fixture& f, mpi::CommView comm, const Exec& exec)
-        : mesh(f.host, {}, exec), connectivity(f.host, f.connectivity, exec),
+        : mesh(f.host, {}, exec), connectivity(f.connectivity, exec),
           plan(f.host, mesh.view(), connectivity.view(), comm, exec), assembly(f.host, comm, exec) {}
 };
 
@@ -541,7 +542,7 @@ void additive(const Exec& exec)
 }
 
 struct QuickStencil {
-    mesh::compute::MeshView<Space> mesh;
+    mesh::device::MeshView<Space> mesh;
     KOKKOS_INLINE_FUNCTION auto side(std::size_t cell,std::size_t face)const
     {
         const auto other=cell==0?std::size_t{1}:std::size_t{0};
@@ -599,7 +600,7 @@ void frozen_system(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
     Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,0,static_cast<Real>(f.total));
-    mesh::compute::AuxGeometryStorage<Exec> geometry(f.host,f.geometry,exec);
+    mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
     df::DiffusionPlan<Exec> diffusion_plan(f.host,a.mesh.view(),a.connectivity.view(),geometry.view(),comm,exec);
     df::DiffusionOperator diffusion(diffusion_plan);cv::ConvectionOperator convection(a.plan);
     ts::SourceOperator source(a.mesh.view(),exec);ts::AssemblyStatus<Exec> status(exec);

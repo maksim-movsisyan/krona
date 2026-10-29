@@ -1,5 +1,5 @@
 add_executable(krona_test_mesh test_mesh.cpp)
-target_link_libraries(krona_test_mesh PRIVATE krona_test_support krona::mesh_compute)
+target_link_libraries(krona_test_mesh PRIVATE krona_test_support krona::mesh_device)
 
 foreach(case IN ITEMS selection geometry ownership halo_plan auxiliary empty
                       transfer auxiliary_contracts validation halo_validation)

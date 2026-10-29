@@ -4,8 +4,8 @@
 #include <krona/halo/exchange.hpp>
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
 #include <krona/io/vtu/vtu.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/linalg/face_assembly.hpp>
@@ -89,14 +89,14 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     // MeshPart remains live: CPU compute arrays may borrow its buffers, and VTU uses it directly.
     const auto host_mesh = krona::io::solver_mesh::import_mesh_hdf5(paths[0], comm);
     Exec exec{};
-    const krona::mesh::compute::MeshStorage<Exec> mesh{
-        host_mesh, {.data = krona::mesh::compute::MeshData::FiniteVolume}, exec};
+    const krona::mesh::device::MeshStorage<Exec> mesh{
+        host_mesh, {.data = krona::mesh::device::MeshData::FiniteVolume}, exec};
     // These shared caches can serve every transported scalar on this mesh.
-    const auto host_connectivity = krona::mesh::build_aux_connectivity(host_mesh, krona::mesh::AuxConnType::CellFaces);
-    const auto host_geometry = krona::mesh::build_aux_geometry(host_mesh,
+    const auto host_connectivity = krona::mesh::host::build_aux_connectivity(host_mesh, krona::mesh::AuxConnType::CellFaces);
+    const auto host_geometry = krona::mesh::host::build_aux_geometry(host_mesh,
         krona::mesh::AuxGeomType::FaceNormalDistance | krona::mesh::AuxGeomType::FaceAreaOverNormalDistance);
-    const krona::mesh::compute::AuxConnectivityStorage<Exec> connectivity{host_mesh, host_connectivity, exec};
-    const krona::mesh::compute::AuxGeometryStorage<Exec> geometry{host_mesh, host_geometry, exec};
+    const krona::mesh::device::AuxConnectivityStorage<Exec> connectivity{host_connectivity, exec};
+    const krona::mesh::device::AuxGeometryStorage<Exec> geometry{host_geometry, exec};
     const td::DiffusionPlan<Exec, Real> plan{host_mesh, mesh.view(), connectivity.view(), geometry.view(), comm, exec};
     // The mesh-only diffusion plan and the reusable algebra graph/map have separate lifetimes.
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};

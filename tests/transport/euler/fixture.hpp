@@ -1,7 +1,7 @@
 #pragma once
 #include <krona/boundary/physical/manager.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/transport/euler/operator.hpp>
 #include <algorithm>
@@ -26,9 +26,9 @@ inline ph::Primitive<R,true> profile(double x,bool affine=false)
 {
     return {static_cast<R>(1.+(affine?0.1*x:0.)),{static_cast<R>(3.+(affine?0.2*x:0.)),0,0},static_cast<R>(1.+(affine?0.05*x:0.))};
 }
-inline krona::mesh::MeshPart mesh(krona::mpi::CommView comm,int start,int owned,int total,bool unlabelled=false,double ly=1.,double lz=1.,bool skew=false)
+inline krona::mesh::host::MeshPart mesh(krona::mpi::CommView comm,int start,int owned,int total,bool unlabelled=false,double ly=1.,double lz=1.,bool skew=false)
 {
-    krona::mesh::MeshPart m;m.rank=comm.rank();m.nprocs=comm.size();m.n_own=owned;m.faces_grouped=true;
+    krona::mesh::host::MeshPart m;m.rank=comm.rank();m.nprocs=comm.size();m.n_own=owned;m.faces_grouped=true;
     for(int i=0;i<owned;++i)m.cell_gid.push_back(start+i);
     if(start>0)m.cell_gid.push_back(start-1);
     if(start+owned<total)m.cell_gid.push_back(start+owned);
@@ -69,9 +69,9 @@ inline krona::mesh::MeshPart mesh(krona::mpi::CommView comm,int start,int owned,
     m.patches.resize(3);m.patches[0].name="left";m.patches[1].name="right";m.patches[2].name="sides";
     return m;
 }
-inline krona::mesh::MeshAuxConnectivity incidence(const krona::mesh::MeshPart& m)
+inline krona::mesh::host::MeshAuxConnectivity incidence(const krona::mesh::host::MeshPart& m)
 {
-    krona::mesh::MeshAuxConnectivity c;c.active_mask=krona::mesh::AuxConnType::CellFaces;
+    krona::mesh::host::MeshAuxConnectivity c;c.active_mask=krona::mesh::AuxConnType::CellFaces;
     c.n_faces=m.n_faces;c.n_cells_own=m.n_own;c.n_nodes_own=m.n_nodes_own;c.cell_faces_offsets.push_back(0);
     for(krona::LocalIndex cell=0;cell<m.n_own;++cell){
         for(krona::LocalIndex f=0;f<m.n_faces;++f)
@@ -80,15 +80,15 @@ inline krona::mesh::MeshAuxConnectivity incidence(const krona::mesh::MeshPart& m
     }return c;
 }
 struct Grid {
-    krona::mesh::MeshPart host;
-    krona::mesh::MeshAuxConnectivity cache;
-    krona::mesh::compute::MeshStorage<Exec> storage;
-    krona::mesh::compute::AuxConnectivityStorage<Exec> connectivity;
+    krona::mesh::host::MeshPart host;
+    krona::mesh::host::MeshAuxConnectivity cache;
+    krona::mesh::device::MeshStorage<Exec> storage;
+    krona::mesh::device::AuxConnectivityStorage<Exec> connectivity;
     eu::EulerPlan<Exec,R> plan;
     Grid(krona::mpi::CommView comm,const Exec& exec,int start=0,int owned=2,int total=2,bool unlabelled=false,double ly=1.,double lz=1.,bool skew=false)
         :host(mesh(comm,start,owned,total,unlabelled,ly,lz,skew)),cache(incidence(host)),
-        storage(host,{krona::mesh::compute::MeshData::FaceCells|krona::mesh::compute::MeshData::CellGeometry|krona::mesh::compute::MeshData::FaceGeometry},exec),
-        connectivity(host,cache,exec),plan(host,storage.view(),connectivity.view(),comm,exec) {}
+        storage(host,{krona::mesh::device::MeshData::FaceCells|krona::mesh::device::MeshData::CellGeometry|krona::mesh::device::MeshData::FaceGeometry},exec),
+        connectivity(cache,exec),plan(host,storage.view(),connectivity.view(),comm,exec) {}
 };
 
 template<class Layout=Kokkos::LayoutLeft>

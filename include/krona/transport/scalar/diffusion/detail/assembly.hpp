@@ -208,7 +208,7 @@ struct ValidateSystem {
 
 template<class Space, class Source>
 struct IntegrateSource {
-    mesh::compute::MeshView<Space> mesh; Source source;
+    mesh::device::MeshView<Space> mesh; Source source;
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, AccumulationReal& sum) const
     {
         const auto i = static_cast<std::size_t>(cell);

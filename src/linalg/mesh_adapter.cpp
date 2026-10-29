@@ -8,7 +8,7 @@
 namespace krona::linalg {
 namespace {
 
-void validate(const mesh::MeshPart& m, int rank, int ranks)
+void validate(const mesh::host::MeshPart& m, int rank, int ranks)
 {
     mpi::require(m.rank == rank && m.nprocs == ranks && m.n_own >= 0 && m.n_cells >= m.n_own,
                  "Linalg: mesh/communicator or cell counts mismatch");
@@ -42,7 +42,7 @@ void validate(const mesh::MeshPart& m, int rank, int ranks)
 }
 } // namespace
 
-CellNumbering build_cell_numbering(const mesh::MeshPart& m, mpi::CommView comm)
+CellNumbering build_cell_numbering(const mesh::host::MeshPart& m, mpi::CommView comm)
 {
     return mpi::guarded([&] {
         mpi::require(!comm.is_null(), "Linalg: null numbering communicator");
@@ -110,7 +110,7 @@ std::vector<GlobalOrdinal> CellNumbering::expanded_gids(int components) const
     return result;
 }
 
-CsrInput make_face_csr(const mesh::MeshPart& m, const CellNumbering& numbering)
+CsrInput make_face_csr(const mesh::host::MeshPart& m, const CellNumbering& numbering)
 {
     return mpi::guarded([&] {
         mpi::require(m.n_own >= 0 && m.n_cells >= m.n_own && m.n_faces >= 0 &&

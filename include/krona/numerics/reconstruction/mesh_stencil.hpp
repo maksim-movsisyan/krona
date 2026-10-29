@@ -1,7 +1,7 @@
 #pragma once
 
 #include <krona/numerics/reconstruction/reconstruction.hpp>
-#include <krona/mesh/compute/aux_view.hpp>
+#include <krona/mesh/device/aux_view.hpp>
 
 namespace krona::numerics::reconstruction {
 
@@ -22,14 +22,14 @@ class MeshStencil {
     { return {static_cast<Real>(nx_(f)), static_cast<Real>(ny_(f)), static_cast<Real>(nz_(f))}; }
 public:
     using memory_space = Space;
-    MeshStencil(mesh::compute::MeshView<Space> m, mesh::compute::AuxConnectivityView<Space> a)
+    MeshStencil(mesh::device::MeshView<Space> m, mesh::device::AuxConnectivityView<Space> a)
         : owners_(m.connectivity.face_owner), neighbours_(m.connectivity.face_neigh), faces_(a.cell_faces), offsets_(a.cell_faces_offsets),
           cx_(m.geometry.cell_centroid_x), cy_(m.geometry.cell_centroid_y), cz_(m.geometry.cell_centroid_z),
           fx_(m.geometry.face_centroid_x), fy_(m.geometry.face_centroid_y), fz_(m.geometry.face_centroid_z),
           nx_(m.geometry.face_normal_x), ny_(m.geometry.face_normal_y), nz_(m.geometry.face_normal_z),
           owned_(m.sizes.n_own), cells_(m.sizes.n_cells), inner_(m.sizes.n_inner_faces), face_count_(m.sizes.n_faces)
     {
-        using mesh::compute::MeshData;
+        using mesh::device::MeshData;
         if (!m.sizes.faces_grouped || !m.has(MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry) ||
             !a.has_cell_faces() || owned_ < 0 || cells_ < owned_ || inner_ < 0 || face_count_ < inner_ ||
             a.n_cells_own != owned_ || a.n_faces != face_count_ || offsets_.extent(0) != static_cast<std::size_t>(owned_)+1)

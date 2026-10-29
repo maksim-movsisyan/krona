@@ -1,12 +1,8 @@
 #pragma once
 
-#include "krona/config.hpp"
-
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <span>
 #include <string_view>
 
 namespace krona::mesh
@@ -88,37 +84,5 @@ inline constexpr int orientation_flip[8][8] = {
     {0, 2, 1, 3, -1, -1, -1, -1},   {0, 3, 2, 1, 4, -1, -1, -1},    {0, 2, 1, 3, 5, 4, -1, -1},
     {0, 3, 2, 1, 4, 7, 6, 5},       {0, 2, 1, -1, -1, -1, -1, -1},  {0, 3, 2, 1, -1, -1, -1, -1},
     {1, 0, -1, -1, -1, -1, -1, -1}, {0, -1, -1, -1, -1, -1, -1, -1}};
-
-// A matching key only; retain oriented connectivity separately.
-struct FaceKey
-{
-    std::array<GlobalIndex, 4> nodes{-1, -1, -1, -1};
-    /// @brief Compares sorted node IDs for facet matching.
-    auto operator<=>(const FaceKey &) const = default;
-};
-
-/// @brief Builds an orientation-independent key for a facet with one to four nodes.
-[[nodiscard]] inline FaceKey make_face_key(
-    std::span<const GlobalIndex> nodes) noexcept
-{
-    assert(!nodes.empty() && nodes.size() <= 4);
-
-    FaceKey key;
-
-    // Insert IDs in sorted order; unused slots retain their sentinel.
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        const auto value = nodes[i];
-        auto position = i;
-
-        while (position > 0 && key.nodes[position - 1] > value) {
-            key.nodes[position] = key.nodes[position - 1];
-            --position;
-        }
-        key.nodes[position] = value;
-    }
-
-    return key;
-}
-
 
 } // namespace krona::mesh

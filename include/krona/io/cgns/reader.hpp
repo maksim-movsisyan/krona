@@ -1,7 +1,7 @@
 #pragma once
 
-#include <krona/mesh/extrusion.hpp>
-#include <krona/mesh/raw_mesh.hpp>
+#include <krona/mesh/host/extrusion.hpp>
+#include <krona/mesh/host/raw_mesh.hpp>
 #include <krona/mpi/communicator.hpp>
 
 #include <cstddef>
@@ -22,7 +22,7 @@ struct ReaderOptions {
     bool collective_io = true;
     MPI_Info io_info = MPI_INFO_NULL;
     UnsupportedBoundary unsupported_boundary = UnsupportedBoundary::reject;
-    mesh::ExtrusionOptions extrusion;
+    mesh::host::ExtrusionOptions extrusion;
 };
 
 /// @brief Small replicated source metadata, separate from the resulting 3D mesh.
@@ -37,9 +37,9 @@ struct SourceMetadata {
 
 /// @brief Returns an owned import snapshot and optional information about 2D extrusion.
 struct ReadResult {
-    mesh::RawMesh mesh;
+    mesh::host::RawMesh mesh;
     SourceMetadata source;
-    std::optional<mesh::ExtrusionInfo> extrusion;
+    std::optional<mesh::host::ExtrusionInfo> extrusion;
 };
 
 /// @brief Collectively reads one HDF5 unstructured zone and returns a 3D mesh.

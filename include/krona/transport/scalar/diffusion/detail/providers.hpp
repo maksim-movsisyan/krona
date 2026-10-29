@@ -19,9 +19,9 @@ struct InteriorFaceContext {
 /// @brief Kernel captures only arrays used by row assembly; descriptors borrow existing storage.
 template<class Space>
 struct RowData {
-    using Index = mesh::compute::detail::MeshArray<LocalIndex, Space, false>;
-    using Metric = mesh::compute::detail::MeshArray<GeometryReal, Space, false>;
-    using Offset = mesh::compute::detail::MeshArray<std::size_t, Space, false>;
+    using Index = mesh::device::detail::MeshArray<LocalIndex, Space, false>;
+    using Metric = mesh::device::detail::MeshArray<GeometryReal, Space, false>;
+    using Offset = mesh::device::detail::MeshArray<std::size_t, Space, false>;
     LocalIndex n_inner_faces = 0;
     Index face_owner, face_neigh, faces;
     Offset offsets;
@@ -32,8 +32,8 @@ struct RowData {
 };
 
 template<class Space>
-auto row_data(mesh::compute::MeshView<Space> mesh, mesh::compute::AuxConnectivityView<Space> connectivity,
-              mesh::compute::AuxGeometryView<Space> geometry)
+auto row_data(mesh::device::MeshView<Space> mesh, mesh::device::AuxConnectivityView<Space> connectivity,
+              mesh::device::AuxGeometryView<Space> geometry)
 {
     const auto& g = mesh.geometry;
     return RowData<Space>{mesh.sizes.n_inner_faces, mesh.connectivity.face_owner, mesh.connectivity.face_neigh,

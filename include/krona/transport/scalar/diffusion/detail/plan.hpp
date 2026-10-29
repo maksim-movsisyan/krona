@@ -2,7 +2,8 @@
 
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/communicator.hpp>
-#include <krona/mesh/compute/validation.hpp>
+#include <krona/mesh/device/validation.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 #include <krona/transport/scalar/diffusion/types.hpp>
 
 #include <KokkosKernels_ArithTraits.hpp>
@@ -13,8 +14,8 @@ namespace krona::transport::scalar::diffusion::detail {
 
 template<class Space, class Real>
 struct ValidateMetric {
-    mesh::compute::MeshView<Space> mesh;
-    mesh::compute::AuxGeometryView<Space> geometry;
+    mesh::device::MeshView<Space> mesh;
+    mesh::device::AuxGeometryView<Space> geometry;
     DiffusionOptions options;
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
@@ -66,10 +67,10 @@ struct ValidateMetric {
 };
 
 template<class Exec, class Real>
-void validate_plan(const mesh::MeshPart& host,
-    mesh::compute::MeshView<typename Exec::memory_space> mesh_view,
-    mesh::compute::AuxConnectivityView<typename Exec::memory_space> connectivity,
-    mesh::compute::AuxGeometryView<typename Exec::memory_space> geometry,
+void validate_plan(const mesh::host::MeshPart& host,
+    mesh::device::MeshView<typename Exec::memory_space> mesh_view,
+    mesh::device::AuxConnectivityView<typename Exec::memory_space> connectivity,
+    mesh::device::AuxGeometryView<typename Exec::memory_space> geometry,
     mpi::CommView comm, const Exec& exec, DiffusionOptions options)
 {
     mpi::guarded([&] {
@@ -82,8 +83,8 @@ void validate_plan(const mesh::MeshPart& host,
             "Scalar diffusion: grouped host/view mesh mismatch");
         mpi::require(std::isfinite(options.orthogonality_tolerance) && options.orthogonality_tolerance >= 0 &&
                      options.orthogonality_tolerance < 1, "Scalar diffusion: invalid orthogonality tolerance");
-        using mesh::compute::MeshData;
-        namespace validation = mesh::compute::validation;
+        using mesh::device::MeshData;
+        namespace validation = mesh::device::validation;
         constexpr auto metrics = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance;
         // Existing shared validators check shapes, face intervals and complete cell-face incidence.
         const auto status = validation::validate<MeshData::FaceCells | MeshData::FaceGeometry,

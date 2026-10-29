@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
-#include <numeric>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -349,7 +348,7 @@ void field_transfers()
 
 void mesh_adapter()
 {
-    mesh::MeshPart mesh;
+    mesh::host::MeshPart mesh;
     mesh.rank = rank; mesh.nprocs = ranks; mesh.n_own = 2; mesh.n_cells = 2*ranks;
     mesh.face_owner = {0, 0, 0, 1}; mesh.face_neigh = {1, 1, -1, -1};
     for (int peer = 0, slot = 2; peer < ranks; ++peer) if (peer != rank) {

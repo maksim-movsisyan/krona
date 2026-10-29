@@ -15,8 +15,8 @@ using scalar::detail::BadSystem;
 
 template<class Space>
 struct RowData { 
-    mesh::compute::MeshView<Space> mesh;
-    mesh::compute::AuxConnectivityView<Space> connectivity;
+    mesh::device::MeshView<Space> mesh;
+    mesh::device::AuxConnectivityView<Space> connectivity;
 };
 template<class Real, class Space>
 KOKKOS_INLINE_FUNCTION auto context(const RowData<Space>& d, LocalIndex face, Real time)

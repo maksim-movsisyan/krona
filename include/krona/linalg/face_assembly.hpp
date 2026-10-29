@@ -31,7 +31,7 @@ public:
     using pattern_type = CsrPattern<Exec>;
     using entry_map_type = FaceAssemblyMap<memory_space>;
 
-    FaceAssemblyPlan(const mesh::MeshPart& mesh, mpi::CommView comm, const Exec& exec = {})
+    FaceAssemblyPlan(const mesh::host::MeshPart& mesh, mpi::CommView comm, const Exec& exec = {})
         : prepared_(prepare(mesh, comm, exec)), comm_(comm) {}
 
     [[nodiscard]] const pattern_type& pattern() const noexcept { return prepared_.pattern; }
@@ -46,7 +46,7 @@ private:
     Prepared prepared_;
     mpi::CommView comm_;
 
-    static Prepared prepare(const mesh::MeshPart& mesh, mpi::CommView comm, const Exec& exec)
+    static Prepared prepare(const mesh::host::MeshPart& mesh, mpi::CommView comm, const Exec& exec)
     {
         return mpi::guarded([&] {
             execution::require_kokkos();

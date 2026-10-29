@@ -1,5 +1,5 @@
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
-#include <krona/mesh/validate.hpp>
+#include <krona/mesh/host/validate.hpp>
 
 #include "hdf5_detail.hpp"
 
@@ -8,7 +8,7 @@
 namespace krona::io::solver_mesh {
 
 /// @brief Restores the exact local snapshot from its saved partition row and validates it once.
-mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView comm)
+mesh::host::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView comm)
 {
     using namespace detail;
     auto access = file_access(comm);
@@ -47,7 +47,7 @@ mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView
             row[peer_offsets] == row[peers] + 1 && row[patch_offsets] == header[6] + 1 &&
             row[peers] < static_cast<U64>(comm.size()), "Invalid local partition directory");
 
-    mesh::MeshPart m;
+    mesh::host::MeshPart m;
     m.rank = comm.rank();
     m.nprocs = comm.size();
     m.n_own = local_count(row[owned]);
@@ -98,7 +98,7 @@ mesh::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView
     file.close();
 
     // Validate once after loading, before any solver kernel can index the connectivity.
-    mesh::validate_meshpart(m);
+    mesh::host::validate_meshpart(m);
     return m;
 }
 

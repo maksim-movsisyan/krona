@@ -1,20 +1,20 @@
 // mpi runtime
-#include "krona/mesh/localmesh.hpp"
-#include "krona/mesh/raw_mesh.hpp"
+#include "krona/mesh/host/mesh_part.hpp"
+#include "krona/mesh/host/raw_mesh.hpp"
 #include "krona/mpi/collective_status.hpp"
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/mpi/error.hpp>
 
 // mesh partition utils
-#include <krona/mesh/extrusion.hpp>
-#include <krona/mesh/faces.hpp>
-#include <krona/mesh_partition/partition.hpp>
-#include <krona/mesh/migrate.hpp>
-#include <krona/mesh/geometry.hpp>
-#include <krona/mesh/reorder.hpp>
-#include <krona/mesh/validate.hpp>
-#include <krona/mesh/bc_config.hpp>
+#include <krona/mesh/host/extrusion.hpp>
+#include <krona/mesh/host/faces.hpp>
+#include <krona/mesh/partition/partition.hpp>
+#include <krona/mesh/host/migrate.hpp>
+#include <krona/mesh/host/geometry.hpp>
+#include <krona/mesh/host/reorder.hpp>
+#include <krona/mesh/host/validate.hpp>
+#include <krona/io/boundary_config/writer.hpp>
 
 // input/output
 #include <krona/io/solver_mesh/hdf5_writer.hpp>
@@ -44,7 +44,7 @@ struct Options {
     std::string output;
     std::string boundary_output;
     std::string vtu_directory;
-    krona::mesh::ReorderMethod reorder = krona::mesh::ReorderMethod::NONE;
+    krona::mesh::host::ReorderMethod reorder = krona::mesh::host::ReorderMethod::NONE;
     Verbosity verbosity = Verbosity::QUIET;
 };
 
@@ -184,9 +184,9 @@ void usage(std::FILE* stream) noexcept
                 result.options.vtu_directory = value;
             } else {
                 reorder_seen = true;
-                if (value == "NONE") result.options.reorder = krona::mesh::ReorderMethod::NONE;
-                else if (value == "SFC") result.options.reorder = krona::mesh::ReorderMethod::HILBERT_SFC;
-                else if (value == "RCM") result.options.reorder = krona::mesh::ReorderMethod::RCM;
+                if (value == "NONE") result.options.reorder = krona::mesh::host::ReorderMethod::NONE;
+                else if (value == "SFC") result.options.reorder = krona::mesh::host::ReorderMethod::HILBERT_SFC;
+                else if (value == "RCM") result.options.reorder = krona::mesh::host::ReorderMethod::RCM;
                 else {
                     fail("Invalid reorder method; expected NONE, SFC or RCM", value);
                     return result;
@@ -251,7 +251,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     if (header[3] > 0) {
         krona::mpi::broadcast(comm, std::span{options.vtu_directory});
     }
-    options.reorder = static_cast<krona::mesh::ReorderMethod>(header[4]);
+    options.reorder = static_cast<krona::mesh::host::ReorderMethod>(header[4]);
     options.verbosity = static_cast<Verbosity>(header[5]);
 }
 
@@ -268,7 +268,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
         std::fprintf(stderr,
             "KRONA mesh_partition: input=%s output=%s ranks=%d reorder=%s verbosity=%d\n"
             "  bc=%s\n  vtu=%s\n",
-            options.input.c_str(), options.output.c_str(), comm.size(), krona::mesh::reorder_method_to_string(options.reorder),
+            options.input.c_str(), options.output.c_str(), comm.size(), krona::mesh::host::reorder_method_to_string(options.reorder),
             static_cast<int>(options.verbosity),
             !options.boundary_output.empty() ? options.boundary_output.c_str() : "<disabled>",
             !options.vtu_directory.empty() ? options.vtu_directory.c_str() : "<disabled>");
@@ -327,7 +327,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     const auto import_started = std::chrono::steady_clock::now();
 
     krona::io::cgns::ReadResult imported = krona::io::cgns::read_parallel(options.input, comm);
-    krona::mesh::RawMesh& mesh = imported.mesh;
+    krona::mesh::host::RawMesh& mesh = imported.mesh;
 
     if (report) {
         // Measure rank 0's elapsed time without adding a barrier or a timing reduction.
@@ -441,9 +441,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
     const auto topology_started = std::chrono::steady_clock::now();
 
-    krona::mesh::BuildFacesResult topology = krona::mesh::build_faces(mesh, comm);
-    std::vector<krona::mesh::FaceRecord>& faces = topology.faces;
-    krona::mesh::DualGraph& graph = topology.graph;
+    krona::mesh::host::BuildFacesResult topology = krona::mesh::host::build_faces(mesh, comm);
+    std::vector<krona::mesh::host::FaceRecord>& faces = topology.faces;
+    krona::graph::CsrGraph& graph = topology.graph;
 
     if (report) {
         // Global statistics already exist; logging requires no additional MPI calls.
@@ -512,7 +512,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //  3. Partition into P blocks with the default dKaMinPar context and requested
     //     imbalance tolerance. Obtain the global undirected edge cut from its return
     //     value; do not perform an additional halo exchange to recompute it.
-    //  4. Map each local block ID through part2rank to obtain cell_target_rank.
+    //  4. Map each local block ID through part2rank to obtain vertex_target_rank.
     //     Count planned cells per destination and release solver/raw-partition storage.
     //  5. Sum the P destination counts with one Allreduce for application diagnostics.
     //     There are no wrapper status collectives; dKaMinPar has its own internal MPI.
@@ -529,17 +529,17 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //    The inter-node cut is not measured and is not represented by a fictitious zero.
     //
     // After partitioning:
-    //  - pr.cell_target_rank has one valid destination rank per input CSR row.
+    //  - pr.vertex_target_rank has one valid destination rank per input CSR row.
     //  - pr.part2rank maps block IDs to ranks; pr.rank2part is its inverse.
     //    These tables describe this partition only, not persistent cell/face numbering.
-    //  - pr.cells_per_rank contains replicated global planned ownership counts.
+    //  - pr.vertices_per_rank contains replicated global planned ownership counts.
     //    Actual ownership, cell IDs, mesh arrays and graph arrays are still unchanged.
     //  - Coordinates and CGNS metadata are irrelevant to this stage. Coordinate motion
     //    alone does not require repartitioning. Topology changes may require rebuilding
     //    the graph; a later repartition is full partitioning, not incremental migration
     //    minimization or a reuse of the previous partition.
 
-    const krona::mesh_partition::DKaMinParOptions partition_options{
+    const krona::mesh::partition::DKaMinParOptions partition_options{
         .imbalance_tolerance = 0.03,
         .threads_per_rank = 1,
         .seed = 0,
@@ -550,15 +550,15 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     if (report) std::fputs("KRONA mesh_partition: partitioning dual graph...\n", stderr);
     const auto partition_started = std::chrono::steady_clock::now();
 
-    krona::mesh_partition::PartitionResult pr = krona::mesh_partition::partition_cells(
-        graph, mesh.distribution.cells, comm, partition_options);
+    krona::mesh::partition::PartitionResult pr = krona::mesh::partition::partition_graph(
+        graph.view(), mesh.distribution.cells, comm, partition_options);
 
     if (report) {
         // All counts are already global; logging adds no MPI calls or barriers.
         const double seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - partition_started).count();
         const auto [minimum, maximum] =
-            std::minmax_element(pr.cells_per_rank.begin(), pr.cells_per_rank.end());
+            std::minmax_element(pr.vertices_per_rank.begin(), pr.vertices_per_rank.end());
         const double average =
             static_cast<double>(mesh.distribution.cells.global_size()) / comm.size();
         const double imbalance = average > 0
@@ -578,7 +578,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
         if (detailed) {
             // Bound output on large communicators; do not print one line per cell.
-            const auto shown = std::min<std::size_t>(pr.cells_per_rank.size(), 16);
+            const auto shown = std::min<std::size_t>(pr.vertices_per_rank.size(), 16);
             std::fprintf(stderr, "  Settings: epsilon=%.4f threads/rank=%d seed=%d\n",
                 partition_options.imbalance_tolerance, partition_options.threads_per_rank,
                 partition_options.seed);
@@ -586,10 +586,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
             for (std::size_t rank = 0; rank < shown; ++rank)
                 std::fprintf(stderr, "    rank=%zu block=%u cells=%llu\n", rank,
                     static_cast<unsigned int>(pr.rank2part[rank]),
-                    static_cast<unsigned long long>(pr.cells_per_rank[rank]));
-            if (shown < pr.cells_per_rank.size())
+                    static_cast<unsigned long long>(pr.vertices_per_rank[rank]));
+            if (shown < pr.vertices_per_rank.size())
                 std::fprintf(stderr, "    ... %zu further ranks omitted.\n",
-                            pr.cells_per_rank.size() - shown);
+                            pr.vertices_per_rank.size() - shown);
             std::fputs("  Destinations computed; mesh migration has not started.\n", stderr);
         }
         // This is rank 0's elapsed time, not a reduced maximum across ranks.
@@ -610,7 +610,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     //  - mesh is the 3D import snapshot, with block-owned cells and coordinates.
     //  - faces contains one globally unique record per physical face, stored on
     //    the original owner of cell_a. Local facet indices follow CGNS node ordering.
-    //  - pr.cell_target_rank has one destination rank per current local source cell.
+    //  - pr.vertex_target_rank has one destination rank per current local source cell.
     //  - Only linear TET/PYRA/PRISM/HEXA volume cells are supported. The mesh is
     //    conforming and manifold; vertex-sharing neighbours do not enter this halo.
     //  - The general MigrationSource overload also accepts unequal contiguous source
@@ -674,9 +674,9 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
     // The old CSR describes source ownership and is no longer needed here.
     graph = {};
-    krona::mesh::MeshPart mp = krona::mesh::migrate_local_mesh(
-        std::move(mesh), std::move(faces), std::span<const int>{pr.cell_target_rank}, comm);
-    std::vector<int>{}.swap(pr.cell_target_rank);
+    krona::mesh::host::MeshPart mp = krona::mesh::host::migrate_local_mesh(
+        std::move(mesh), std::move(faces), std::span<const int>{pr.vertex_target_rank}, comm);
+    std::vector<int>{}.swap(pr.vertex_target_rank);
 
     if (report) {
         const double seconds = std::chrono::duration<double>(
@@ -782,7 +782,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     if (report) std::fputs("KRONA mesh_partition: computing geometry...\n", stderr);
     const auto geometry_started = std::chrono::steady_clock::now();
 
-    const auto geometry_stats = krona::mesh::compute_mesh_geometry(mp, comm);
+    const auto geometry_stats = krona::mesh::host::compute_mesh_geometry(mp, comm);
 
     if (report) {
         const double seconds = std::chrono::duration<double>(
@@ -892,10 +892,10 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
     if (report)
         std::fprintf(stderr, "KRONA mesh_partition: reordering mesh (%s)...\n",
-            krona::mesh::reorder_method_to_string(static_cast<krona::mesh::ReorderMethod>(options.reorder)));
+            krona::mesh::host::reorder_method_to_string(static_cast<krona::mesh::host::ReorderMethod>(options.reorder)));
     const auto reorder_started = std::chrono::steady_clock::now();
 
-    krona::mesh::reorder_local_mesh(mp, static_cast<krona::mesh::ReorderMethod>(options.reorder));
+    krona::mesh::host::reorder_local_mesh(mp, static_cast<krona::mesh::host::ReorderMethod>(options.reorder));
 
     if (report) {
         const double seconds = std::chrono::duration<double>(
@@ -998,8 +998,8 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
     if (report) std::fputs("KRONA mesh_partition: validating final mesh...\n", stderr);
     const auto validation_started = std::chrono::steady_clock::now();
 
-    krona::mesh::validate_meshpart(mp);
-    const auto mesh_stats = krona::mesh::collect_mesh_statistics(mp, comm);
+    krona::mesh::host::validate_meshpart(mp);
+    const auto mesh_stats = krona::mesh::host::collect_mesh_statistics(mp, comm);
 
     if (report) {
         const double seconds = std::chrono::duration<double>(
@@ -1034,7 +1034,7 @@ void broadcast_options(Options& options, krona::mpi::CommView comm)
 
     // File creation is independent of verbosity; it is controlled only by the optional path.
     if (!options.boundary_output.empty() && comm.rank() == 0) {
-        krona::mesh::generate_bc_template_config(mp, options.boundary_output, mesh_stats.patch_face_counts);
+        krona::io::boundary_config::generate_bc_template_config(mp, options.boundary_output, mesh_stats.patch_face_counts);
         if (report)
             std::fputs("KRONA mesh_partition: boundary-condition template written.\n", stderr);
     }

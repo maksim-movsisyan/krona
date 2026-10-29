@@ -9,7 +9,7 @@
 namespace krona::io::solver_mesh {
 
 /// @brief Writes the complete solver snapshot using one directory exchange and direct SoA I/O.
-void export_mesh_hdf5(const mesh::MeshPart& m, const std::filesystem::path& path,
+void export_mesh_hdf5(const mesh::host::MeshPart& m, const std::filesystem::path& path,
                       mpi::CommView comm, std::span<const int> part2rank)
 {
     using namespace detail;

@@ -573,7 +573,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
 
 /// @brief Maps a section's owned dense boundary interval back to source IDs.
 [[nodiscard]] std::pair<GlobalIndex, GlobalIndex> owned_boundary_range(
-    const mesh::RawMesh& mesh, const Section& section)
+    const mesh::host::RawMesh& mesh, const Section& section)
 {
     const auto& distribution = mesh.distribution.boundary_ordinals;
     const auto first = std::max(section.boundary_offset, distribution.begin(mesh.distribution.rank));
@@ -606,7 +606,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
 
 /// @brief Reads each Cartesian coordinate directly into its final owned array.
 void read_coordinates(const File& file, const ReaderOptions& options,
-                      const Metadata& metadata, mesh::RawMesh& mesh)
+                      const Metadata& metadata, mesh::host::RawMesh& mesh)
 {
     const auto first = mesh.distribution.nodes.begin(file.comm.rank());
     const std::size_t n = host_size(mesh.distribution.nodes.local_size(file.comm.rank()));
@@ -637,7 +637,7 @@ struct LocalSection {
 
 /// @brief Plans exact local connectivity storage using only MIXED offset endpoints.
 [[nodiscard]] std::vector<LocalSection> plan_elements(
-    const File& file, const Metadata& metadata, const mesh::RawMesh& mesh)
+    const File& file, const Metadata& metadata, const mesh::host::RawMesh& mesh)
 {
     std::vector<LocalSection> slices;
     slices.reserve(metadata.sections.size());
@@ -695,10 +695,10 @@ struct LocalSection {
 
 /// @brief Reads owned element batches directly into preallocated final CSR storage.
 void read_elements(const File& file, const ReaderOptions& options,
-                   const Metadata& metadata, mesh::RawMesh& mesh)
+                   const Metadata& metadata, mesh::host::RawMesh& mesh)
 {
     const auto slices = plan_elements(file, metadata, mesh);
-    const auto allocate = [&](mesh::ElementTable& table, bool volume) {
+    const auto allocate = [&](mesh::host::ElementTable& table, bool volume) {
         std::size_t count = 0, nodes = 0;
         for (const auto& slice : slices) if (slice.section->volume == volume) {
             count += host_size(slice.count);
@@ -809,7 +809,7 @@ void read_elements(const File& file, const ReaderOptions& options,
 }
 
 /// @brief Assigns a patch while rejecting conflicting source BC definitions.
-void assign_patch(mesh::RawMesh& mesh, std::size_t local, mesh::PatchId patch)
+void assign_patch(mesh::host::RawMesh& mesh, std::size_t local, mesh::PatchId patch)
 {
     assert(local < mesh.boundary.size());
     auto& current = mesh.boundary.patch_ids[local];
@@ -820,7 +820,7 @@ void assign_patch(mesh::RawMesh& mesh, std::size_t local, mesh::PatchId patch)
 
 /// @brief Applies ranges locally and routes distributed BC lists to boundary owners.
 void read_boundaries(const File& file, const ReaderOptions& options,
-                     const Metadata& metadata, mesh::RawMesh& mesh)
+                     const Metadata& metadata, mesh::host::RawMesh& mesh)
 {
     const auto comm = file.comm;
     const auto& ownership = mesh.distribution.boundary_ordinals;
@@ -925,7 +925,7 @@ ReadResult read_parallel(const std::string& path, mpi::CommView comm, const Read
         file.close();
         if (result.mesh.cell_dimension == 2)
             result.extrusion =
-                mesh::extrude_one_layer(result.mesh, comm, options.extrusion);
+                mesh::host::extrude_one_layer(result.mesh, comm, options.extrusion);
 
         return result;
     });

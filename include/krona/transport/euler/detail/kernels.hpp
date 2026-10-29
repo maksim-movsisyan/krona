@@ -10,14 +10,14 @@ namespace krona::transport::euler::detail {
 
 template<class Space>
 struct RowData {
-    using Index=mesh::compute::detail::MeshArray<LocalIndex,Space,false>;
-    using Offset=mesh::compute::detail::MeshArray<std::size_t,Space,false>;
-    using Metric=mesh::compute::detail::MeshArray<GeometryReal,Space,false>;
+    using Index=mesh::device::detail::MeshArray<LocalIndex,Space,false>;
+    using Offset=mesh::device::detail::MeshArray<std::size_t,Space,false>;
+    using Metric=mesh::device::detail::MeshArray<GeometryReal,Space,false>;
     Index owner,neighbour,faces;
     Offset offsets;
     Metric nx,ny,nz,area;
 };
-template<class Space>auto row_data(mesh::compute::MeshView<Space> m,mesh::compute::AuxConnectivityView<Space> c)
+template<class Space>auto row_data(mesh::device::MeshView<Space> m,mesh::device::AuxConnectivityView<Space> c)
 { return RowData<Space>{m.connectivity.face_owner,m.connectivity.face_neigh,c.cell_faces,c.cell_faces_offsets,
     m.geometry.face_normal_x,m.geometry.face_normal_y,m.geometry.face_normal_z,m.geometry.face_area}; }
 

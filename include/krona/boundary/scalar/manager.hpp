@@ -23,14 +23,14 @@ template<class Exec = execution::ExecutionSpace, class Real = ComputeReal, class
 class Manager {
     static_assert(std::is_floating_point_v<Real>);
     using memory_space = typename Exec::memory_space;
-    using mesh_view_type = mesh::compute::MeshView<memory_space>;
+    using mesh_view_type = mesh::device::MeshView<memory_space>;
     using policy_type = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
     using condition_type = std::variant<std::monostate, FixedValue<Real>, NormalGradient<Real>,
                                         FixedFlux<Real>, CustomConditions...>;
 
 public:
     /// @brief Copies patch labels/ranges and validates borrowed compute geometry once.
-    Manager(const mesh::MeshPart& host_mesh, mesh_view_type mesh_view, Exec exec) : catalog_(host_mesh), exec_(exec)
+    Manager(const mesh::host::MeshPart& host_mesh, mesh_view_type mesh_view, Exec exec) : catalog_(host_mesh), exec_(exec)
     {
         execution::require_kokkos();
         const auto& s = mesh_view.sizes;
@@ -51,7 +51,7 @@ public:
         });
     }
 
-    Manager(const mesh::MeshPart& host_mesh, mesh_view_type mesh_view, const Configuration& config, Exec exec)
+    Manager(const mesh::host::MeshPart& host_mesh, mesh_view_type mesh_view, const Configuration& config, Exec exec)
         : Manager(host_mesh, mesh_view, exec) { configure(config); }
 
     Manager(const Manager&) = delete;

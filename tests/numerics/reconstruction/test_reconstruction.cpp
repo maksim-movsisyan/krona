@@ -2,8 +2,8 @@
 
 #include <krona/numerics/reconstruction/mesh_stencil.hpp>
 #include <krona/fields/field_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
 #include <krona/halo/exchange.hpp>
 
 #include <Kokkos_NumericTraits.hpp>
@@ -444,7 +444,7 @@ void convergence(const Exec& exec)
     }
 }
 
-struct Fixture { mesh::MeshPart mesh; mesh::MeshAuxConnectivity incidence; };
+struct Fixture { mesh::host::MeshPart mesh; mesh::host::MeshAuxConnectivity incidence; };
 Fixture make_mesh(mpi::CommView comm, bool distributed)
 {
     Fixture f;
@@ -484,10 +484,10 @@ void mesh_case(const Exec& exec, bool distributed)
     const auto comm = mpi::CommView::world();
     if (distributed) check(comm.size() == 2, "distributed reconstruction requires exactly two ranks");
     const auto f = make_mesh(comm, distributed);
-    using mesh::compute::MeshData;
-    const mesh::compute::MeshStorage<Exec> mesh(f.mesh,
+    using mesh::device::MeshData;
+    const mesh::device::MeshStorage<Exec> mesh(f.mesh,
         {.data = MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry | MeshData::Halo}, exec);
-    const mesh::compute::AuxConnectivityStorage<Exec> incidence(f.mesh, f.incidence, exec);
+    const mesh::device::AuxConnectivityStorage<Exec> incidence(f.incidence, exec);
     const rec::MeshStencil<Space> stencil(mesh.view(), incidence.view());
     const auto total = stencil.required_input_size();
     fields::FieldStorage<double, 2, Exec, Kokkos::LayoutRight> q("state", total, fields::FieldLocation::Custom, exec),

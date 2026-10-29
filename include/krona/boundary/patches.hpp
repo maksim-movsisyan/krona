@@ -1,7 +1,7 @@
 #pragma once
 
 #include <krona/mpi/error.hpp>
-#include <krona/mesh/localmesh.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 
 #include <limits>
 #include <span>
@@ -25,7 +25,7 @@ struct PatchEntry {
 /// @brief Owns small host metadata; stores no per-face maps and borrows no MeshPart arrays.
 class PatchCatalog {
 public:
-    explicit PatchCatalog(const mesh::MeshPart& m)
+    explicit PatchCatalog(const mesh::host::MeshPart& m)
     {
         mpi::guarded([&] {
             mpi::require(m.faces_grouped && m.n_own >= 0 && m.n_cells >= m.n_own &&

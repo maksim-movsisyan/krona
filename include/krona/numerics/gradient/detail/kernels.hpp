@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mesh/compute/aux_view.hpp>
+#include <krona/mesh/device/aux_view.hpp>
 #include <krona/mpi/error.hpp>
 
 namespace krona::numerics::gradient {
@@ -15,7 +15,7 @@ struct Options {
 };
 
 struct Requirements {
-    krona::mesh::compute::MeshData mesh;
+    krona::mesh::device::MeshData mesh;
     krona::mesh::AuxConnType connectivity;
     krona::mesh::AuxGeomType geometry;
 };
@@ -23,7 +23,7 @@ struct Requirements {
 /// @brief Returns mandatory storage groups before creating the gradient plan.
 [[nodiscard]] constexpr Requirements requirements(Options options = {}) noexcept
 {
-    using MeshData = mesh::compute::MeshData;
+    using MeshData = mesh::device::MeshData;
     using mesh::AuxConnType;
     using mesh::AuxGeomType;
     if (options.scheme != Scheme::GreenGaussCell && options.scheme != Scheme::GreenGaussFace &&
@@ -59,18 +59,18 @@ struct Batch {
 
 template<class Space>
 struct Metrics {
-    template<class T> using Array = mesh::compute::detail::MeshArray<T, Space, false>;
+    template<class T> using Array = mesh::device::detail::MeshArray<T, Space, false>;
     // Capture only gradient inputs; node tables, halo plans and unrelated metrics stay outside kernels.
     struct MeshDescriptor {
-        mesh::compute::MeshSizes sizes;
-        mesh::compute::MeshData active_mask;
+        mesh::device::MeshSizes sizes;
+        mesh::device::MeshData active_mask;
         struct { Array<LocalIndex> face_owner, face_neigh; } connectivity;
         struct {
             Array<GeometryReal> cell_centroid_x, cell_centroid_y, cell_centroid_z, cell_volume;
             Array<GeometryReal> face_centroid_x, face_centroid_y, face_centroid_z;
             Array<GeometryReal> face_normal_x, face_normal_y, face_normal_z, face_area;
         } geometry;
-        bool has(mesh::compute::MeshData flags) const
+        bool has(mesh::device::MeshData flags) const
         {
             const std::uint64_t bits = static_cast<std::uint64_t>(flags);
             return (static_cast<std::uint64_t>(active_mask) & bits) == bits;
@@ -92,8 +92,8 @@ struct Metrics {
     } geometry;
     Options options;
 
-    Metrics(mesh::compute::MeshView<Space> m, mesh::compute::AuxConnectivityView<Space> c,
-            mesh::compute::AuxGeometryView<Space> g, Options o)
+    Metrics(mesh::device::MeshView<Space> m, mesh::device::AuxConnectivityView<Space> c,
+            mesh::device::AuxGeometryView<Space> g, Options o)
         : mesh{m.sizes, m.active_mask, {m.connectivity.face_owner, m.connectivity.face_neigh},
                {m.geometry.cell_centroid_x, m.geometry.cell_centroid_y, m.geometry.cell_centroid_z, m.geometry.cell_volume,
                 m.geometry.face_centroid_x, m.geometry.face_centroid_y, m.geometry.face_centroid_z,

@@ -2,7 +2,8 @@
 
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/communicator.hpp>
-#include <krona/mesh/compute/validation.hpp>
+#include <krona/mesh/device/validation.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 
 #include <type_traits>
  
@@ -18,10 +19,10 @@ public:
     using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
     using real_type = Real;
-    using Mesh = mesh::compute::MeshView<memory_space>;
-    using Connectivity = mesh::compute::AuxConnectivityView<memory_space>;
+    using Mesh = mesh::device::MeshView<memory_space>;
+    using Connectivity = mesh::device::AuxConnectivityView<memory_space>;
 
-    ConvectionPlan(const mesh::MeshPart& host, Mesh mesh_view, Connectivity connectivity,
+    ConvectionPlan(const mesh::host::MeshPart& host, Mesh mesh_view, Connectivity connectivity,
         mpi::CommView comm, Exec exec = {})
         : mesh_(mesh_view), connectivity_(connectivity), comm_(comm), exec_(exec)
     {
@@ -33,8 +34,8 @@ public:
             host.n_cells == s.n_cells && host.n_faces == s.n_faces &&
             host.n_internal_faces == s.n_internal_faces && host.n_inner_faces == s.n_inner_faces,
             "Scalar convection: grouped host/view mesh mismatch");
-        using mesh::compute::MeshData;
-        const auto result = mesh::compute::validation::validate<
+        using mesh::device::MeshData;
+        const auto result = mesh::device::validation::validate<
             MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry,
             mesh::AuxConnType::CellFaces, mesh::AuxGeomType::None, true>(exec_, mesh_, connectivity_);
         mpi::require(result.ok(), "Scalar convection: invalid mesh geometry or cell-face incidence");

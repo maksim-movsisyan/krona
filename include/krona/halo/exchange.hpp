@@ -6,8 +6,8 @@
 #include <krona/mpi/context.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/halo/detail/types.hpp>
-#include <krona/mesh/compute/halo_plan.hpp>
-#include <krona/mesh/compute/mesh_view.hpp>
+#include <krona/mesh/host/halo_plan.hpp>
+#include <krona/mesh/device/mesh_view.hpp>
 
 #include <algorithm>
 #include <limits>
@@ -58,7 +58,7 @@ class Exchange {
     using components_type = Kokkos::View<detail::Component<T>*, device_type>;
     using segments_type = Kokkos::View<detail::Segment*, device_type>;
     using peers_type = Kokkos::View<int*, device_type>;
-    using map_type = mesh::compute::detail::MeshArray<LocalIndex, memory_space, false>;
+    using map_type = mesh::device::detail::MeshArray<LocalIndex, memory_space, false>;
     using policy_type = Kokkos::MDRangePolicy<Exec,
                         Kokkos::Rank<2, Kokkos::Iterate::Right, Kokkos::Iterate::Right>,
                         Kokkos::IndexType<std::size_t>>;
@@ -72,7 +72,7 @@ class Exchange {
     };
 
 public:
-    Exchange(mesh::compute::MeshView<memory_space> mesh, mesh::compute::HaloPlanView plan,
+    Exchange(mesh::device::MeshView<memory_space> mesh, mesh::host::HaloPlanView plan,
              mpi::CommView comm, int tag, Exec exec, Transfer transfer = Transfer::HostStaged)
         : exec_(exec), comm_(comm), tag_(tag), transfer_(transfer),
           n_own_(mesh.sizes.n_own), n_cells_(mesh.sizes.n_cells),
@@ -80,7 +80,7 @@ public:
     {
         execution::require_kokkos();
         mpi::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
-        mpi::require(mesh.has(mesh::compute::MeshData::Halo), "Halo maps were not selected");
+        mpi::require(mesh.has(mesh::device::MeshData::Halo), "Halo maps were not selected");
         mpi::require(n_own_ >= 0 && n_cells_ >= n_own_, "Halo: invalid cell counts");
         mpi::require(transfer == Transfer::HostStaged || transfer == Transfer::DeviceDirect, "Halo: invalid transfer mode");
 

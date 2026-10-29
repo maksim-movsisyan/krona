@@ -1,7 +1,7 @@
 // Distributed smoke test for MeshPart -> MeshStorage -> MeshView.
 #include <krona/execution/types.hpp>
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mpi/collective_status.hpp>
 #include <krona/mpi/collectives.hpp>
 #include <krona/mpi/error.hpp>
@@ -28,9 +28,9 @@ namespace {
 
 using Exec = krona::execution::ExecutionSpace;
 using Memory = typename Exec::memory_space;
-using MeshView = krona::mesh::compute::MeshView<Memory>;
-using MeshStorage = krona::mesh::compute::MeshStorage<Exec>;
-using MeshData = krona::mesh::compute::MeshData;
+using MeshView = krona::mesh::device::MeshView<Memory>;
+using MeshStorage = krona::mesh::device::MeshStorage<Exec>;
+using MeshData = krona::mesh::device::MeshData;
 using Index = krona::LocalIndex;
 using Real = krona::AccumulationReal;
 using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<Index>>;

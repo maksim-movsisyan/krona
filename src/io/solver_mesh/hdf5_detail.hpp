@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mesh/localmesh.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 #include <krona/mpi/context.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/communicator.hpp>

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <krona/boundary/context.hpp>
-#include <krona/mesh/compute/mesh_view.hpp>
+#include <krona/mesh/device/mesh_view.hpp>
 
 namespace krona::boundary {
 
@@ -9,8 +9,8 @@ namespace krona::boundary {
 template<class Space = execution::MemorySpace>
 struct GeometryView {
     using memory_space = Space;
-    using IndexArray = mesh::compute::detail::MeshArray<LocalIndex, Space, false>;
-    using RealArray = mesh::compute::detail::MeshArray<GeometryReal, Space, false>;
+    using IndexArray = mesh::device::detail::MeshArray<LocalIndex, Space, false>;
+    using RealArray = mesh::device::detail::MeshArray<GeometryReal, Space, false>;
 
     LocalIndex n_cells = 0, n_inner_faces = 0;
     IndexArray face_owner;

@@ -1,7 +1,7 @@
 #include "common/test_support.hpp"
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/fields/field_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
 #include <algorithm>
 #include <fstream>
@@ -50,9 +50,9 @@ void initialize(const Exec& exec,Views fields)
     if constexpr (Views::thermal) initialize_component(exec,fields.temperature,Real{300});
 }
 
-krona::mesh::MeshPart fixture(bool empty=false)
+krona::mesh::host::MeshPart fixture(bool empty=false)
 {
-    krona::mesh::MeshPart m;m.faces_grouped=true;
+    krona::mesh::host::MeshPart m;m.faces_grouped=true;
     m.patches={{"iso","wall","BCWall"},{"adiabatic","wall","BCWall"},{"symmetry","","BCSymmetryPlane"},
         {"outlet","","BCOutflow"},{"inlet","","BCInflowSupersonic"},{"empty","","BCWall"}};
     m.n_bfaces_g=6;m.n_labeled_bfaces_g=5;
@@ -67,7 +67,7 @@ krona::mesh::MeshPart fixture(bool empty=false)
     m.face_normal_y={0,0,0,0,0,0,0};m.face_normal_z={0,0,0,0,0,0,0};m.face_area={1,2,3,4,5,6,7};
     return m;
 }
-constexpr auto selection=krona::mesh::compute::MeshData::FaceCells|krona::mesh::compute::MeshData::Geometry;
+constexpr auto selection=krona::mesh::device::MeshData::FaceCells|krona::mesh::device::MeshData::Geometry;
 GasModel gas_model() { return {Gas{},ph::PerfectGasCharacteristics{}}; }
 template<class Manager>
 void configure(Manager& manager)
@@ -113,7 +113,7 @@ void thermodynamics_case(const Exec& exec)
 template<class Layout>
 void wall_layout(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     krona::fields::FieldStorage<Real,1,Exec> p("p",11,krona::fields::FieldLocation::Custom,exec),T("T",11,krona::fields::FieldLocation::Custom,exec);
     krona::fields::FieldStorage<Real,3,Exec,Layout> velocity("u",11,krona::fields::FieldLocation::Custom,exec);
@@ -158,7 +158,7 @@ struct Capture {
 };
 void evaluate_case(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     krona::fields::FieldStorage<Real,1,Exec> p("p",9,krona::fields::FieldLocation::CellExtnd,exec),T("T",9,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec> u("u",9,krona::fields::FieldLocation::CellExtnd,exec);
@@ -179,7 +179,7 @@ template<class T> concept HasTemperature=requires(T s){s.temperature;};
 void incompressible_case(const Exec& exec)
 {
     static_assert(!HasTemperature<ph::Primitive<Real,false>>);
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     const auto model=ph::Incompressible<thermo::ConstantDensity<Real>>{{1000}};
     ph::Manager<decltype(model),Exec> manager(m,mesh.view(),model,exec);
     for (int id=0;id<6;++id) manager.set(id,ph::AdiabaticWall<Real>{});
@@ -195,7 +195,7 @@ void incompressible_case(const Exec& exec)
 
 void thermal_liquid_case(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     using Model=ph::Incompressible<thermo::ThermalConstantDensity<Real>,true>;
     ph::Manager<Model,Exec> manager(m,mesh.view(),Model{},exec);
     for (int id=0;id<6;++id) manager.set(id,ph::AdiabaticWall<Real>{});
@@ -245,7 +245,7 @@ struct PerOwnerModel {
 void extension_case(const Exec& exec)
 {
     static_assert(thermo::AcousticEOS<WrappedGasEOS,Real>);
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     Array constants("R",2);auto host=Kokkos::create_mirror(constants);
     host(0)=250;host(1)=1000;Kokkos::deep_copy(exec,constants,host);exec.fence();
     ph::Manager<PerOwnerModel,Exec> manager(m,mesh.view(),PerOwnerModel{constants},exec);
@@ -357,7 +357,7 @@ struct RawVisitor {
 };
 void visitation_case(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     int calls=0;manager.for_each_patch([&](krona::boundary::PatchRange,const auto&){++calls;});
     equal(calls,6,"Skip locally empty patch and include unlabelled interval");
@@ -376,7 +376,7 @@ void configuration_case(const Exec& exec)
     check(std::holds_alternative<ph::IsothermalWall<double>>(parsed.patches[0].condition),"Top-level type selects physical condition");
     close(std::get<ph::IsothermalWall<double>>(parsed.patches[0].condition).temperature,350,"Physical temperature parameter");
     check(std::holds_alternative<ph::HeatFluxWall<double>>(*loaded.unlabelled),"Unlabelled physical type");
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     auto shuffled=loaded;std::swap(shuffled.patches.front(),shuffled.patches.back());
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),shuffled,exec);
     equal(manager.required_field_size(),std::size_t{9},"Configuration bound by ID and name");
@@ -394,7 +394,7 @@ void configuration_case(const Exec& exec)
 
 void empty_case(const Exec& exec)
 {
-    const auto m=fixture(true);krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture(true);krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     krona::fields::FieldStorage<Real,1,Exec> p("p",0,krona::fields::FieldLocation::CellExtnd,exec),T("T",0,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec> u("u",0,krona::fields::FieldLocation::CellExtnd,exec);
@@ -412,7 +412,7 @@ struct TimedWall {
 };
 void custom_case(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec,Real,TimedWall> manager(m,mesh.view(),gas_model(),exec);configure(manager);manager.set(0,TimedWall{});
     krona::fields::FieldStorage<Real,1,Exec> p("p",9,krona::fields::FieldLocation::CellExtnd,exec),T("T",9,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec> u("u",9,krona::fields::FieldLocation::CellExtnd,exec);
@@ -460,19 +460,19 @@ void reject_direction(const Exec& exec) { reject_device<2>(exec); }
 void reject_choking(const Exec& exec) { reject_device<3>(exec); }
 void reject_no_temperature(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     const auto model=ph::Incompressible<thermo::ConstantDensity<Real>>{};
     ph::Manager<decltype(model),Exec> manager(m,mesh.view(),model,exec);manager.set(0,ph::IsothermalWall<Real>{300,{}});
 }
 void reject_no_characteristics(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     const ph::Compressible<Gas> model{Gas{},ph::NoCharacteristics{}};
     ph::Manager<decltype(model),Exec> manager(m,mesh.view(),model,exec);manager.set(0,ph::PressureOutlet<Real>{100000,{}});
 }
 void reject_missing_law(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     krona::fields::FieldStorage<Real,1,Exec> p("p",9,krona::fields::FieldLocation::CellExtnd,exec),T("T",9,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec> u("u",9,krona::fields::FieldLocation::CellExtnd,exec);
@@ -480,7 +480,7 @@ void reject_missing_law(const Exec& exec)
 }
 void reject_missing_binding(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);
     manager.for_each_patch([](krona::boundary::PatchRange,const auto&){});
 }
@@ -496,14 +496,14 @@ void reject_duplicate(const Exec&)
 }
 void reject_name(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     auto config=ph::read_config(KRONA_PHYSICAL_TEST_DATA);config.patches[0].name="wrong";
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),config,exec);
 }
 
 void reject_short_field(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     Array p("short",8),u("u",9),v("v",9),w("w",9),T("T",9);
     manager.apply_async(ph::primitive_components(p,u,v,w,T),
@@ -511,7 +511,7 @@ void reject_short_field(const Exec& exec)
 }
 void reject_short_correction(const Exec& exec)
 {
-    const auto m=fixture();krona::mesh::compute::MeshStorage<Exec> mesh(m,{.data=selection},exec);
+    const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
     ph::Manager<GasModel,Exec> manager(m,mesh.view(),gas_model(),exec);configure(manager);
     Array p("p",9),u("u",9),v("v",9),w("w",9),T("T",9),gx("gx",1),gy("gy",2),gz("gz",2);
     const auto correction=ph::Corrections{krona::boundary::NoCorrection{},ph::ZeroVelocityIncrement{},

@@ -2,7 +2,7 @@
 
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/fields/field_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
 
 #include <algorithm>
@@ -23,9 +23,9 @@ using Real = krona::ComputeReal;
 using Memory = typename Exec::memory_space;
 using Array = Kokkos::View<Real*, Memory>;
 
-krona::mesh::MeshPart fixture()
+krona::mesh::host::MeshPart fixture()
 {
-    krona::mesh::MeshPart m;
+    krona::mesh::host::MeshPart m;
     m.n_own = 2; m.n_cells = 3;
     m.n_faces = 5; m.n_internal_faces = 0; m.n_inner_faces = 1;
     m.faces_grouped = true;
@@ -87,7 +87,7 @@ struct CaptureRelation {
 void reconstruction_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, true);
     Kokkos::View<Real*[2], Kokkos::LayoutRight, Memory> field("field", 7);
@@ -146,7 +146,7 @@ struct PrescribedFluxSink {
 void visitation_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, true);
     int patches = 0;
@@ -172,7 +172,7 @@ struct TimeValue {
 void custom_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real, TimeValue> manager(m, mesh.view(), exec);
     manager.set(0, TimeValue{});
     manager.set(1, scalar::NormalGradient<Real>{0});
@@ -220,8 +220,8 @@ void relations_case(const Exec& exec)
 
 void empty_case(const Exec& exec)
 {
-    krona::mesh::MeshPart m; m.faces_grouped = true;
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::host::MeshPart m; m.faces_grouped = true;
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     krona::fields::FieldStorage<Real, 1, Exec> field("empty", 0, krona::fields::FieldLocation::Custom, exec);
     manager.apply_async(field.view());
@@ -235,7 +235,7 @@ void empty_case(const Exec& exec)
 void independent_value_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     for (krona::mesh::PatchId p = 0; p < 3; ++p)
         manager.set(p, scalar::FixedValue<Real>{7});
@@ -284,7 +284,7 @@ void boundary_gradients_case(const Exec& exec)
     m.face_centroid_x[3] = 1;
     m.face_centroid_y[3] = 0;
     m.face_centroid_z[3] = 1;
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, true);
     Array q("q", 7), coefficient("coefficient", 2);
@@ -320,10 +320,10 @@ void boundary_gradients_case(const Exec& exec)
 }
 
 // Matches data/bc.toml: two owned cells, one MPI ghost and three labelled patches.
-krona::mesh::MeshPart file_fixture(bool skew = false, bool unlabelled = false, bool empty = false)
+krona::mesh::host::MeshPart file_fixture(bool skew = false, bool unlabelled = false, bool empty = false)
 {
     using G = krona::GeometryReal;
-    krona::mesh::MeshPart m;
+    krona::mesh::host::MeshPart m;
     m.faces_grouped = true;
     m.patches = {{"fixed", "inlet", "BCInflow"}, {"gradient", "wall", "BCWall"},
                  {"flux", "wall", "BCWall"}};
@@ -357,8 +357,8 @@ krona::mesh::MeshPart file_fixture(bool skew = false, bool unlabelled = false, b
     return m;
 }
 
-constexpr auto selection = krona::mesh::compute::MeshData::FaceCells |
-                           krona::mesh::compute::MeshData::Geometry;
+constexpr auto selection = krona::mesh::device::MeshData::FaceCells |
+                           krona::mesh::device::MeshData::Geometry;
 
 scalar::Configuration file_configuration()
 { return scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "temperature"); }
@@ -407,7 +407,7 @@ void config_case(const Exec& exec)
                         "Both fields have explicit unlabelled conditions");
     check(loaded.unlabelled->kind == scalar::Kind::NormalGradient, "Read unlabelled condition");
     auto m = file_fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     auto shuffled = loaded;
     std::swap(shuffled.patches.front(), shuffled.patches.back());
     scalar::Manager<Exec, Real> manager(m, mesh.view(), shuffled, exec);
@@ -421,7 +421,7 @@ void config_case(const Exec& exec)
 void file_fill_case(const Exec& exec)
 {
     const auto m = file_fixture(false, true);
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     krona::fields::FieldStorage<Real, 1, Exec> field(
         "temperature", manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
@@ -454,7 +454,7 @@ template<class Layout>
 void layout_case(const Exec& exec)
 {
     const auto m = file_fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     krona::fields::FieldStorage<Real, 3, Exec, Layout> field(
         "vector", manager.required_field_size() + 2, krona::fields::FieldLocation::Custom, exec);
@@ -498,7 +498,7 @@ struct CapturePhysicalFlux {
 void affine_case(const Exec& exec)
 {
     const auto m = file_fixture(true);
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real, AffineValue> manager(m, mesh.view(), file_configuration(), exec);
     manager.set(0, AffineValue{});
     manager.set(2, scalar::FixedFlux<Real>{-6});
@@ -554,7 +554,7 @@ struct FaceCoefficient {
 void assembly_case(const Exec& exec)
 {
     const auto m = file_fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     Array diagonal("diagonal", 2), rhs("rhs", 2), coefficient("coefficient", 5);
     const auto law = transport::IsotropicDiffusion{FaceCoefficient{coefficient}};
@@ -589,7 +589,7 @@ void assembly_case(const Exec& exec)
 void empty_labels_case(const Exec& exec)
 {
     const auto m = file_fixture(false, true, true);
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     krona::fields::FieldStorage<Real, 1, Exec> field(
         "empty", 0, krona::fields::FieldLocation::CellExtnd, exec);
@@ -622,7 +622,7 @@ void reject_with_manager(const Exec& exec, Mutation mutation)
     auto m = file_fixture();
     auto config = file_configuration();
     mutation(m, config);
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), config, exec);
 }
 
@@ -639,7 +639,7 @@ void unlabelled_case(const Exec& exec)
 {
     auto m = file_fixture(false, true);
     auto config = file_configuration(); config.unlabelled.reset();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), config, exec);
 }
 
@@ -661,7 +661,7 @@ void missing_scalar_case(const Exec&)
 void short_field_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, false);
     manager.apply_component_async(Array("short_field", manager.required_field_size() - 1));
@@ -670,7 +670,7 @@ void short_field_case(const Exec& exec)
 void short_correction_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, false);
     Array field("field", manager.required_field_size()), short_gradient("short_gradient", 1);
@@ -681,7 +681,7 @@ void short_correction_case(const Exec& exec)
 void missing_law_empty_case(const Exec& exec)
 {
     const auto m = file_fixture(false, true, true);
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     manager.apply_component_async(Array("empty", 0));
 }
@@ -708,7 +708,7 @@ void zero_coefficient_case(const Exec& exec)
 void missing_law_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     configure(manager, true);
     Array field("field", 7);
@@ -718,7 +718,7 @@ void missing_law_case(const Exec& exec)
 void missing_binding_case(const Exec& exec)
 {
     const auto m = fixture();
-    krona::mesh::compute::MeshStorage<Exec> mesh(m, {}, exec);
+    krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
     scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
     manager.set(0, scalar::FixedValue<Real>{7});
     manager.set(1, scalar::NormalGradient<Real>{0});

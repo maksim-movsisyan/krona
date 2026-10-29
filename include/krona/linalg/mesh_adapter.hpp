@@ -2,7 +2,7 @@
 
 #include <krona/mpi/communicator.hpp>
 #include <krona/linalg/csr_pattern.hpp>
-#include <krona/mesh/localmesh.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 
 #include <span>
 
@@ -25,10 +25,10 @@ struct CellNumbering {
 
 /// @brief Collective prefix numbering and one halo exchange on a private MPI context.
 /// No Allgather table, original mesh GIDs, geometry or device memory are needed.
-[[nodiscard]] CellNumbering build_cell_numbering(const mesh::MeshPart& mesh, mpi::CommView comm);
+[[nodiscard]] CellNumbering build_cell_numbering(const mesh::host::MeshPart& mesh, mpi::CommView comm);
 
 /// @brief Scalar face-neighbour graph, including each owned diagonal, excluding physical boundary slots.
 /// Connectivity is a graph choice, not a discretization or boundary-condition assembly.
-[[nodiscard]] CsrInput make_face_csr(const mesh::MeshPart& mesh, const CellNumbering& numbering);
+[[nodiscard]] CsrInput make_face_csr(const mesh::host::MeshPart& mesh, const CellNumbering& numbering);
 
 } // namespace krona::linalg

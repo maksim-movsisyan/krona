@@ -1,7 +1,7 @@
 #pragma once
 #include <krona/boundary/patches.hpp>
 #include <krona/numerics/reconstruction/types.hpp>
-#include <krona/mesh/compute/validation.hpp>
+#include <krona/mesh/device/validation.hpp>
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/communicator.hpp>
 #include <algorithm>
@@ -39,9 +39,9 @@ class EulerPlan {
 public:
     using execution_space=Exec;
     using memory_space=typename Exec::memory_space;
-    using Mesh=mesh::compute::MeshView<memory_space>;
-    using Connectivity=mesh::compute::AuxConnectivityView<memory_space>;
-    EulerPlan(const mesh::MeshPart& host,Mesh view,Connectivity connectivity,mpi::CommView comm,Exec exec={})
+    using Mesh=mesh::device::MeshView<memory_space>;
+    using Connectivity=mesh::device::AuxConnectivityView<memory_space>;
+    EulerPlan(const mesh::host::MeshPart& host,Mesh view,Connectivity connectivity,mpi::CommView comm,Exec exec={})
         :mesh_(view),connectivity_(connectivity),comm_(comm),exec_(exec),catalog_(host)
     {
         execution::require_kokkos();
@@ -50,8 +50,8 @@ public:
         mpi::require(host.faces_grouped&&s.faces_grouped&&host.n_own==s.n_own&&host.n_cells==s.n_cells&&
             host.n_faces==s.n_faces&&host.n_internal_faces==s.n_internal_faces&&host.n_inner_faces==s.n_inner_faces,
             "Euler: grouped host/view mesh mismatch");
-        using mesh::compute::MeshData;
-        const auto checked=mesh::compute::validation::validate<
+        using mesh::device::MeshData;
+        const auto checked=mesh::device::validation::validate<
             MeshData::FaceCells|MeshData::CellGeometry|MeshData::FaceGeometry,
             mesh::AuxConnType::CellFaces,mesh::AuxGeomType::None,true>(exec_,mesh_,connectivity_);
         mpi::require(checked.ok(),"Euler: invalid mesh geometry or cell-face incidence");

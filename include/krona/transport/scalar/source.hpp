@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mesh/compute/mesh_view.hpp>
+#include <krona/mesh/device/mesh_view.hpp>
 #include <krona/transport/scalar/detail/views.hpp>
 #include <krona/transport/scalar/status.hpp>
 
@@ -41,14 +41,14 @@ struct AddSource {
 /// @brief Independent additive volume source. Borrows owned volumes, allocates no storage and submits no MPI.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class SourceOperator {
-    using Mesh = mesh::compute::MeshView<typename Exec::memory_space>;
+    using Mesh = mesh::device::MeshView<typename Exec::memory_space>;
     using Volumes = decltype(Mesh{}.geometry.cell_volume);
 public:
     explicit SourceOperator(Mesh mesh, Exec exec = {})
         : volumes_(mesh.geometry.cell_volume), owned_(static_cast<std::size_t>(mesh.sizes.n_own)), exec_(exec)
     {
         execution::require_kokkos();
-        mpi::require(mesh.sizes.n_own >= 0 && mesh.has(mesh::compute::MeshData::CellGeometry),
+        mpi::require(mesh.sizes.n_own >= 0 && mesh.has(mesh::device::MeshData::CellGeometry),
                      "Scalar source: attach owned cell volumes");
         detail::validate_view<Exec>(volumes_, owned_);
     }

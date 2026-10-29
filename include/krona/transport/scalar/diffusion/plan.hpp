@@ -12,11 +12,11 @@ public:
     using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
     using real_type = Real;
-    using Mesh = mesh::compute::MeshView<memory_space>;
-    using Connectivity = mesh::compute::AuxConnectivityView<memory_space>;
-    using Geometry = mesh::compute::AuxGeometryView<memory_space>;
+    using Mesh = mesh::device::MeshView<memory_space>;
+    using Connectivity = mesh::device::AuxConnectivityView<memory_space>;
+    using Geometry = mesh::device::AuxGeometryView<memory_space>;
 
-    DiffusionPlan(const mesh::MeshPart& host, Mesh mesh_view, Connectivity connectivity,
+    DiffusionPlan(const mesh::host::MeshPart& host, Mesh mesh_view, Connectivity connectivity,
                   Geometry geometry, mpi::CommView comm, Exec exec = {}, DiffusionOptions options = {})
         : exec_(exec), mesh_(mesh_view), connectivity_(connectivity), geometry_(geometry), comm_(comm)
     { detail::validate_plan<Exec, Real>(host, mesh_, connectivity_, geometry_, comm_, exec_, options); }

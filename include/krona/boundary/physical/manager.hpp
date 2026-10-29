@@ -20,14 +20,14 @@ public:
     using memory_space=typename Exec::memory_space;
     using model_type=Model;
     using state_type=Primitive<Real,Model::thermal>;
-    using mesh_view_type=mesh::compute::MeshView<memory_space>;
+    using mesh_view_type=mesh::device::MeshView<memory_space>;
 private:
     using policy_type=Kokkos::RangePolicy<Exec,Kokkos::IndexType<LocalIndex>>;
     using condition_type=std::variant<std::monostate,Symmetry,SlipWall<Real>,AdiabaticWall<Real>,
         IsothermalWall<Real>,HeatFluxWall<Real>,PressureOutlet<Real>,TotalConditionsInlet<Real>,
         VelocityInlet<Real>,SupersonicInlet<Real>,SupersonicOutlet,CustomConditions...>;
 public:
-    Manager(const mesh::MeshPart& host,mesh_view_type mesh_view,Model model,Exec exec)
+    Manager(const mesh::host::MeshPart& host,mesh_view_type mesh_view,Model model,Exec exec)
         : catalog_(host),exec_(exec),model_(std::move(model))
     {
         execution::require_kokkos(); model_.validate();
@@ -44,7 +44,7 @@ public:
             execution::complete(exec_,[&] { geometry_=boundary::detail::attach_geometry<Real>(exec_,mesh_view); });
         });
     }
-    Manager(const mesh::MeshPart& host,mesh_view_type view,Model model,const Configuration& config,Exec exec)
+    Manager(const mesh::host::MeshPart& host,mesh_view_type view,Model model,const Configuration& config,Exec exec)
         : Manager(host,view,std::move(model),exec) { configure(config); }
     Manager(const Manager&)=delete; Manager& operator=(const Manager&)=delete;
     Manager(Manager&&)=delete; Manager& operator=(Manager&&)=delete;

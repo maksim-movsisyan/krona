@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mesh/localmesh.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 #include <krona/mesh/element.hpp>
 
 #include <cmath>
@@ -9,10 +9,10 @@ namespace krona::test {
 
 /// @brief Creates a synthetic rank-0 snapshot: two owned tetrahedra and one ghost.
 /// Rank metadata describes two partitions; tests do not perform communication.
-inline mesh::MeshPart make_mesh()
+inline mesh::host::MeshPart make_mesh()
 {
     using mesh::CellType;
-    mesh::MeshPart m;
+    mesh::host::MeshPart m;
     m.rank = 0;
     m.nprocs = 2; 
     m.n_cells_g = 3;

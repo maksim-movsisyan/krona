@@ -44,10 +44,10 @@ struct ForEachFace {
 
 /// @brief Validates borrowed exterior geometry once and returns its compact descriptor.
 template<class Real, class Exec, class Space>
-GeometryView<Space> attach_geometry(const Exec& exec, mesh::compute::MeshView<Space> mesh_view)
+GeometryView<Space> attach_geometry(const Exec& exec, mesh::device::MeshView<Space> mesh_view)
 {
     static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible);
-    using mesh::compute::MeshData;
+    using mesh::device::MeshData;
     const auto& s = mesh_view.sizes;
     mpi::require(s.faces_grouped && s.n_own >= 0 && s.n_cells >= s.n_own &&
                  s.n_internal_faces >= 0 && s.n_internal_faces <= s.n_inner_faces &&

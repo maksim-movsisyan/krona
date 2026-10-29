@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mesh/localmesh.hpp>
+#include <krona/mesh/host/mesh_part.hpp>
 #include <krona/mpi/communicator.hpp>
 
 #include <array>
@@ -109,7 +109,7 @@ struct MeshFields {
 
 /// @brief Writes owned volume cells and physical boundary faces into two parallel VTK datasets.
 /// Exports rank, GIDs, local IDs and metrics from a geometric mesh with grouped faces.
-void write_vtu(const mesh::MeshPart& mesh, const std::filesystem::path& directory,
+void write_vtu(const mesh::host::MeshPart& mesh, const std::filesystem::path& directory,
                std::string_view stem, mpi::CommView comm, MeshFields fields = {});
 
 } // namespace krona::io::vtk

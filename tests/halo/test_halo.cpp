@@ -2,7 +2,7 @@
 
 #include <krona/fields/fields_manager.hpp>
 #include <krona/halo/exchange.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mpi/communicator.hpp>
 #include <array>
 #include <cstdint>
@@ -13,8 +13,9 @@
 namespace {
 
 using namespace krona::test;
-using krona::mesh::MeshPart;
-using namespace krona::mesh::compute;
+using krona::mesh::host::MeshPart;
+using namespace krona::mesh::device;
+using krona::mesh::host::HaloPlanView;
 
 int count(int sender, int receiver, std::string_view mode)
 {

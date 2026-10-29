@@ -2,15 +2,14 @@
 
 #include <krona/transport/scalar/solvers/steady_diffusion.hpp>
 #include <krona/fields/field_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/linalg/bsr_matrix.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
 
 #include <array>
 #include <limits>
-#include <numeric>
 #include <string_view>
 
 namespace {
@@ -24,9 +23,9 @@ using Space = typename Exec::memory_space;
 using krona::test::check;
 
 struct Fixture {
-    mesh::MeshPart host;
-    mesh::MeshAuxConnectivity connectivity;
-    mesh::MeshAuxGeometry geometry;
+    mesh::host::MeshPart host;
+    mesh::host::MeshAuxConnectivity connectivity;
+    mesh::host::MeshAuxGeometry geometry;
     int first = 0, total = 0;
 };
 
@@ -87,17 +86,18 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
     f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance |
                              mesh::AuxGeomType::FaceInterpolationWeights;
     f.geometry.n_faces = m.n_faces;
+    f.geometry.n_cells = m.n_cells;
     return f;
 }
 
 struct Attached {
-    mesh::compute::MeshStorage<Exec> mesh;
-    mesh::compute::AuxConnectivityStorage<Exec> connectivity;
-    mesh::compute::AuxGeometryStorage<Exec> geometry;
+    mesh::device::MeshStorage<Exec> mesh;
+    mesh::device::AuxConnectivityStorage<Exec> connectivity;
+    mesh::device::AuxGeometryStorage<Exec> geometry;
     td::DiffusionPlan<Exec, Real> plan;
     linalg::FaceAssemblyPlan<Exec> assembly;
     Attached(const Fixture& f, mpi::CommView comm, Exec exec, td::DiffusionOptions options = {})
-        : mesh(f.host, {}, exec), connectivity(f.host, f.connectivity, exec), geometry(f.host, f.geometry, exec),
+        : mesh(f.host, {}, exec), connectivity(f.connectivity, exec), geometry(f.geometry, exec),
           plan(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec, options), assembly(f.host, comm, exec) {}
 };
 
@@ -281,8 +281,8 @@ KOKKOS_INLINE_FUNCTION void add_coefficient(Values values, std::size_t entry, in
 }
 
 template<class Matrix>
-void assembly_product(Matrix& matrix, const Fixture& f, mesh::compute::MeshView<Space> mesh,
-    mesh::compute::AuxConnectivityView<Space> connectivity, linalg::FaceAssemblyMap<Space> entries, const Exec& exec)
+void assembly_product(Matrix& matrix, const Fixture& f, mesh::device::MeshView<Space> mesh,
+    mesh::device::AuxConnectivityView<Space> connectivity, linalg::FaceAssemblyMap<Space> entries, const Exec& exec)
 {
     using Scalar = typename Matrix::scalar_type;
     const int width = matrix.block_size();
@@ -360,9 +360,9 @@ void assembly_case(const Exec& exec) {
             return copy;
         }();
         check(!assembly.pattern().has_input_mapping(), "assembly retained an unused input permutation");
-        mesh::compute::MeshStorage<Exec> mesh(f.host, {}, exec);
-        mesh::compute::AuxConnectivityStorage<Exec> connectivity(f.host, f.connectivity, exec);
-        mesh::compute::AuxGeometryStorage<Exec> geometry(f.host, f.geometry, exec);
+        mesh::device::MeshStorage<Exec> mesh(f.host, {}, exec);
+        mesh::device::AuxConnectivityStorage<Exec> connectivity(f.connectivity, exec);
+        mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry, exec);
         td::DiffusionPlan<Exec, Real> first(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec);
         td::DiffusionPlan<Exec, float> second(f.host, mesh.view(), connectivity.view(), geometry.view(), comm, exec);
         check(first.mesh_view().connectivity.face_owner.data() == second.mesh_view().connectivity.face_owner.data(),
@@ -510,9 +510,9 @@ void residual_case(const Exec& e){residual_case_impl<double,Kokkos::LayoutLeft>(
 
 void matrix_free_case(const Exec& exec) {
     const auto comm=mpi::CommView::world(); const auto f=bar(comm);
-    mesh::compute::MeshStorage<Exec> mesh(f.host,{},exec);
-    mesh::compute::AuxConnectivityStorage<Exec> connectivity(f.host,f.connectivity,exec);
-    mesh::compute::AuxGeometryStorage<Exec> geometry(f.host,f.geometry,exec);
+    mesh::device::MeshStorage<Exec> mesh(f.host,{},exec);
+    mesh::device::AuxConnectivityStorage<Exec> connectivity(f.connectivity,exec);
+    mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
     td::DiffusionPlan<Exec,Real> plan(f.host,mesh.view(),connectivity.view(),geometry.view(),comm,exec);
     Boundary boundary(f.host,mesh.view(),exec);
     boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});

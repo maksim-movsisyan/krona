@@ -3,8 +3,8 @@
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/fields/fields_view.hpp>
-#include <krona/mesh/compute/detail/array_transfer.hpp>
-#include <krona/mesh/compute/validation.hpp>
+#include <krona/mesh/device/detail/array_transfer.hpp>
+#include <krona/mesh/device/validation.hpp>
 #include <krona/numerics/gradient/detail/kernels.hpp>
 
 #include <array>
@@ -21,9 +21,9 @@ template<class Exec = execution::ExecutionSpace, class Coefficient = GeometryRea
 class GradientOperator {
     static_assert(std::is_floating_point_v<Coefficient> && std::is_floating_point_v<Accumulator>);
     using memory_space = typename Exec::memory_space;
-    using mesh_view_type = mesh::compute::MeshView<memory_space>;
-    using connectivity_view_type = mesh::compute::AuxConnectivityView<memory_space>;
-    using geometry_view_type = mesh::compute::AuxGeometryView<memory_space>;
+    using mesh_view_type = mesh::device::MeshView<memory_space>;
+    using connectivity_view_type = mesh::device::AuxConnectivityView<memory_space>;
+    using geometry_view_type = mesh::device::AuxGeometryView<memory_space>;
     using coefficients_type = Kokkos::View<Coefficient*[3], Kokkos::LayoutLeft, Kokkos::Device<Exec, memory_space>>;
     using policy_type = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
 
@@ -120,10 +120,10 @@ private:
     coefficients_type coefficients_;
     std::size_t input_size_ = 0;
 
-    template<mesh::compute::MeshData Data, mesh::AuxConnType ConnectivityMask, mesh::AuxGeomType GeometryMask>
+    template<mesh::device::MeshData Data, mesh::AuxConnType ConnectivityMask, mesh::AuxGeomType GeometryMask>
     void validate_selected(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
     {
-        namespace validation = mesh::compute::validation;
+        namespace validation = mesh::device::validation;
         // Compare checks CSR incidence here; CellGeometry is checked separately on owned cells.
         const auto result = validation::validate<Data, ConnectivityMask, GeometryMask, true>(
             exec_, mesh_view, connectivity, geometry);
@@ -135,10 +135,10 @@ private:
 
     void validate_mesh(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
     {
-        using MeshData = mesh::compute::MeshData;
+        using MeshData = mesh::device::MeshData;
         using mesh::AuxConnType;
         using mesh::AuxGeomType;
-        namespace validation = mesh::compute::validation;
+        namespace validation = mesh::device::validation;
         if (scheme() == Scheme::LeastSquaresFace) {
             if (geometry.has_face_cell_dist_vector())
                 validate_selected<MeshData::FaceCells, AuxConnType::CellFaces, AuxGeomType::FaceCellDistanceVector>(mesh_view, connectivity, geometry);

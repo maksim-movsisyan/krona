@@ -1,9 +1,9 @@
 #include "../common/test_support.hpp"
 #include "mesh_fixture.hpp"
 
-#include <krona/mesh/compute/aux_storage.hpp>
-#include <krona/mesh/compute/mesh_storage.hpp>
-#include <krona/mesh/compute/validation.hpp>
+#include <krona/mesh/device/aux_storage.hpp>
+#include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mesh/device/validation.hpp>
 
 #include <array>
 #include <limits>
@@ -15,10 +15,10 @@ namespace {
 
 using namespace krona::test;
 using krona::GeometryReal;
-using krona::mesh::MeshPart;
-using namespace krona::mesh::compute;
+using krona::mesh::host::MeshPart;
+using namespace krona::mesh::device;
 using Memory = typename Exec::memory_space;
-namespace validation = krona::mesh::compute::validation;
+namespace validation = krona::mesh::device::validation;
 
 /// @brief Compares every transferred element, including enums and CSR offsets.
 template<class View, class T>
@@ -174,14 +174,14 @@ void halo_plan(const Exec& exec)
 void auxiliary(const Exec& exec)
 {
     const auto source = make_mesh();
-    krona::mesh::MeshAuxConnectivity cache;
+    krona::mesh::host::MeshAuxConnectivity cache;
     cache.active_mask = krona::mesh::AuxConnType::CellFaces;
     cache.n_faces = source.n_faces;
     cache.n_cells_own = source.n_own;
     cache.n_nodes_own = source.n_nodes_own;
     cache.cell_faces_offsets = {0, 4, 8};
     cache.cell_faces = {0, 1, 2, 3, 0, 4, 5, 6};
-    AuxConnectivityStorage<> storage(source, cache, exec);
+    AuxConnectivityStorage<> storage(cache, exec);
     const auto rows = storage.view();
     check(rows.has_cell_faces() && !rows.has_node_cells(), "Only requested CSR is ready");
 
@@ -201,11 +201,12 @@ void auxiliary(const Exec& exec)
     equal(host(0), Index{6}, "First CSR row is correct in a kernel");
     equal(host(1), Index{15}, "Second CSR row uses its own offsets");
 
-    krona::mesh::MeshAuxGeometry metrics;
+    krona::mesh::host::MeshAuxGeometry metrics;
     metrics.active_mask = krona::mesh::AuxGeomType::WallDistance;
     metrics.n_faces = source.n_faces;
+    metrics.n_cells = source.n_cells;
     metrics.cell_wall_dist = {GeometryReal{0.125}, GeometryReal{0.25}, GeometryReal{0.5}};
-    AuxGeometryStorage<> metric_storage(source, metrics, exec);
+    AuxGeometryStorage<> metric_storage(metrics, exec);
     const auto distances = metric_storage.view();
     auto host_distances = Kokkos::create_mirror(Kokkos::WithoutInitializing, distances.cell_wall_dist);
     complete(exec, [&] { Kokkos::deep_copy(exec, host_distances, distances.cell_wall_dist); });
@@ -298,7 +299,7 @@ void auxiliary_contracts(const Exec& exec)
     using krona::mesh::AuxConnType;
     using krona::mesh::AuxGeomType;
     const auto source = make_mesh();
-    auto cache = std::make_unique<krona::mesh::MeshAuxConnectivity>();
+    auto cache = std::make_unique<krona::mesh::host::MeshAuxConnectivity>();
     cache->active_mask = AuxConnType::CellFaces | AuxConnType::CellCellsByFace | AuxConnType::NodeCells;
     cache->n_faces = source.n_faces;
     cache->n_cells_own = source.n_own;
@@ -311,10 +312,11 @@ void auxiliary_contracts(const Exec& exec)
     cache->node_cells = {0, 1, 0, 1, 2, 0, 1, 2, 0, 2, 1};
     auto expected_cache = *cache;
 
-    auto metrics = std::make_unique<krona::mesh::MeshAuxGeometry>();
+    auto metrics = std::make_unique<krona::mesh::host::MeshAuxGeometry>();
     metrics->active_mask = AuxGeomType::FaceCellDistanceVector |
                           AuxGeomType::FaceInterpolationWeights | AuxGeomType::WallDistance;
     metrics->n_faces = source.n_faces;
+    metrics->n_cells = source.n_cells;
     // Distances are computed independently from the fixture's saved centres.
     for (std::size_t face = 0; face < static_cast<std::size_t>(source.n_faces); ++face) {
         const auto owner = static_cast<std::size_t>(source.face_owner[face]);
@@ -333,8 +335,8 @@ void auxiliary_contracts(const Exec& exec)
     auto expected_metrics = *metrics;
     const auto selected_conn = AuxConnType::CellCellsByFace | AuxConnType::NodeCells;
     const auto selected_geom = AuxGeomType::FaceCellDistanceVector | AuxGeomType::WallDistance;
-    AuxConnectivityStorage<> conn_storage(source, *cache, selected_conn, exec);
-    AuxGeometryStorage<> geom_storage(source, *metrics, selected_geom, exec);
+    AuxConnectivityStorage<> conn_storage(*cache, selected_conn, exec);
+    AuxGeometryStorage<> geom_storage(*metrics, selected_geom, exec);
     const auto conn = conn_storage.view();
     const auto geom = geom_storage.view();
     check(conn.active_mask == selected_conn && geom.active_mask == selected_geom, "Explicit auxiliary masks are preserved");
@@ -410,14 +412,14 @@ void validation_cases(const Exec& exec)
     equal(index_error.cell_incidence + index_error.face_incidence + index_error.node_incidence,
           std::size_t{0}, "Invalid indices never enter incidence gathers");
 
-    krona::mesh::MeshAuxConnectivity invalid_incidence;
+    krona::mesh::host::MeshAuxConnectivity invalid_incidence;
     invalid_incidence.active_mask = krona::mesh::AuxConnType::CellFaces;
     invalid_incidence.n_faces = source.n_faces;
     invalid_incidence.n_cells_own = source.n_own;
     invalid_incidence.n_nodes_own = source.n_nodes_own;
     invalid_incidence.cell_faces_offsets = {0, 4, 8};
     invalid_incidence.cell_faces = {0, 1, 2, source.n_faces, 0, 4, 5, 6};
-    AuxConnectivityStorage<> incidence_storage(source, invalid_incidence, exec);
+    AuxConnectivityStorage<> incidence_storage(invalid_incidence, exec);
     const auto incidence_error = validation::validate<MeshData::FaceCells,
         krona::mesh::AuxConnType::CellFaces, krona::mesh::AuxGeomType::None, true>(
             exec, mesh, incidence_storage.view());
