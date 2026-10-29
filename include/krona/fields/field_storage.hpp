@@ -70,7 +70,7 @@ public:
         execution::require_kokkos();
         constexpr auto bytes_per_entity = sizeof(T) * static_cast<std::size_t>(Components);
         mpi::require(count <= std::numeric_limits<std::size_t>::max() / bytes_per_entity,
-                        "Field allocation size overflows size_t");
+                     "Field allocation size overflows size_t");
         buffer_ = buffer_type(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, std::string{this->name()}), count);
     }
 

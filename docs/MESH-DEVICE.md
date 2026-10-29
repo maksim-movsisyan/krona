@@ -154,6 +154,10 @@ The corresponding gather/scatter maps are `mesh.halo.send_owned_local` and `mesh
 
 Neither storage construction nor taking `halo_plan()` communicates field values. Use a halo exchange implementation with the matching maps, plan and communicator rank numbering when ghost fields need updating.
 
+## The issue of asynchrony (!)
+
+Storage constructors are synchronous with respect to data upload. The optional Exec exec = {} argument selects the execution-space instance used for allocations and copies. On the copying path, all selected transfers are completed by exec.fence() before the constructor returns. For Kokkos::HostSpace, storage borrows the host arrays and performs neither uploads nor a fence. Subsequent kernel launches may still be asynchronous; completing them before releasing their backing storage remains the caller’s responsibility.
+
 ## Validate selected views
 
 Header: `krona/mesh/device/validation.hpp`.

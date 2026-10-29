@@ -12,8 +12,7 @@ namespace krona::fields {
 template<class Exec = execution::ExecutionSpace>
 class FieldsManager {
 public:
-    explicit FieldsManager(FieldSizes sizes = {}, Exec exec = {})
-        : sizes_(sizes), exec_(exec)
+    explicit FieldsManager(FieldSizes sizes = {}, Exec exec = {}) : sizes_(sizes), exec_(exec)
     {
         execution::require_kokkos();
         mpi::require(sizes_.own_cells <= sizes_.cells, "Fields: owned cells exceed total cells");

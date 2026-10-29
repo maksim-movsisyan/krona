@@ -31,10 +31,8 @@ public:
     KOKKOS_INLINE_FUNCTION explicit FieldView(view_type data) : data_(data) {}
 
     /// @brief Allows mutable-to-const conversion without copying values.
-    template<class U>
-        requires (std::is_const_v<T> && !std::is_const_v<U> && std::is_same_v<std::remove_const_t<T>, U>)
-    KOKKOS_INLINE_FUNCTION FieldView(const FieldView<U, Components, Space, Layout>& other)
-        : data_(other.kokkos_view()) {}
+    template<class U> requires (std::is_const_v<T> && !std::is_const_v<U> && std::is_same_v<std::remove_const_t<T>, U>)
+    KOKKOS_INLINE_FUNCTION FieldView(const FieldView<U, Components, Space, Layout>& other) : data_(other.kokkos_view()) {}
 
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return data_.extent(0); }
     KOKKOS_INLINE_FUNCTION bool empty() const { return size() == 0; }
@@ -46,7 +44,7 @@ public:
         else return data_(entity, component);
     }
 
-     /// @brief Scalar accessor
+    /// @brief Scalar accessor
     KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity) const requires (Components == 1)
     { return data_(entity); }
     KOKKOS_INLINE_FUNCTION T& operator[](std::size_t entity) const requires (Components == 1)
