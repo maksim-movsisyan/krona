@@ -4,6 +4,7 @@
 #include <krona/fields/fields_view.hpp>
 
 namespace krona::linalg {
+    
 namespace detail {
 template<class Field, class Values, bool ToVector>
 struct FieldCopy {

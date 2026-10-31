@@ -55,8 +55,7 @@ struct Limited {
 using LimitedLinear = Limited<SecondOrderUpwind>;
 using LimitedQuadratic = Limited<Quadratic>;
 
-/// @brief Virtual upstream difference from the owner gradient; no distant cell lookup.
-/// Darwish & Moukalled, Int. J. Heat Mass Transfer 46 (2003), DOI:10.1016/S0017-9310(02)00330-7.
+/// @brief Virtual upstream difference from the owner gradient; no distant cell lookup. Darwish & Moukalled.
 struct DarwishMoukalled {
     template<class R> KOKKOS_INLINE_FUNCTION R operator()(R gradient_along_span, R jump) const
     { return R{2}*(gradient_along_span/jump)-R{1}; } // Caller handles an exactly zero jump.

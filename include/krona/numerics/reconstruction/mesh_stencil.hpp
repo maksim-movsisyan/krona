@@ -30,16 +30,36 @@ public:
           owned_(m.sizes.n_own), cells_(m.sizes.n_cells), inner_(m.sizes.n_inner_faces), face_count_(m.sizes.n_faces)
     {
         using mesh::device::MeshData;
-        if (!m.sizes.faces_grouped || !m.has(MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry) ||
-            !a.has_cell_faces() || owned_ < 0 || cells_ < owned_ || inner_ < 0 || face_count_ < inner_ ||
-            a.n_cells_own != owned_ || a.n_faces != face_count_ || offsets_.extent(0) != static_cast<std::size_t>(owned_)+1)
-            throw std::invalid_argument("Reconstruction: incompatible mesh stencil descriptors");
-        const auto cells = static_cast<std::size_t>(cells_), faces = static_cast<std::size_t>(face_count_);
-        if (cx_.extent(0) < cells || cy_.extent(0) < cells || cz_.extent(0) < cells ||
-            owners_.extent(0) < faces || neighbours_.extent(0) < faces ||
-            fx_.extent(0) < faces || fy_.extent(0) < faces || fz_.extent(0) < faces ||
-            nx_.extent(0) < faces || ny_.extent(0) < faces || nz_.extent(0) < faces)
-            throw std::invalid_argument("Reconstruction: missing mesh stencil arrays");
+
+        mpi::require(
+            m.sizes.faces_grouped &&
+            m.has(MeshData::FaceCells | MeshData::CellGeometry | MeshData::FaceGeometry) &&
+            a.has_cell_faces() &&
+            owned_ >= 0 &&
+            cells_ >= owned_ &&
+            inner_ >= 0 &&
+            face_count_ >= inner_ &&
+            a.n_cells_own == owned_ &&
+            a.n_faces == face_count_ &&
+            offsets_.extent(0) == static_cast<std::size_t>(owned_) + 1,
+            "Reconstruction: incompatible mesh stencil descriptors");
+
+        const auto cells = static_cast<std::size_t>(cells_);
+        const auto faces = static_cast<std::size_t>(face_count_);
+
+        mpi::require(
+            cx_.extent(0) >= cells &&
+            cy_.extent(0) >= cells &&
+            cz_.extent(0) >= cells &&
+            owners_.extent(0) >= faces &&
+            neighbours_.extent(0) >= faces &&
+            fx_.extent(0) >= faces &&
+            fy_.extent(0) >= faces &&
+            fz_.extent(0) >= faces &&
+            nx_.extent(0) >= faces &&
+            ny_.extent(0) >= faces &&
+            nz_.extent(0) >= faces,
+            "Reconstruction: missing mesh stencil arrays");
     }
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return static_cast<std::size_t>(owned_); }
     KOKKOS_INLINE_FUNCTION std::size_t required_input_size() const

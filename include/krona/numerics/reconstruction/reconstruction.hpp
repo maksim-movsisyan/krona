@@ -92,22 +92,36 @@ void compute_limiters_async(const Exec& exec, Stencil stencil, D input, Output o
         (std::is_same_v<Coupling, SharedMinimum> && Output::components == 1));
     detail::accessible<Exec, Stencil>();
     detail::accessible<Exec, decltype(input.values)>(); detail::accessible<Exec, Output>();
-    if (!Kokkos::is_initialized() || Kokkos::is_finalized()) throw std::logic_error("Reconstruction: inactive Kokkos");
+    mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
+                 "Reconstruction: inactive Kokkos");
     const auto count = stencil.size();
     if (range.end == std::numeric_limits<std::size_t>::max()) range.end = count;
-    if (range.begin > range.end || range.end > count || output.size() < count || input.values.size() < stencil.required_input_size())
-        throw std::invalid_argument("Reconstruction: invalid range or input/output extents");
+    mpi::require(range.begin <= range.end && range.end <= count &&
+                 output.size() >= count && input.values.size() >= stencil.required_input_size(),
+        "Reconstruction: invalid range or input/output extents");
+
     if constexpr ((Scheme::requirements & Gradients) != 0) {
         detail::accessible<Exec, decltype(input.gradients)>();
-        if constexpr (requires { input.gradients.size(); })
-            if (input.gradients.size() < count) throw std::invalid_argument("Reconstruction: gradient extent is too short");
+        if constexpr (requires { input.gradients.size(); }) {
+            mpi::require(input.gradients.size() >= count,
+                         "Reconstruction: gradient extent is too short");
+        }
     }
     if constexpr ((Scheme::requirements & Hessians) != 0) {
-        detail::accessible<Exec, decltype(input.hessians)>(); detail::accessible<Exec, decltype(input.moments)>();
-        if constexpr (requires { input.hessians.size(); })
-            if (input.hessians.size() < count) throw std::invalid_argument("Reconstruction: Hessian extent is too short");
-        if constexpr (requires { input.moments.size(); })
-            if (input.moments.size() < count) throw std::invalid_argument("Reconstruction: moment extent is too short");
+        detail::accessible<Exec, decltype(input.hessians)>();
+        detail::accessible<Exec, decltype(input.moments)>();
+
+        if constexpr (requires { input.hessians.size(); }) {
+            mpi::require(
+                input.hessians.size() >= count,
+                "Reconstruction: Hessian extent is too short");
+        }
+
+        if constexpr (requires { input.moments.size(); }) {
+            mpi::require(
+                input.moments.size() >= count,
+                "Reconstruction: moment extent is too short");
+        }
     }
     if (range.begin == range.end) return;
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;

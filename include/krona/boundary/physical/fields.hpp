@@ -61,9 +61,9 @@ struct PrimitiveViews {
 
 template<class P,class U,class V,class W>
 auto primitive_components(P p,U u,V v,W w) { return PrimitiveViews<P,U,V,W>{p,u,v,w,{}}; }
-// note: all of them are views, t_view is just because T is aready used by template parameter
+// note: all of them are views
 template<class P,class U,class V,class W,class T>
-auto primitive_components(P p,U u,V v,W w,T T_view) { return PrimitiveViews<P,U,V,W,T>{p,u,v,w,T_view}; }
+auto primitive_components(P p,U u,V v,W w,T t) { return PrimitiveViews<P,U,V,W,T>{p,u,v,w,t}; }
 
 template<class P,class Velocity>
 auto primitive_views(P p,Velocity velocity)

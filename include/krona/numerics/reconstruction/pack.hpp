@@ -2,8 +2,8 @@
 
 #include <krona/numerics/reconstruction/types.hpp>
 
+#include <krona/mpi/error.hpp>
 #include <algorithm>
-#include <stdexcept>
 
 namespace krona::numerics::reconstruction {
 namespace detail {
@@ -16,8 +16,9 @@ template<class T, class View>
 auto component(View view)
 {
     static_assert(Kokkos::is_view<View>::value && View::rank == 1);
-    if (view.extent(0) != 0 && (view.data() == nullptr || view.stride(0) == 0))
-        throw std::invalid_argument("Reconstruction: invalid component storage");
+
+    mpi::require(view.extent(0) == 0 ||(view.data() != nullptr && view.stride(0) > 0),
+                 "Reconstruction: invalid component storage");
     return Component<T>{view.data(), view.stride(0)};
 }
 } // namespace detail
