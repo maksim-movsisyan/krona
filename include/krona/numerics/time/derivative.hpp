@@ -1,10 +1,10 @@
 #pragma once
 
 #include <krona/execution/types.hpp>
+#include <krona/mpi/error.hpp>
 
 #include <cmath>
 #include <cstddef>
-#include <stdexcept>
 #include <type_traits>
 
 namespace krona::numerics::time {
@@ -23,17 +23,18 @@ template<class Real>
 void require_step(Real dt)
 {
     static_assert(std::is_floating_point_v<Real>);
-    if (!std::isfinite(dt) || !(dt > Real{0}))
-        throw std::invalid_argument("Time derivative: time step must be finite and positive");
+    mpi::require(std::isfinite(dt) && dt > Real{0},
+        "Time derivative: time step must be finite and positive");
 }
 template<class Real, std::size_t N>
 Derivative<Real, N> checked(Derivative<Real, N> derivative)
 {
-    for (const auto weight : derivative.weights)
-        if (!std::isfinite(weight))
-            throw std::invalid_argument("Time derivative: unrepresentable coefficient");
-    if (!(derivative.weights[0] > Real{0}))
-        throw std::invalid_argument("Time derivative: nonpositive current coefficient");
+    for (const auto weight : derivative.weights) {
+        mpi::require(std::isfinite(weight),
+            "Time derivative: unrepresentable coefficient");
+    }
+    mpi::require(derivative.weights[0] > Real{0},
+        "Time derivative: nonpositive current coefficient");
     return derivative;
 }
 } // namespace detail
@@ -63,8 +64,8 @@ struct Bdf2 {
         detail::require_step(dt);
         detail::require_step(previous_dt);
         const Real ratio = dt/previous_dt;
-        if (!std::isfinite(ratio) || !(ratio > Real{0}))
-            throw std::invalid_argument("Time derivative: unrepresentable step ratio");
+        mpi::require(std::isfinite(ratio) && ratio > Real{0},
+                     "Time derivative: unrepresentable step ratio");
         // Avoid forming ratio*ratio or dt+previous_dt.
         const Real fraction = ratio <= Real{1} ? ratio/(Real{1}+ratio) : Real{1}/(Real{1}+Real{1}/ratio);
         return detail::checked(Derivative<Real, 2>{{(Real{1}+fraction)/dt,

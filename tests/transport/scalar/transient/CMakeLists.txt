@@ -14,7 +14,7 @@ foreach(case IN ITEMS coefficients additive conservation strided order empty nat
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS}
             "$<TARGET_FILE:krona_test_scalar_transient>" ${MPIEXEC_POSTFLAGS} "${case}")
     set_tests_properties("transport.scalar.transient.${case}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
-endforeach()
+endforeach() 
 
 foreach(ranks IN ITEMS 2 3)
     add_test(NAME "transport.scalar.transient.mpi${ranks}"
@@ -24,9 +24,13 @@ foreach(ranks IN ITEMS 2 3)
         TIMEOUT 180 PROCESSORS "${ranks}" RUN_SERIAL TRUE)
 endforeach()
  
-set(cases bad_mass bad_state bad_entry overflow not_started)
+set(cases bad_mass bad_state bad_entry overflow not_started
+    zero_step negative_previous_step coefficient_overflow)
 set(diagnostics "cell mass must be finite and positive" "time-layer values must be finite"
-    "nonfinite or unrepresentable" "nonfinite or unrepresentable" "call begin_async")
+    "nonfinite or unrepresentable" "nonfinite or unrepresentable" "call begin_async"
+    "Time derivative: time step must be finite and positive"
+    "Time derivative: time step must be finite and positive"
+    "Time derivative: unrepresentable coefficient")
 list(LENGTH cases count)
 math(EXPR last "${count}-1")
 foreach(i RANGE "${last}")

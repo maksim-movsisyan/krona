@@ -9,10 +9,9 @@
 #include <Kokkos_NumericTraits.hpp>
 
 #include <array>
-#include <stdexcept>
 
 namespace {
-using namespace krona;
+using namespace krona; 
 namespace rec = numerics::reconstruction;
 using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
@@ -546,20 +545,32 @@ void mesh_case(const Exec& exec, bool distributed)
 void mesh_test(const Exec& e) { mesh_case(e, false); }
 void distributed(const Exec& e) { mesh_case(e, true); }
 
-template<class F> void rejects(F action)
+void rejection(const Exec& exec, std::string_view name)
 {
-    bool rejected = false;
-    try { action(); } catch (const std::invalid_argument&) { rejected = true; }
-    check(rejected, "invalid host descriptor was accepted");
-}
-void misuse(const Exec& exec)
-{
-    Kokkos::View<double*, Space> values("values", 3), gradient("gradient", 1), output("output", 1);
+    const bool short_output = name == "output";
+    Kokkos::View<double*, Space> values("values", short_output ? 4 : 3),
+        gradient("gradient", short_output ? 2 : 1), output("output", 1);
     const auto input = rec::data(rec::pack(values), rec::gradients(rec::pack(gradient), rec::pack(gradient), rec::pack(gradient)));
-    rejects([&] { rec::compute_limiters_async(exec, LineStencil{}, input, rec::pack(output), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {0, 2}); });
-    rejects([&] { rec::compute_limiters_async(exec, LineStencil{2}, input, rec::pack(output)); });
-    Kokkos::View<double*, Space> none("none", 0);
-    rejects([&] { rec::compute_limiters_async(exec, LineStencil{}, rec::data(rec::pack(values), rec::gradients(rec::pack(none), rec::pack(none), rec::pack(none))), rec::pack(output)); });
+    if (name == "range")
+        rec::compute_limiters_async(exec, LineStencil{}, input, rec::pack(output),
+            rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {0, 2});
+    else if (name == "output")
+        rec::compute_limiters_async(exec, LineStencil{2}, input, rec::pack(output));
+    else if (name == "gradient") {
+        Kokkos::View<double*, Space> none("none", 0);
+        rec::compute_limiters_async(exec, LineStencil{},
+            rec::data(rec::pack(values), rec::gradients(rec::pack(none), rec::pack(none), rec::pack(none))),
+            rec::pack(output));
+    }
+    exec.fence("Unexpectedly accepted reconstruction input");
+    check(false, "invalid host descriptor was accepted");
+}
+void reject_range(const Exec& e) { rejection(e, "range"); }
+void reject_output(const Exec& e) { rejection(e, "output"); }
+void reject_gradient(const Exec& e) { rejection(e, "gradient"); }
+
+void misuse(const Exec&)
+{
     const auto bad = rec::cell_average_quick_stencil(Kokkos::Array<std::size_t, 3>{0, 1, 2},
         Kokkos::Array<double, 3>{0, 0, 0}, Kokkos::Array<double, 3>{0, 0, 0}, 0.5);
     check(!bad.valid && std::isnan(bad.weights[0]), "degenerate QUICK geometry was silently accepted");
@@ -579,7 +590,12 @@ int main(int argc, char** argv)
         test::Case{"quadratic", quadratic}, test::Case{"convergence", convergence},
         test::Case{"mesh", mesh_test}, test::Case{"misuse", misuse}};
     const std::array mpi_cases{test::Case{"distributed", distributed}};
+    const std::array rejection_cases{
+        test::Case{"reject_range", reject_range}, test::Case{"reject_output", reject_output},
+        test::Case{"reject_gradient", reject_gradient}};
     if (argc == 2 && std::string_view(argv[1]) == "distributed")
         return test::run(argc, argv, "numerics.reconstruction", mpi_cases);
+    if (argc == 2 && std::string_view(argv[1]).starts_with("reject_"))
+        return test::run(argc, argv, "numerics.reconstruction", rejection_cases);
     return test::run(argc, argv, "numerics.reconstruction", cases);
 }

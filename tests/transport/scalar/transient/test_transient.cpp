@@ -18,7 +18,7 @@ using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
 template<class T> using View = Kokkos::View<T*, Space>;
 using test::check;
-
+ 
 template<class T>
 View<T> input(const Exec& exec, std::initializer_list<T> values)
 { 
@@ -47,18 +47,6 @@ void coefficients(const Exec&)
     // Exact derivative of 2+3*t+4*t*t at t=0.5, for unequal steps.
     const double derivative = v.weights[0]*4.5+v.weights[1]*2.76+v.weights[2]*2.0;
     test::near(derivative, 7.0, 1.e-13, "Variable-step BDF2 differentiates a quadratic");
-    bool rejected = false;
-    try { static_cast<void>(nt::BackwardEuler{}.coefficients(0.0)); }
-    catch (const std::invalid_argument&) { rejected = true; }
-    check(rejected, "Zero time step must fail");
-    rejected = false;
-    try { static_cast<void>(nt::Bdf2{}.coefficients(1.0, -1.0)); }
-    catch (const std::invalid_argument&) { rejected = true; }
-    check(rejected, "Negative previous step must fail");
-    rejected = false;
-    try { static_cast<void>(nt::BackwardEuler{}.coefficients(std::numeric_limits<double>::denorm_min())); }
-    catch (const std::invalid_argument&) { rejected = true; }
-    check(rejected, "Overflowing derivative coefficients must fail");
 }
 
 void additive(const Exec& exec)
@@ -279,6 +267,22 @@ void bad_state(const Exec& e) { rejection(e, "bad_state"); }
 void bad_entry(const Exec& e) { rejection(e, "bad_entry"); }
 void overflow(const Exec& e) { rejection(e, "overflow"); }
 void not_started(const Exec& e) { rejection(e, "not_started"); }
+
+void zero_step(const Exec&)
+{
+    static_cast<void>(nt::BackwardEuler{}.coefficients(0.0));
+    check(false, "Zero time step must fail");
+}
+void negative_previous_step(const Exec&)
+{
+    static_cast<void>(nt::Bdf2{}.coefficients(1.0, -1.0));
+    check(false, "Negative previous step must fail");
+}
+void coefficient_overflow(const Exec&)
+{
+    static_cast<void>(nt::BackwardEuler{}.coefficients(std::numeric_limits<double>::denorm_min()));
+    check(false, "Overflowing derivative coefficients must fail");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -288,7 +292,9 @@ int main(int argc, char** argv)
         test::Case{"conservation", conservation}, test::Case{"strided", strided},
         test::Case{"order", order}, test::Case{"empty", empty}, test::Case{"native", native},
         test::Case{"bad_mass", bad_mass}, test::Case{"bad_state", bad_state},
-        test::Case{"bad_entry", bad_entry}, test::Case{"overflow", overflow}, test::Case{"not_started", not_started}
+        test::Case{"bad_entry", bad_entry}, test::Case{"overflow", overflow}, test::Case{"not_started", not_started},
+        test::Case{"zero_step", zero_step}, test::Case{"negative_previous_step", negative_previous_step},
+        test::Case{"coefficient_overflow", coefficient_overflow}
     };
     // Failure cases are selected explicitly and run in separate processes.
     return test::run(argc, argv, "transport.scalar.transient",
