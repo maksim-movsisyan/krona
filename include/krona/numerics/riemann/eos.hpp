@@ -46,8 +46,9 @@ template<class EOS,class R>
 KOKKOS_INLINE_FUNCTION State<R> from_conservative(const EOS& eos,Conservative<R> u)
 {
     if(!detail::finite(u)||!(u.mass>R{0}))return {};
-    const auto velocity=u.momentum*(R{1}/u.mass);
-    const R e=u.energy/u.mass-R{0.5}*velocity.norm2();
+    const R inv_rho = R{1}/u.mass;
+    const auto velocity=u.momentum*inv_rho;
+    const R e=u.energy*inv_rho-R{0.5}*velocity.norm2();
     if(!Kokkos::isfinite(e))return {};
     return from_thermodynamics(eos.from_rhoe(u.mass,e),velocity);
 }
@@ -57,8 +58,9 @@ KOKKOS_INLINE_FUNCTION State<R> from_conservative(
     const thermodynamics::IdealGas<Parameter>& gas,Conservative<R> u)
 {
     if(!detail::finite(u)||!(u.mass>R{0}))return {};
-    const auto velocity=u.momentum*(R{1}/u.mass);
-    const R e=u.energy/u.mass-R{0.5}*velocity.norm2();
+    const R inv_rho = R{1}/u.mass;
+    const auto velocity=u.momentum*inv_rho;
+    const R e=u.energy*inv_rho-R{0.5}*velocity.norm2();
     const R pressure=(static_cast<R>(gas.gamma)-R{1})*u.mass*e;
     return ideal_gas_from_rhop(gas,u.mass,velocity,pressure);
 }

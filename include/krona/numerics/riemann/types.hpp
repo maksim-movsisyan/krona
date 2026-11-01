@@ -127,8 +127,7 @@ KOKKOS_INLINE_FUNCTION Result<R> integrated_flux(const Solver& solver,State<R> l
 /// @brief Integrated face flux convenience. Signal speed remains in velocity units. Normal are unit, area are given independenlty
 template<class Solver, class R>
 KOKKOS_INLINE_FUNCTION Result<R> integrated_flux(
-    const Solver& solver, State<R> left, State<R> right,
-    Vector<R> normal, R area)
+    const Solver& solver, State<R> left, State<R> right, Vector<R> normal, R area)
 {
     if (!Kokkos::isfinite(area) || !(area > R{0}))
         return detail::failure<R>(Status::InvalidNormal);

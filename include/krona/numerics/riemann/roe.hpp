@@ -1,7 +1,7 @@
 #pragma once 
 #include <krona/numerics/riemann/hll.hpp>
+#include <krona/mpi/error.hpp>
 #include <cmath>
-#include <stdexcept>
 
 namespace krona::numerics::riemann {
 
@@ -14,8 +14,8 @@ struct Roe {
     explicit Roe(Parameter g,bool entropy=true,bool use_fallback=true)
         : gamma(g),entropy_fix(entropy),fallback(use_fallback)
     {
-        if(!std::isfinite(gamma)||!(gamma>Parameter{1}))
-            throw std::invalid_argument("Roe: gamma must be finite and greater than one");
+        mpi::require(std::isfinite(gamma) && gamma>Parameter{1},
+                     "Roe: gamma must be finite and greater than one");
     }
     template<class R>
     KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const
