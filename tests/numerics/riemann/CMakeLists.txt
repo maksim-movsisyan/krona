@@ -19,3 +19,20 @@ foreach(case IN ITEMS consistency contacts fallback eos device sod)
         LABELS "numerics;riemann"
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
+ 
+# mpi::require terminates the process; validate the diagnostic in a child run.
+add_test(NAME numerics.riemann.reject_gamma
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPROGRAM=$<TARGET_FILE:krona_test_riemann>"
+        "-DCASE=reject_gamma"
+        "-DEXPECT=Roe: gamma must be finite and greater than one"
+        "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
+        "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+        "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}"
+        "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/expect_failure.cmake")
+set_tests_properties(numerics.riemann.reject_gamma PROPERTIES
+    TIMEOUT 120
+    RUN_SERIAL TRUE
+    LABELS "numerics;riemann;validation"
+    ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")

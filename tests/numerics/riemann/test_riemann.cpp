@@ -17,7 +17,7 @@ template<class R> void compare(r::Conservative<R> a,r::Conservative<R> b,R tol)
     near(a.momentum.z,b.momentum.z,tol,"z momentum");
 }
 template<class R,class Solver> void invariants(Solver solver)
-{
+{ 
     const R tol=R{512}*Kokkos::epsilon_v<R>;
     const auto l=state<R>(R{1},static_cast<R>(0.3),R{1},static_cast<R>(0.2),static_cast<R>(-0.1));
     const auto q=state<R>(static_cast<R>(0.4),static_cast<R>(-0.2),static_cast<R>(0.3),static_cast<R>(-0.3),static_cast<R>(0.4));
@@ -69,8 +69,6 @@ void fallback(const Exec&)
     check(!r::Roe{1.4,true,false}(l,q,{1,0,0}).valid(),"strict Roe");
     auto incompatible=l;incompatible.internal_energy+=10;
     check(r::Roe{1.4}(incompatible,q,{1,0,0}).status==r::Status::IncompatibleModel,"EOS mismatch");
-    bool threw=false;try{r::Roe bad{1.};}catch(const std::invalid_argument&){threw=true;}
-    check(threw,"invalid gamma rejected");
     check(r::Hll<InvalidSpeeds>{}(l,q,{1,0,0}).status==r::Status::InvalidFan,"invalid HLL bounds");
     check(r::Hllc<InvalidSpeeds>{}(l,q,{1,0,0}).status==r::Status::InvalidFan,"invalid HLLC bounds");
     check(!r::integrated_flux(r::Rusanov{},l,q,r::Vector<double>{}).valid(),"zero area rejected");
@@ -150,6 +148,13 @@ template<class Solver> void sod_run(Solver solver)
 void sod(const Exec&){sod_run(r::Rusanov{});sod_run(r::Hll<>{});sod_run(r::Hllc<>{});sod_run(r::Roe{1.4});}
 int main(int argc,char**argv)
 {
+    // Keep the fatal case out of the default run of the successful cases.
+    if (argc == 2 && std::string_view{argv[1]} == "reject_gamma") {
+        const std::array cases{krona::test::Case{"reject_gamma", [](const Exec&) {
+            (void)r::Roe{1.};
+        }}};
+        return krona::test::run(argc,argv,"numerics.riemann",cases);
+    }
     const std::array cases{krona::test::Case{"consistency",consistency},krona::test::Case{"contacts",contacts},
         krona::test::Case{"fallback",fallback},krona::test::Case{"eos",eos},
         krona::test::Case{"device",device},krona::test::Case{"sod",sod}};
