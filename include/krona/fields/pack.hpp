@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/fields/component.hpp>
 #include <krona/fields/fields_view.hpp>
 #include <krona/mpi/error.hpp>
 
@@ -11,25 +12,6 @@
 namespace krona::fields {
     
 namespace detail {
-
-template<class T, class Space>
-struct PackComponent {
-    using value_type = T;
-    using memory_space = Space;
-    
-    T* pointer = nullptr;
-    std::size_t stride = 1;
-};
-
-template<class View>
-auto pack_component(View view)
-{
-    static_assert(Kokkos::is_view<View>::value && View::rank == 1,
-                  "Fields: a packed Kokkos view must have rank one");
-    mpi::require(view.extent(0) == 0 || (view.data() != nullptr && view.stride(0) > 0),
-                 "Fields: invalid packed component storage");
-    return PackComponent<typename View::value_type, typename View::memory_space>{view.data(), view.stride(0)};
-}
 
 // Indexed bases keep heterogeneous descriptors device-copyable; no std::tuple is stored.
 template<std::size_t I, class Component>
@@ -118,7 +100,7 @@ public:
         static_assert(C < components);
         KOKKOS_ASSERT(entity < extent_);
         const auto c = this->template descriptor<C>();
-        return (c.pointer[entity*c.stride]);
+        return (c.data[entity*c.stride]);
     }
 
     /// @brief Borrowed rank-one view of one component, restricted to the common pack extent.
@@ -130,7 +112,7 @@ public:
         using T = typename decltype(c)::value_type;
         using View = Kokkos::View<T*, Kokkos::LayoutStride, memory_space,
                                  Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
-        return View(c.pointer, Kokkos::LayoutStride(extent_, c.stride));
+        return View(c.data, Kokkos::LayoutStride(extent_, c.stride));
     }
 
     /// @brief Same scalar types: reference (read-only if any input is const).
@@ -168,7 +150,7 @@ private:
     {
         const auto c = this->template descriptor<I>();
         using T = const std::remove_const_t<typename decltype(c)::value_type>;
-        return detail::PackComponent<T, memory_space>{c.pointer, c.stride};
+        return ComponentDescriptor<T, memory_space>{c.data, c.stride};
     }
 
     template<std::size_t... I>
@@ -182,7 +164,7 @@ ComponentPack(std::size_t, Components...) -> ComponentPack<Components...>;
 namespace detail {
 template<std::size_t... I, class... Inputs>
 auto make_component_pack(std::size_t extent, std::index_sequence<I...>, const Inputs&... inputs)
-{ return ComponentPack{extent, pack_component(packed_input_component<I>(inputs...))...}; }
+{ return ComponentPack{extent, descriptor_from_view(packed_input_component<I>(inputs...))...}; }
 } // namespace detail
 
 /// @brief Flattens FieldViews, rank-one Kokkos views or existing packs, in argument/component order.

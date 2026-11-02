@@ -4,7 +4,9 @@
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/communicator.hpp>
 #include <krona/mpi/context.hpp>
+#include <krona/mpi/datatype.hpp>
 #include <krona/fields/fields_view.hpp>
+#include <krona/fields/component.hpp>
 #include <krona/halo/detail/types.hpp>
 #include <krona/mesh/host/halo_plan.hpp>
 #include <krona/mesh/device/mesh_view.hpp>
@@ -12,6 +14,8 @@
 #include <algorithm>
 #include <limits>
 #include <vector>
+#include <utility>
+#include <type_traits>
 
 namespace krona::halo {
 
@@ -55,7 +59,8 @@ class Exchange {
     using device_type = Kokkos::Device<Exec, memory_space>;
     using buffer_type = Kokkos::View<T*, Kokkos::LayoutRight, device_type>;
     using host_buffer_type = Kokkos::View<T*, Kokkos::LayoutRight, typename detail::StagingSpace<Exec>::type>;
-    using components_type = Kokkos::View<detail::Component<T>*, device_type>;
+    using component_type = fields::ComponentDescriptor<T, memory_space>;
+    using components_type = Kokkos::View<component_type*, device_type>;
     using segments_type = Kokkos::View<detail::Segment*, device_type>;
     using peers_type = Kokkos::View<int*, device_type>;
     using map_type = mesh::device::detail::MeshArray<LocalIndex, memory_space, false>;
@@ -107,11 +112,11 @@ public:
             mpi::require(rank >= 0 && rank < size, "Halo: peer rank is outside communicator");
             ranks.push_back(rank);
             peers_.push_back({rank, {plan.send_offsets[p], plan.send_count(p)},
-                                   {plan.recv_offsets[p], plan.recv_count(p)}, 0, 0});
+                                    {plan.recv_offsets[p], plan.recv_count(p)}, 0, 0});
         }
         std::sort(ranks.begin(), ranks.end());
         mpi::require(std::adjacent_find(ranks.begin(), ranks.end()) == ranks.end(), "Halo: duplicate peer rank");
-        datatype_ = detail::datatype<T>();
+        datatype_ = mpi::datatype<T>();
     }
 
     Exchange(const Exchange&) = delete;
@@ -126,12 +131,31 @@ public:
     template<int N, class Space, class Layout>
     void add_field(fields::FieldView<T, N, Space, Layout> field)
     {
-        static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible,
-                      "Execution space cannot access this field");
+        static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible, "Execution space cannot access this field");
+
         mpi::require(!prepared_, "Halo: registration is closed after prepare");
         mpi::require(field.size() >= static_cast<std::size_t>(n_cells_),
                      "Halo fields must contain all owned and ghost cells");
+
         for (int c = 0; c < N; ++c) add_component(field.component(c));
+    }
+
+    /// @brief Registers all pack components in their existing order.
+    /// Host-only registration; no copies, kernels or communication are submitted.
+    /// Components must be mutable, have scalar type T and cover all local cells.
+    template<class Pack>
+    void add_pack(const Pack& pack)
+    {
+        static_assert(Pack::components > 0);
+        static_assert(Pack::homogeneous, "Halo: one exchange requires a homogeneous component pack");
+        static_assert(std::is_same_v<typename Pack::value_type, T>, "Halo: pack must be mutable and match the exchange scalar type");
+        static_assert(Kokkos::SpaceAccessibility<Exec, typename Pack::memory_space>::accessible, "Halo: execution space cannot access this pack");
+
+        mpi::require(!prepared_, "Halo: registration is closed after prepare");
+        mpi::require(pack.size() >= static_cast<std::size_t>(n_cells_),
+                     "Halo: pack must contain all owned and ghost cells");
+
+        add_pack_impl(pack, std::make_index_sequence<Pack::components>{});
     }
 
     /// @brief Registers one mutable rank-one Kokkos View, including a strided component subview.
@@ -141,10 +165,12 @@ public:
         static_assert(Kokkos::is_view<View>::value && View::rank == 1);
         static_assert(std::is_same_v<typename View::value_type, T>);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
+
         mpi::require(!prepared_, "Halo: registration is closed after prepare");
         mpi::require(component.extent(0) >= static_cast<std::size_t>(n_cells_),
                      "Halo components must contain all owned and ghost cells");
-        const detail::Component<T> descriptor{component.data(), component.stride(0)};
+
+        const component_type descriptor{component.data(), component.stride(0)};
         if (component.extent(0) != 0) {
             mpi::require(descriptor.data != nullptr && descriptor.stride != 0,
                          "Halo: component requires valid storage and a positive stride");
@@ -176,14 +202,9 @@ public:
         }
 
         // Validate once on host. CPU mirrors alias the maps; GPU mirrors are temporary copies.
-        auto send_host = [&] {
-            if constexpr (host_memory) return send_map_;
-            else return Kokkos::create_mirror(Kokkos::WithoutInitializing, send_map_);
-        }();
-        auto recv_host = [&] {
-            if constexpr (host_memory) return recv_map_;
-            else return Kokkos::create_mirror(Kokkos::WithoutInitializing, recv_map_);
-        }();
+        auto send_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, Kokkos::HostSpace{}, send_map_);
+        auto recv_host = Kokkos::create_mirror_view(Kokkos::WithoutInitializing, Kokkos::HostSpace{}, recv_map_);
+        
         execution::complete(exec_, [&] {
             if constexpr (!host_memory) {
                 Kokkos::deep_copy(exec_, send_host, send_map_);
@@ -191,13 +212,12 @@ public:
             }
         });
         for (std::size_t i = 0; i < send_host.extent(0); ++i)
-            mpi::require(send_host(i) >= 0 && send_host(i) < n_own_,
-                         "Halo: send map must reference owned cells");
+            mpi::require(send_host(i) >= 0 && send_host(i) < n_own_, "Halo: send map must reference owned cells");
+
         std::vector<LocalIndex> destinations;
         destinations.reserve(recv_host.extent(0));
         for (std::size_t i = 0; i < recv_host.extent(0); ++i) {
-            mpi::require(recv_host(i) >= n_own_ && recv_host(i) < n_cells_,
-                         "Halo: receive map must reference ghost cells");
+            mpi::require(recv_host(i) >= n_own_ && recv_host(i) < n_cells_, "Halo: receive map must reference ghost cells");
             destinations.push_back(recv_host(i));
         }
         std::sort(destinations.begin(), destinations.end());
@@ -304,7 +324,7 @@ private:
     LocalIndex n_own_, n_cells_;
     map_type send_map_, recv_map_;
     std::vector<Peer> peers_;
-    std::vector<detail::Component<T>> registered_;
+    std::vector<component_type> registered_;
     std::vector<MPI_Request> requests_;
     components_type components_;
     segments_type send_segments_, recv_segments_;
@@ -343,6 +363,12 @@ private:
     {
         if constexpr (host_memory) return recv_.data();
         else return transfer_ == Transfer::DeviceDirect ? recv_.data() : recv_host_.data();
+    }   
+
+    template<class Pack, std::size_t... I>
+    void add_pack_impl(const Pack& pack, std::index_sequence<I...>)
+    {
+        (add_component(pack.template component<I>()), ...);
     }
 
     template<bool UnitStride>
