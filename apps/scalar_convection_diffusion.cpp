@@ -388,7 +388,9 @@ void report_balance(const Convection& convection, const Diffusion& diffusion, Fi
     const df::DiffusionOperator<Exec, Real> diffusion{diffusion_plan};
     const cv::ConvectionOperator<Exec, Real> convection{convection_plan};
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};
-    const bc::Manager<Exec, Real> boundary{host_mesh, mesh.view(), load_boundary(paths[1], comm), exec};
+    const krona::boundary::BoundaryLayout<Exec, Real> boundary_layout{host_mesh, mesh.view(), exec};
+    bc::Manager<Exec, Real> boundary{boundary_layout, load_boundary(paths[1], comm)};
+    boundary.finalize();
 
     krona::fields::FieldStorage<krona::StorageReal, 1, Exec> scalar{
         "scalar", boundary.required_field_size(), krona::fields::FieldLocation::Custom, exec};
@@ -421,6 +423,7 @@ void report_balance(const Convection& convection, const Diffusion& diffusion, Fi
     Kokkos::View<Real*, typename Exec::memory_space> residual{
         Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "transport/full_residual"), owned_count};
     ts::AssemblyStatus<Exec> status{exec};
+    bc::Status<Exec> boundary_status{exec};
     krona::linalg::SolverOptions options;
     options.method = "GMRES";
     options.preconditioner.type = "AMG";
@@ -449,7 +452,9 @@ void report_balance(const Convection& convection, const Diffusion& diffusion, Fi
     const auto prepare = [&] {
         halo.start();
         halo.finish_async();
-        boundary.apply_async(scalar.view(), law);
+        boundary_status.begin_async();
+        boundary.apply_async(scalar.view(), boundary_status, law);
+        boundary_status.check();
         if (high_order) high_order->update_async(scalar.view());
     };
     const auto correct_rhs = [&] {

@@ -18,6 +18,7 @@ namespace {
 using namespace krona::test;
 namespace bc = krona::boundary;
 namespace scalar = bc::scalar;
+namespace gradient = krona::numerics::gradient;
 namespace transport = krona::transport;
 using Real = krona::ComputeReal;
 using Memory = typename Exec::memory_space;
@@ -86,9 +87,11 @@ struct CaptureRelation {
 
 void reconstruction_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, true);
     Kokkos::View<Real*[2], Kokkos::LayoutRight, Memory> field("field", 7);
     auto host = Kokkos::create_mirror(field);
@@ -104,10 +107,11 @@ void reconstruction_case(const Exec& exec)
     Kokkos::View<int*, Memory> calls("calls", 5);
     Kokkos::deep_copy(exec, calls, 0);
     const auto law = transport::IsotropicDiffusion{CountingCoefficient{coefficient, calls}};
-    const auto correction = bc::GradientCorrection{gx, gy, gz};
-    manager.apply_component_async(Kokkos::subview(field, Kokkos::ALL(), 0), law, correction);
+    const auto correction = gradient::GradientCorrection{gradient::cell_gradients(gx, gy, gz)};
+    manager.finalize();
+    manager.apply_component_async(Kokkos::subview(field, Kokkos::ALL(), 0), status, law, correction);
     Kokkos::View<Real*[4], Memory> relations("relations", 4);
-    manager.evaluate_async(CaptureRelation{relations}, law, correction);
+    manager.evaluate_async(CaptureRelation{relations}, status, law, correction);
 
     Kokkos::deep_copy(exec, host, field);
     auto hr = Kokkos::create_mirror(relations); Kokkos::deep_copy(exec, hr, relations);
@@ -127,9 +131,10 @@ void reconstruction_case(const Exec& exec)
         equal(calls_host(f), f == 4 ? 2 : 0, "Only FixedFlux accesses the material coefficient");
 
     const auto owner_law = transport::IsotropicDiffusion{transport::OwnerCellCoefficient{coefficient}};
-    manager.apply_component_async(Kokkos::subview(field, Kokkos::ALL(), 0), owner_law, correction);
+    manager.apply_component_async(Kokkos::subview(field, Kokkos::ALL(), 0), status, owner_law, correction);
     Kokkos::deep_copy(exec, host, field); exec.fence();
     near(host(6, 0), Real{19}, tolerance, "Owner-cell coefficient adapter");
+    status.check();
 }
 
 struct PrescribedFluxSink {
@@ -147,10 +152,12 @@ void visitation_case(const Exec& exec)
 {
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, true);
     int patches = 0;
     krona::LocalIndex faces = 0;
+    manager.finalize();
     manager.for_each_patch([&](bc::PatchRange range, const auto&) {
         ++patches; faces += range.end - range.begin;
     });
@@ -171,9 +178,11 @@ struct TimeValue {
 
 void custom_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real, TimeValue> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real, TimeValue> manager(manager_layout);
     manager.set(0, TimeValue{});
     manager.set(1, scalar::NormalGradient<Real>{0});
     manager.set(2, scalar::NormalGradient<Real>{0});
@@ -181,9 +190,11 @@ void custom_case(const Exec& exec)
     krona::fields::FieldStorage<Real, 1, Exec> a("a", 7, krona::fields::FieldLocation::Custom, exec);
     krona::fields::FieldStorage<Real, 1, Exec> b("b", 7, krona::fields::FieldLocation::Custom, exec);
     a.fill_async(exec, Real{10}); b.fill_async(exec, Real{10});
-    manager.apply_async(a.view(), scalar::NoFluxLaw{}, bc::NoCorrection{}, Real{1.5});
+    manager.finalize();
+    manager.apply_async(a.view(), status, scalar::NoFluxLaw{}, gradient::NoCorrection{}, Real{1.5});
     manager.set(0, scalar::FixedValue<Real>{9});
-    manager.apply_async(b.view());
+    manager.finalize();
+    manager.apply_async(b.view(), status);
     auto ha = a.create_host_buffer(), hb = b.create_host_buffer();
     Kokkos::deep_copy(exec, ha, a.view().kokkos_view());
     Kokkos::deep_copy(exec, hb, b.view().kokkos_view()); exec.fence();
@@ -193,6 +204,7 @@ void custom_case(const Exec& exec)
     near(hb(4), Real{9}, tolerance, "A later set covers the complete patch");
     equal(ha(0), Real{10}, "Owned cell is preserved");
     equal(ha(2), Real{10}, "MPI ghost is preserved");
+    status.check();
 }
 
 void relations_case(const Exec& exec)
@@ -220,29 +232,36 @@ void relations_case(const Exec& exec)
 
 void empty_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     krona::mesh::host::MeshPart m; m.faces_grouped = true;
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     krona::fields::FieldStorage<Real, 1, Exec> field("empty", 0, krona::fields::FieldLocation::Custom, exec);
-    manager.apply_async(field.view());
+    manager.finalize();
+    manager.apply_async(field.view(), status);
     int count = 0;
     manager.for_each_patch([&](bc::PatchRange, const auto&) { ++count; });
     equal(count, 0, "Empty partition has no patch dispatch");
     equal(manager.required_field_size(), std::size_t{0}, "Empty extended field size");
     exec.fence();
+    status.check();
 }
 
 void independent_value_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     for (krona::mesh::PatchId p = 0; p < 3; ++p)
         manager.set(p, scalar::FixedValue<Real>{7});
     manager.set_unlabelled(scalar::FixedValue<Real>{7});
     Array field("field", 7);
     Kokkos::deep_copy(exec, field, std::numeric_limits<Real>::quiet_NaN());
-    manager.apply_component_async(field);
+    manager.finalize();
+    manager.apply_component_async(field, status);
     auto host = Kokkos::create_mirror(field); Kokkos::deep_copy(exec, host, field); exec.fence();
     for (std::size_t i = 3; i < 7; ++i)
         equal(host(i), Real{7}, "Fixed value does not depend on an unavailable owner value");
@@ -250,6 +269,7 @@ void independent_value_case(const Exec& exec)
     bc::FaceContext<Real> c; c.distance = 1;
     equal(scalar::FixedValue<Real>{7}(c).face_value(nan), Real{7}, "Zero value coefficient ignores owner NaN");
     equal(scalar::NormalGradient<Real>{3}(c).normal_gradient(nan), Real{3}, "Prescribed derivative ignores owner NaN");
+    status.check();
 }
 
 template<class Q, class X, class Y, class Z>
@@ -277,6 +297,7 @@ struct ReconstructBoundaryGradient {
 
 void boundary_gradients_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     auto m = fixture();
     m.face_normal_x[3] = krona::GeometryReal{2}/3;
     m.face_normal_y[3] = krona::GeometryReal{2}/3;
@@ -285,7 +306,8 @@ void boundary_gradients_case(const Exec& exec)
     m.face_centroid_y[3] = 0;
     m.face_centroid_z[3] = 1;
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, true);
     Array q("q", 7), coefficient("coefficient", 2);
     auto hq = Kokkos::create_mirror(q);
@@ -304,8 +326,9 @@ void boundary_gradients_case(const Exec& exec)
     const auto gy = Kokkos::subview(gradient, Kokkos::ALL(), 1);
     const auto gz = Kokkos::subview(gradient, Kokkos::ALL(), 2);
     const auto law = transport::IsotropicDiffusion{transport::OwnerCellCoefficient{coefficient}};
-    manager.evaluate_async(ReconstructBoundaryGradient{q, gx, gy, gz}, law,
-                           bc::GradientCorrection{gx, gy, gz});
+    manager.finalize();
+    manager.evaluate_async(ReconstructBoundaryGradient{q, gx, gy, gz}, status, law,
+                           gradient::GradientCorrection{gradient::cell_gradients(gx, gy, gz)});
     Kokkos::deep_copy(exec, hg, gradient);
     auto after = Kokkos::create_mirror(q); Kokkos::deep_copy(exec, after, q); exec.fence();
     constexpr Real expected[7][3]{{2, -3, Real{0.75}}, {-1, 4, 2}, {-777, -777, -777},
@@ -317,6 +340,7 @@ void boundary_gradients_case(const Exec& exec)
             near(hg(i, axis), expected[i][axis], tolerance,
                  "Boundary gradient enforces the normal derivative and preserves owner tangents/cells");
     }
+    status.check();
 }
 
 // Matches data/bc.toml: two owned cells, one MPI ghost and three labelled patches.
@@ -410,7 +434,9 @@ void config_case(const Exec& exec)
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
     auto shuffled = loaded;
     std::swap(shuffled.patches.front(), shuffled.patches.back());
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), shuffled, exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, shuffled);
+    manager.finalize();
     equal(manager.catalog().patches()[0].range.begin, krona::LocalIndex{1}, "Bind by ID, not file order");
     equal(manager.catalog().patches()[0].range.end, krona::LocalIndex{3}, "Absolute patch end");
     equal(manager.catalog().unlabelled().empty(), true, "Internal face_patch=-1 is not a boundary patch");
@@ -420,47 +446,56 @@ void config_case(const Exec& exec)
 
 void file_fill_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture(false, true);
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
     krona::fields::FieldStorage<Real, 1, Exec> field(
         "temperature", manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, field.view().component(0));
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}};
-    manager.apply_async(field.view(), law);
+    manager.finalize();
+    manager.apply_async(field.view(), status, law);
     auto host = snapshot(exec, field.view().component(0));
     constexpr Real expected[]{7, 11, 42, 5, 5, 5, 7, 7};
     for (std::size_t i = 0; i < 8; ++i)
         near(host(i), expected[i], tolerance, "File -> configuration -> manager -> boundary values");
     manager.set(0, scalar::FixedValue<Real>{8});
-    manager.apply_async(field.view(), law);
+    manager.finalize();
+    manager.apply_async(field.view(), status, law);
     host = snapshot(exec, field.view().component(0));
     near(host(3), Real{8}, tolerance, "Updated condition overrides the file binding");
     near(host(4), Real{8}, tolerance, "Updated condition covers its entire patch");
 
-    scalar::Manager<Exec, Real> tracer_manager(m, mesh.view(),
-        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer"), exec);
+    scalar::Manager<Exec, Real> tracer_manager(manager_layout,
+        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer"));
     krona::fields::FieldStorage<Real, 1, Exec> tracer(
         "tracer", tracer_manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, tracer.view().component(0));
-    tracer_manager.apply_async(tracer.view());
+    tracer_manager.finalize();
+    tracer_manager.apply_async(tracer.view(), status);
     const auto ht = snapshot(exec, tracer.view().component(0));
     constexpr Real expected_tracer[]{7, 11, 42, Real{0.25}, Real{0.25}, 7, 11, 7};
     for (std::size_t i = 0; i < 8; ++i)
         near(ht(i), expected_tracer[i], tolerance, "Other scalar conditions are applied independently");
+    status.check();
 }
 
 template<class Layout>
 void layout_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
     krona::fields::FieldStorage<Real, 3, Exec, Layout> field(
         "vector", manager.required_field_size() + 2, krona::fields::FieldLocation::Custom, exec);
     field.fill_async(exec, Real{-17});
     initialize_component(exec, field.view().component(1));
-    manager.apply_component_async(field.view().component(1),
+    manager.finalize();
+    manager.apply_component_async(field.view().component(1), status,
         transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}});
     const auto host = snapshot(exec, field.view().kokkos_view());
     constexpr Real expected[]{7, 11, 42, 5, 5, 5, 7, -99, -99};
@@ -469,6 +504,7 @@ void layout_case(const Exec& exec)
         equal(host(i, 0), Real{-17}, "First unselected component is preserved");
         equal(host(i, 2), Real{-17}, "Last unselected component is preserved");
     }
+    status.check();
 }
 
 void layouts_case(const Exec& exec)
@@ -497,9 +533,11 @@ struct CapturePhysicalFlux {
 
 void affine_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture(true);
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real, AffineValue> manager(m, mesh.view(), file_configuration(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real, AffineValue> manager(manager_layout, file_configuration());
     manager.set(0, AffineValue{});
     manager.set(2, scalar::FixedFlux<Real>{-6});
     krona::fields::FieldStorage<Real, 1, Exec> field(
@@ -511,10 +549,11 @@ void affine_case(const Exec& exec)
     Array gx("gx", 2), gy("gy", 2), gz("gz", 2), fluxes("fluxes", 4);
     Kokkos::deep_copy(exec, gx, Real{2}); Kokkos::deep_copy(exec, gy, Real{3});
     Kokkos::deep_copy(exec, gz, Real{-4});
-    const auto correction = bc::GradientCorrection{gx, gy, gz};
+    const auto correction = gradient::GradientCorrection{gradient::cell_gradients(gx, gy, gz)};
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}};
-    manager.apply_async(values, law, correction, Real{1});
-    manager.evaluate_async(CapturePhysicalFlux{values.component(0), fluxes, law}, law, correction, Real{1});
+    manager.finalize();
+    manager.apply_async(values, status, law, correction, Real{1});
+    manager.evaluate_async(CapturePhysicalFlux{values.component(0), fluxes, law}, status, law, correction, Real{1});
     const auto host = snapshot(exec, values.component(0));
     const auto hf = snapshot(exec, fluxes);
     for (krona::LocalIndex f = m.n_inner_faces; f < m.n_faces; ++f) {
@@ -528,6 +567,7 @@ void affine_case(const Exec& exec)
              "Corrected face value reproduces a space/time-dependent affine field");
         near(hf(b), exact_flux, Real{16}*tolerance, "Normal derivative reproduces the exact physical flux");
     }
+    status.check();
 }
 
 template<class Law>
@@ -553,14 +593,17 @@ struct FaceCoefficient {
 
 void assembly_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
     Array diagonal("diagonal", 2), rhs("rhs", 2), coefficient("coefficient", 5);
     const auto law = transport::IsotropicDiffusion{FaceCoefficient{coefficient}};
+    manager.finalize();
     const auto assemble = [&] {
         Kokkos::deep_copy(exec, diagonal, Real{0}); Kokkos::deep_copy(exec, rhs, Real{0});
-        manager.evaluate_async(AddDiffusionBoundary{diagonal, rhs, law}, law);
+        manager.evaluate_async(AddDiffusionBoundary{diagonal, rhs, law}, status, law);
     };
     Kokkos::deep_copy(exec, coefficient, Real{3});
     assemble();
@@ -581,20 +624,24 @@ void assembly_case(const Exec& exec)
     krona::fields::FieldStorage<Real, 1, Exec> field(
         "phi", manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, field.view().component(0));
-    manager.apply_async(field.view(), law);
+    manager.apply_async(field.view(), status, law);
     const auto host = snapshot(exec, field.view().component(0));
     near(host(6), Real{9}, tolerance, "Flux-to-gradient conversion uses the face-indexed provider");
+    status.check();
 }
 
 void empty_labels_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture(false, true, true);
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
     krona::fields::FieldStorage<Real, 1, Exec> field(
         "empty", 0, krona::fields::FieldLocation::CellExtnd, exec);
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}};
-    manager.apply_async(field.view(), law);
+    manager.finalize();
+    manager.apply_async(field.view(), status, law);
     manager.for_each_face_async(PrescribedFluxSink{Array("empty_flux", 0)});
     int calls = 0;
     manager.for_each_patch([&](bc::PatchRange, const auto&) { ++calls; });
@@ -602,6 +649,7 @@ void empty_labels_case(const Exec& exec)
     equal(manager.catalog().needs_unlabelled(), true, "Global counts require an unlabelled binding on an empty rank");
     equal(manager.required_field_size(), std::size_t{0}, "Empty rank needs no boundary allocation");
     exec.fence();
+    status.check();
 }
 
 void distributed_case(const Exec& exec)
@@ -623,7 +671,9 @@ void reject_with_manager(const Exec& exec, Mutation mutation)
     auto config = file_configuration();
     mutation(m, config);
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), config, exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, config);
+    manager.finalize();
 }
 
 void wrong_name_case(const Exec& exec)
@@ -640,7 +690,9 @@ void unlabelled_case(const Exec& exec)
     auto m = file_fixture(false, true);
     auto config = file_configuration(); config.unlabelled.reset();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), config, exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, config);
+    manager.finalize();
 }
 
 void unknown_type_case(const Exec&)
@@ -660,30 +712,42 @@ void missing_scalar_case(const Exec&)
 
 void short_field_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, false);
-    manager.apply_component_async(Array("short_field", manager.required_field_size() - 1));
+    manager.finalize();
+    manager.apply_component_async(Array("short_field", manager.required_field_size() - 1), status);
+    status.check();
 }
 
 void short_correction_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, false);
     Array field("field", manager.required_field_size()), short_gradient("short_gradient", 1);
-    manager.apply_component_async(field, scalar::NoFluxLaw{},
-        bc::GradientCorrection{short_gradient, short_gradient, short_gradient});
+    manager.finalize();
+    manager.apply_component_async(field, status, scalar::NoFluxLaw{},
+        gradient::GradientCorrection{gradient::cell_gradients(short_gradient, short_gradient, short_gradient)});
+    status.check();
 }
 
 void missing_law_empty_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = file_fixture(false, true, true);
     krona::mesh::device::MeshStorage<Exec> mesh(m, {.data = selection}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
-    manager.apply_component_async(Array("empty", 0));
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
+    manager.finalize();
+    manager.apply_component_async(Array("empty", 0), status);
+    status.check();
 }
 
 void zero_coefficient_case(const Exec& exec)
@@ -707,23 +771,29 @@ void zero_coefficient_case(const Exec& exec)
 
 void missing_law_case(const Exec& exec)
 {
+    scalar::Status<Exec> status(exec); status.begin_async();
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, true);
     Array field("field", 7);
-    manager.apply_component_async(field);
+    manager.finalize();
+    manager.apply_component_async(field, status);
+    status.check();
 }
 
 void missing_binding_case(const Exec& exec)
 {
     const auto m = fixture();
     krona::mesh::device::MeshStorage<Exec> mesh(m, {}, exec);
-    scalar::Manager<Exec, Real> manager(m, mesh.view(), exec);
+    bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
+    scalar::Manager<Exec, Real> manager(manager_layout);
     manager.set(0, scalar::FixedValue<Real>{7});
     manager.set(1, scalar::NormalGradient<Real>{0});
     manager.set_unlabelled(scalar::NormalGradient<Real>{0});
     // Label 2 is locally empty, but still needs an explicit binding.
+    manager.finalize();
     manager.for_each_patch([](bc::PatchRange, const auto&) {});
 }
 

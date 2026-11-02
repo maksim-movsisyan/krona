@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/boundary/context.hpp>
+#include <krona/math/vector3.hpp>
 #include <krona/mesh/device/mesh_view.hpp>
 
 namespace krona::boundary {
@@ -34,13 +35,13 @@ struct GeometryView {
         c.nx = static_cast<Real>(normal_x(f));
         c.ny = static_cast<Real>(normal_y(f));
         c.nz = static_cast<Real>(normal_z(f));
-        const Real dx = c.x - static_cast<Real>(cell_x(i));
-        const Real dy = c.y - static_cast<Real>(cell_y(i));
-        const Real dz = c.z - static_cast<Real>(cell_z(i));
-        c.distance = dx*c.nx + dy*c.ny + dz*c.nz;
-        c.tx = dx - c.distance*c.nx;
-        c.ty = dy - c.distance*c.ny;
-        c.tz = dz - c.distance*c.nz;
+        const math::Vector3<Real> displacement{
+            c.x-static_cast<Real>(cell_x(i)), c.y-static_cast<Real>(cell_y(i)),
+            c.z-static_cast<Real>(cell_z(i))};
+        const math::Vector3<Real> normal{c.nx, c.ny, c.nz};
+        c.distance = displacement.dot(normal);
+        const auto tangent = displacement-normal*c.distance;
+        c.tx = tangent.x; c.ty = tangent.y; c.tz = tangent.z;
         c.area = static_cast<Real>(face_area(f));
         c.time = time;
         return c;

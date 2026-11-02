@@ -1,48 +1,58 @@
 #pragma once
 
 #include <krona/boundary/context.hpp>
+#include <krona/boundary/profiles.hpp>
+#include <krona/boundary/scalar/relation.hpp>
 
 #include <concepts>
 
 namespace krona::boundary::scalar {
 
-/// @brief Affine face value and outward normal derivative; no constitutive coefficient or area.
-template<class Real>
-struct Relation {
-    Real value_owner = 0, value_constant = 0;
-    Real gradient_owner = 0, gradient_constant = 0;
-
-    KOKKOS_INLINE_FUNCTION Real face_value(Real owner_value) const
-    { return value_owner == Real{0} ? value_constant : value_owner*owner_value + value_constant; }
-
-    KOKKOS_INLINE_FUNCTION Real normal_gradient(Real owner_value) const
-    { return gradient_owner == Real{0} ? gradient_constant : gradient_owner*owner_value + gradient_constant; }
-};
-
-/// @brief Prescribes phi_f; the normal derivative includes the supplied explicit increment.
-template<class Real = ComputeReal>
+/// @brief Prescribes phi_f. Provider is a number or a device callable provider(context).
+template<class Real = ComputeReal, class Provider = Real>
 struct FixedValue {
-    Real value = 0;
+    Provider value{};
     KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
     {
+        const Real prescribed = static_cast<Real>(profile::sample(value, c));
         const Real inverse = Real{1}/c.distance;
-        return {Real{0}, value, -inverse, (value - increment)*inverse};
+        return {Real{0}, prescribed, -inverse, (prescribed-increment)*inverse};
     }
 };
 
-/// @brief Prescribes d(phi)/dn with the outward-normal sign convention.
-template<class Real = ComputeReal>
+/// @brief Prescribes the outward normal derivative, including spatial/time-dependent data.
+template<class Real = ComputeReal, class Provider = Real>
 struct NormalGradient {
-    Real gradient = 0;
+    Provider gradient{};
     KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
-    { return {Real{1}, c.distance*gradient + increment, Real{0}, gradient}; }
+    {
+        const Real prescribed = static_cast<Real>(profile::sample(gradient, c));
+        return {Real{1}, c.distance*prescribed+increment, Real{0}, prescribed};
+    }
 };
 
-/// @brief Declares an outward physical flux density; conversion belongs to a supplied flux law.
-template<class Real = ComputeReal>
-struct FixedFlux { Real flux = 0; };
+/// @brief Outward physical flux density; a supplied law converts it to a normal derivative.
+template<class Real = ComputeReal, class Provider = Real>
+struct FixedFlux { Provider flux{}; };
 
-/// @brief Explicit absence of a flux-to-gradient law; sufficient for value/gradient conditions.
+template<class Real = ComputeReal, class Provider>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION auto fixed_value(Provider provider) { return FixedValue<Real, Provider>{provider}; }
+template<class Real = ComputeReal, class Provider>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION auto normal_gradient(Provider provider) { return NormalGradient<Real, Provider>{provider}; }
+template<class Real = ComputeReal, class Provider>
+[[nodiscard]] KOKKOS_INLINE_FUNCTION auto fixed_flux(Provider provider) { return FixedFlux<Real, Provider>{provider}; }
+
+// Kind traits apply equally to constants and profiles.
+template<class C> inline constexpr bool is_fixed_value = false;
+template<class R, class P> inline constexpr bool is_fixed_value<FixedValue<R, P>> = true;
+template<class C> inline constexpr bool is_normal_gradient = false;
+template<class R, class P> inline constexpr bool is_normal_gradient<NormalGradient<R, P>> = true;
+template<class C> inline constexpr bool is_fixed_flux = false;
+template<class R, class P> inline constexpr bool is_fixed_flux<FixedFlux<R, P>> = true;
+
+// Custom relation conditions can specialize this without adopting a built-in parameter layout.
+template<class C> inline constexpr bool requires_flux_law = is_fixed_flux<C>;
+
 struct NoFluxLaw {};
 
 template<class Law, class Real>
@@ -50,20 +60,22 @@ concept FluxLaw = requires(const Law& law, const FaceContext<Real>& c, Real flux
     { law.normal_gradient(c, flux) } -> std::convertible_to<Real>;
 };
 
-/// @brief Custom conditions return Relation<Real> from (face geometry, explicit increment).
+/// @brief Custom conditions return Relation<Real> from (context, explicit increment).
 template<class Condition, class Real, class Law = NoFluxLaw>
 KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const Condition& condition,
     const FaceContext<Real>& c, Real increment = 0, const Law& = {})
 { return condition(c, increment); }
 
-/// @brief Converts only this flux condition; other conditions never access the supplied law.
-template<class Real, class Law = NoFluxLaw>
-KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const FixedFlux<Real>& condition,
+template<class Real, class Provider, class Law = NoFluxLaw>
+KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const FixedFlux<Real, Provider>& condition,
     const FaceContext<Real>& c, Real increment = 0, const Law& law = {})
 {
     if constexpr (FluxLaw<Law, Real>) {
-        return NormalGradient<Real>{static_cast<Real>(law.normal_gradient(c, condition.flux))}(c, increment);
+        const Real flux = static_cast<Real>(profile::sample(condition.flux, c));
+        if (!Kokkos::isfinite(flux)) return {Real{0}, flux, Real{0}, flux};
+        return NormalGradient<Real>{static_cast<Real>(law.normal_gradient(c, flux))}(c, increment);
     } else {
+        // All variant alternatives compile, even when no flux condition is assigned.
         Kokkos::abort("Scalar boundary: FIXED_FLUX requires a flux law with normal_gradient(context, flux)");
         return {};
     }

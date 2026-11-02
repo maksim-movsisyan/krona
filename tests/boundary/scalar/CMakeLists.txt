@@ -34,7 +34,7 @@ set(expected_duplicate "duplicate patch_id")
 set(expected_invalid_geometry "invalid owner, unit normal, area or positive normal distance")
 set(expected_missing_scalar "missing scalar condition table")
 set(expected_short_field "extent is too small")
-set(expected_short_correction "extent is too small")
+set(expected_short_correction "gradient extent is too short")
 set(expected_missing_law_empty "FIXED_FLUX requires a flux law")
 set(expected_zero_coefficient "value > Real{0}")
 
@@ -62,4 +62,40 @@ foreach(case IN ITEMS missing_law missing_binding wrong_name scattered unlabelle
         set_tests_properties("boundary.scalar.reject_${case}" PROPERTIES
             SKIP_REGULAR_EXPRESSION "${skip_marker}")
     endif()
+endforeach()
+
+add_executable(krona_test_scalar_profiles test_profiles.cpp)
+target_link_libraries(krona_test_scalar_profiles PRIVATE krona_test_support krona::boundary_scalar)
+foreach(case IN ITEMS relations analytic arrays array_kinds independent shared vectors once lambda distributed)
+    set(ranks 1)
+    if(case STREQUAL "distributed")
+        set(ranks 2)
+    endif()
+    add_test(NAME "boundary.scalar.profiles.${case}"
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:krona_test_scalar_profiles> ${MPIEXEC_POSTFLAGS} "${case}")
+    set_tests_properties("boundary.scalar.profiles.${case}" PROPERTIES
+        LABELS "boundary;scalar;profiles;numerical" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endforeach()
+set(expected_dirty "call finalize()")
+set(expected_short_array "extent must equal the local patch face count")
+set(expected_wrong_range "patch range mismatch")
+set(expected_nonfinite "nonfinite parameter, correction or affine relation")
+set(expected_nonfinite_flux "nonfinite parameter, correction or affine relation")
+set(expected_overflow "nonfinite or unrepresentable boundary value")
+set(expected_status_not_begun "call status.begin_async() first")
+set(expected_profile_flux_without_law "FIXED_FLUX requires a flux law")
+foreach(case IN ITEMS dirty short_array wrong_range nonfinite nonfinite_flux overflow status_not_begun profile_flux_without_law)
+    add_test(NAME "boundary.scalar.profiles.reject_${case}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DTEST_EXECUTABLE=$<TARGET_FILE:krona_test_scalar_profiles>"
+            "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}"
+            "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+            "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+            "-DTEST_CASE=${case}" "-DEXPECTED_DIAGNOSTIC=${expected_${case}}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_failure.cmake")
+    set_tests_properties("boundary.scalar.profiles.reject_${case}" PROPERTIES
+        LABELS "boundary;scalar;profiles;contract" PROCESSORS 1 TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()

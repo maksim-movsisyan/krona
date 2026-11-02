@@ -646,7 +646,7 @@ add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
 target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_scalar PUBLIC)
 target_link_libraries(krona_boundary_scalar
-    PUBLIC krona::mesh_device krona::fields krona::mpi
+    PUBLIC krona::mesh_device krona::fields krona::mpi krona::gradient krona::math
     PRIVATE krona::warnings krona::tomlplusplus)
 
     
@@ -719,13 +719,6 @@ if(KRONA_BUILD_APPLICATIONS)
         target_link_libraries(krona_mesh_partitioner PRIVATE
             krona::cgns_io krona::mesh_partition krona::mesh_io krona::boundary_config_io krona::warnings)
     endif()
-
-    #============================
-    #=== KOKKOS PLUG (DELETE) ===
-    #============================
-    add_executable(krona_plug apps/plug.cpp)
-    target_link_libraries(krona_plug PRIVATE
-            krona::mesh_io krona::mesh_device krona::warnings krona::fields)
 
     #================================
     #=== SCALAR TRANSPORT EXAMPLE ===

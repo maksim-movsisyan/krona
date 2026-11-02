@@ -154,7 +154,8 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
 {
     const auto comm=mpi::CommView::world();const auto f=skew_grid(comm,skew);
     Attached a(f,comm,exec,td::DiffusionOptions{false,1e-6});
-    SkewBoundary boundary(f.host,a.mesh.view(),exec);configure_affine(boundary,f,mixed);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    SkewBoundary boundary(boundary_layout);configure_affine(boundary,f,mixed);
     fields::FieldStorage<Storage,2,Exec,Layout> field("affine",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Storage,3,Exec,Layout> gradients("gradients",static_cast<std::size_t>(f.host.n_cells),fields::FieldLocation::Custom,exec);
     field.fill_async(exec,Storage{-33});gradients.fill_async(exec,std::numeric_limits<Storage>::quiet_NaN());
@@ -166,7 +167,11 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     halo::Exchange<Storage,Exec> field_halo(m,a.mesh.halo_plan(),comm,31,exec);
     field_halo.add_component(phi);field_halo.prepare();field_halo.exchange();
-    boundary.apply_component_async(phi,law,td::NonOrthogonalCorrection{ExactGradient{}});
+    boundary.finalize();
+    krona::boundary::scalar::Status<Exec> boundary_status_0(exec);
+    boundary_status_0.begin_async();
+    boundary.apply_component_async(phi, boundary_status_0,law,td::NonOrthogonalCorrection{ExactGradient{}});
+    boundary_status_0.check();
     numerics::gradient::GradientOperator<Exec> gradient(m,a.connectivity.view(),a.geometry.view(),{},exec);
     gradient.apply_component_async(phi,gradients.view().component(0),gradients.view().component(1),gradients.view().component(2));
     halo::Exchange<Storage,Exec> gradient_halo(m,a.mesh.halo_plan(),comm,32,exec);
@@ -216,7 +221,10 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     const auto balance=diffusion.balance(phi,boundary,law,ts::UniformSource<Real>{0},correction);
     test::near(balance.defect,0.0,tolerance*comm.size(),"corrected affine boundary balance");
     // The same increment provider must also work with the scalar boundary manager.
-    boundary.apply_component_async(phi,law,correction);exec.fence("corrected boundary values ready");
+    krona::boundary::scalar::Status<Exec> boundary_status_1(exec);
+    boundary_status_1.begin_async();
+    boundary.apply_component_async(phi, boundary_status_1,law,correction);exec.fence("corrected boundary values ready");
+    boundary_status_1.check();
 }
 
 void corrected_linear(const Exec& exec){corrected_case(exec);}
@@ -228,7 +236,8 @@ void corrected_weights(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=skew_grid(comm);
     Attached a(f,comm,exec,td::DiffusionOptions{false,1e-6});
-    bc::Manager<Exec,Real> boundary(f.host,a.mesh.view(),exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    bc::Manager<Exec,Real> boundary(boundary_layout);
     for(int p=0;p<6;++p)boundary.set(p,bc::FixedFlux<Real>{0});
     fields::FieldStorage<Real,3,Exec,Kokkos::LayoutRight> gradients("varying gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
     auto g=gradients.create_host_buffer();
@@ -242,6 +251,7 @@ void corrected_weights(const Exec& exec)
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<Real*,Space> output("weighted correction",f.host.n_own);Kokkos::deep_copy(exec,output,Real{0});
+    boundary.finalize();
     status.begin_async();diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
     std::vector<double> expected(static_cast<std::size_t>(f.host.n_own),0.0);bool non_midpoint=false;
     for(LocalIndex face=0;face<f.host.n_inner_faces;++face) {
@@ -283,7 +293,8 @@ void corrected_empty(const Exec& exec)
         const auto faces=static_cast<std::size_t>(f.host.n_faces);
         f.geometry.active_mask=f.geometry.active_mask|mesh::AuxGeomType::FaceNonOrthogonalityVector;
         f.geometry.face_non_ortho_x.assign(faces,0);f.geometry.face_non_ortho_y.assign(faces,0);f.geometry.face_non_ortho_z.assign(faces,0);
-        Attached a(f,comm,exec);bc::Manager<Exec,Real> boundary(f.host,a.mesh.view(),exec);
+        Attached a(f,comm,exec);krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+        bc::Manager<Exec,Real> boundary(boundary_layout);
         boundary.set(0,bc::FixedValue<Real>{0});boundary.set(1,bc::FixedValue<Real>{0});
         fields::FieldStorage<Real,1,Exec> field("empty field",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
         fields::FieldStorage<Real,3,Exec> gradients("empty gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
@@ -294,6 +305,7 @@ void corrected_empty(const Exec& exec)
         Kokkos::View<Real*,Space> output("empty residual with tail",static_cast<std::size_t>(f.host.n_own)+1);
         Kokkos::deep_copy(exec,output,Real{5});
         td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
+        boundary.finalize();
         diffusion.add_residual_async(field.view().component(0),output,boundary,status,law,correction);
         diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
         const auto h=copy_view(output,exec);for(std::size_t i=0;i<h.extent(0);++i)test::near(h(i),Real{5},Real{0},"empty/zero correction modified a target");
@@ -308,7 +320,8 @@ void corrected_iterations(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=skew_grid(comm);
     Attached a(f,comm,exec,td::DiffusionOptions{false,1e-6});
-    SkewBoundary boundary(f.host,a.mesh.view(),exec);configure_affine(boundary,f);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    SkewBoundary boundary(boundary_layout);configure_affine(boundary,f);
     fields::FieldStorage<Real,1,Exec> field("iterate",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Real,3,Exec> gradients("iterate gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
     field.fill_async(exec,Real{0});gradients.fill_async(exec,Real{0});const auto phi=field.view().component(0);
@@ -322,6 +335,7 @@ void corrected_iterations(const Exec& exec)
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution()),x(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);
+    boundary.finalize();
     status.begin_async();diffusion.add_system_async(target,boundary,status,law);(void)status.check(comm);matrix.commit();rhs.commit();
     const auto revision=matrix.revision();
     Kokkos::View<double*,Space> base_rhs("frozen RHS",f.host.n_own);
@@ -329,7 +343,10 @@ void corrected_iterations(const Exec& exec)
     linalg::Solver<decltype(matrix)> linear(matrix,settings().linear);
     double error=1;int iterations=0;
     for(;iterations<60&&error>2e-9;++iterations) {
-        field_halo.exchange();boundary.apply_async(field.view(),law,correction);
+        krona::boundary::scalar::Status<Exec> boundary_status_2(exec);
+        boundary_status_2.begin_async();
+        field_halo.exchange();boundary.apply_async(field.view(), boundary_status_2,law,correction);
+        boundary_status_2.check();
         gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
         const auto b=Kokkos::subview(rhs.overwrite(exec),Kokkos::ALL(),0);
         Kokkos::deep_copy(exec,b,base_rhs);status.begin_async();
@@ -345,7 +362,10 @@ void corrected_iterations(const Exec& exec)
     }
     check(iterations>1&&error<=2e-9,"nonorthogonal outer iterations did not converge to affine solution");
     // The convenience solver also accepts one frozen-gradient corrected solve.
-    field_halo.exchange();boundary.apply_async(field.view(),law,correction);
+    krona::boundary::scalar::Status<Exec> boundary_status_3(exec);
+    boundary_status_3.begin_async();
+    field_halo.exchange();boundary.apply_async(field.view(), boundary_status_3,law,correction);
+    boundary_status_3.check();
     gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
     ts::SteadyDiffusion<> steady(a.plan,a.assembly,phi,settings());
     check(steady.solve_owned(boundary,law,ts::UniformSource<Real>{0},correction).converged,"corrected convenience solve failed");
@@ -360,7 +380,8 @@ void rejected_correction(const Exec& exec)
     if constexpr(Which==1){f.geometry.active_mask=mesh::AuxGeomType::FaceNormalDistance|mesh::AuxGeomType::FaceAreaOverNormalDistance|mesh::AuxGeomType::FaceNonOrthogonalityVector;f.geometry.face_interp_weight.clear();}
     if constexpr(Which==3)f.geometry.face_non_ortho_x[0]+=GeometryReal{1};
     Attached a(f,comm,exec,td::DiffusionOptions{false,1e-6});
-    SkewBoundary boundary(f.host,a.mesh.view(),exec);configure_affine(boundary,f);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    SkewBoundary boundary(boundary_layout);configure_affine(boundary,f);
     if constexpr(Which==5)for(int p=0;p<6;++p)boundary.set(p,ChangingSlope{});
     const auto count=static_cast<std::size_t>(f.host.n_cells)-(Which==4?1:0);
     Kokkos::View<Real*,Space> gx("gx",count),gy("gy",count),gz("gz",count),output("output",f.host.n_own);
@@ -369,6 +390,7 @@ void rejected_correction(const Exec& exec)
     const auto correction=td::NonOrthogonalCorrection{td::CellGradients{gx,gy,gz}};
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}};
+    boundary.finalize();
     diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
     check(false,"invalid correction unexpectedly accepted");
 }

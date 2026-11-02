@@ -342,6 +342,7 @@ void update_boundary(Boundary& boundary,GaussianInflow& inflow,const ExactGaussi
         static_cast<Real>(ExactGaussian::initial_sigma),static_cast<Real>(ExactGaussian::initial_centre[0]),
         static_cast<Real>(ExactGaussian::initial_centre[1]),static_cast<Real>(ExactGaussian::initial_centre[2])};
     boundary.set(0,inflow.profile);
+    boundary.finalize();
 }
 
 template<class Field, class Boundary, class Law, class Output, class Reconstruction,
@@ -395,7 +396,8 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
     const df::DiffusionOperator<Exec,Real> diffusion{diffusion_plan};
     const cv::ConvectionOperator<Exec,Real> convection{convection_plan};
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh,comm,exec};
-    bc::Manager<Exec,Real,GaussianDirichlet> boundary{host_mesh,mesh.view(),load_boundary(paths[1],comm),exec};
+    const krona::boundary::BoundaryLayout<Exec,Real> boundary_layout{host_mesh,mesh.view(),exec};
+    bc::Manager<Exec,Real,GaussianDirichlet> boundary{boundary_layout,load_boundary(paths[1],comm)};
     const auto patches = boundary.catalog().patches();
     krona::mpi::require(patches.size()==1,"Gaussian 3-D app: expected one exact_boundary patch containing all six sides");
     const PrescribedMassFlow mass_flow{};
@@ -473,13 +475,17 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
     Kokkos::View<Scalar*,Space> base_rhs(Kokkos::view_alloc(exec,Kokkos::WithoutInitializing,"gaussian/base_rhs"),settings.limited?owned_count:0);
     Kokkos::View<Real*,Space> residual(Kokkos::view_alloc(exec,Kokkos::WithoutInitializing,"gaussian/residual"),owned_count);
     ts::AssemblyStatus<Exec> status{exec};
+    bc::Status<Exec> boundary_status{exec};
     krona::linalg::SolverOptions options;
     options.method="GMRES";options.preconditioner.type="AMG";
     options.relative_tolerance=reduced_precision?1.e-5:1.e-10;
     options.maximum_iterations=2000;options.restart_length=100;
     krona::linalg::Solver<decltype(matrix)> solver{matrix,options};
     const auto prepare = [&]{
-        halo.start();halo.finish_async();boundary.apply_async(scalar.view(),law);
+        halo.start();halo.finish_async();
+        boundary_status.begin_async();
+        boundary.apply_async(scalar.view(),boundary_status,law);
+        boundary_status.check();
         if(high_order)high_order->update_async(scalar.view());
     };
     update_boundary(boundary,inflow,exact,0.0);prepare();

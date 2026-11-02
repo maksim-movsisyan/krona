@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/boundary/patch_range.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/mesh/host/mesh_part.hpp>
 
@@ -9,13 +10,6 @@
 #include <vector>
 
 namespace krona::boundary {
-
-/// @brief Absolute face interval [begin,end); patch_id == -1 denotes unlabelled faces.
-struct PatchRange {
-    mesh::PatchId patch_id = -1;
-    LocalIndex begin = 0, end = 0;
-    [[nodiscard]] bool empty() const noexcept { return begin == end; }
-};
 
 struct PatchEntry {
     PatchRange range;

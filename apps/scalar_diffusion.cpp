@@ -101,7 +101,9 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     // The mesh-only diffusion plan and the reusable algebra graph/map have separate lifetimes.
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};
     const auto config = load_boundary(paths[1], comm);
-    const bc::Manager<Exec, Real> boundary{host_mesh, mesh.view(), config, exec};
+    const krona::boundary::BoundaryLayout<Exec, Real> boundary_layout{host_mesh, mesh.view(), exec};
+    bc::Manager<Exec, Real> boundary{boundary_layout, config};
+    boundary.finalize();
 
     // Extended storage: owned cells, MPI ghosts, then one face-centroid value per boundary face.
     krona::fields::FieldStorage<krona::StorageReal, 1, Exec> temperature{
@@ -123,6 +125,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     const auto diffusion = krona::transport::IsotropicDiffusion{
         krona::transport::UniformCoefficient<Real>{static_cast<Real>(conductivity)}};
 
+    bc::Status<Exec> boundary_status{exec};
     exec.fence("Scalar diffusion app: setup complete");
     krona::mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(before solve)");
 
@@ -130,8 +133,9 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     const auto result = solver.solve_owned(boundary, diffusion, source);
     if (result.converged) {
         halo.exchange();
-        boundary.apply_async(temperature.view(), diffusion);
-        boundary.execution_space().fence("Scalar diffusion app: boundary values ready");
+        boundary_status.begin_async();
+        boundary.apply_async(temperature.view(), boundary_status, diffusion);
+        boundary_status.check();
     }
     exec.fence("Scalar diffusion app: solve measurement complete");
     

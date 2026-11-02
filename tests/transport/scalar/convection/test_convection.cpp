@@ -223,7 +223,8 @@ void compare_system_residual(Matrix& matrix, linalg::Vector<typename Matrix::sca
 void upwind(const Exec& exec)
 {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec); conditions(boundary, 2, 7);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout); conditions(boundary, 2, 7);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec);
     Inputs input(a, exec);
     const auto entries = a.assembly.entry_map();
@@ -233,6 +234,7 @@ void upwind(const Exec& exec)
         linalg::CsrMatrix<double, Exec> matrix(a.assembly.pattern()); linalg::Vector<double, Exec> rhs(matrix.distribution());
         const auto target = ts::make_system_view(matrix, rhs, a.assembly, exec);
         Kokkos::deep_copy(exec, target.values, 0.0); Kokkos::deep_copy(exec, target.rhs, 0.0);
+        boundary.finalize();
         status.begin_async(); convection.add_system_async(target, boundary, status, VelocityFlux{velocity});
         (void)status.check(comm); matrix.commit(); rhs.commit();
         const auto values = snapshot(matrix.read_values(exec), exec); matrix.commit();
@@ -262,7 +264,8 @@ void affine_scheme(const Exec& exec, Scheme scheme)
 {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
     f.host.face_centroid_y.assign(static_cast<std::size_t>(f.host.n_faces), static_cast<GeometryReal>(0.2));
-    Attached a(f, comm, exec); Boundary boundary(f.host, a.mesh.view(), exec);
+    Attached a(f, comm, exec); krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec); Inputs<R,Layout> input(a, exec);
     const auto reconstruction = cv::make_reconstruction(a.plan, scheme, input.data(), 1);
     const double tolerance = std::is_same_v<R,float> ? 3e-6 : 2e-11;
@@ -276,6 +279,7 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         Kokkos::deep_copy(exec, plain.values, 0.0); Kokkos::deep_copy(exec, plain.rhs, 0.0);
         Kokkos::deep_copy(exec, target.values, 0.0); Kokkos::deep_copy(exec, target.rhs, 0.0);
         status.begin_async();
+        boundary.finalize();
         convection.add_system_async(plain, boundary, status, VelocityFlux{velocity});
         convection.add_system_async(target, boundary, status, VelocityFlux{velocity}, reconstruction);
         (void)status.check(comm); base.commit(); base_rhs.commit(); matrix.commit(); rhs.commit();
@@ -311,13 +315,15 @@ void strided_float(const Exec& e) { affine_scheme<rec::Tvd<>,float,Kokkos::Layou
 void limiting(const Exec& exec)
 {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec); conditions(boundary);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout); conditions(boundary);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec); Inputs input(a,exec);
     input.factors.fill_async(exec,0.0); input.gradients.fill_async(exec,Kokkos::quiet_NaN_v<double>);
     const auto reconstruction = cv::make_reconstruction(a.plan,rec::Limited<rec::Tvd<>>{},input.data(),1);
     Kokkos::View<double*,Space> plain("plain",f.host.n_own),limited("limited",f.host.n_own);
     Kokkos::deep_copy(exec,plain,0.0);Kokkos::deep_copy(exec,limited,0.0);
     status.begin_async();
+    boundary.finalize();
     convection.add_residual_async(input.values.view().component(1),plain,boundary,status,VelocityFlux{});
     convection.add_residual_async(input.values.view().component(1),limited,boundary,status,VelocityFlux{},reconstruction);
     (void)status.check(comm);
@@ -332,7 +338,8 @@ struct InvalidReconstruction {
 void zero_flux(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);boundary.set(0,bc::FixedFlux<Real>{1});boundary.set(1,bc::NormalGradient<Real>{1});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);boundary.set(0,bc::FixedFlux<Real>{1});boundary.set(1,bc::NormalGradient<Real>{1});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<double*,Space> field("poisoned field",f.host.n_cells),out("unchanged output",f.host.n_own);
     Kokkos::deep_copy(exec,field,Kokkos::quiet_NaN_v<double>);Kokkos::deep_copy(exec,out,7.0);
@@ -340,6 +347,7 @@ void zero_flux(const Exec& exec)
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);
     status.begin_async();
+    boundary.finalize();
     convection.add_system_async(target,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     convection.add_residual_async(field,out,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     convection.add_correction_async(out,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
@@ -356,11 +364,13 @@ struct TimedInflow {
 void inflow(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);boundary.set(0,bc::FixedFlux<Real>{10});boundary.set(1,bc::NormalGradient<Real>{20});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);boundary.set(0,bc::FixedFlux<Real>{10});boundary.set(1,bc::NormalGradient<Real>{20});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs input(a,exec);
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+    boundary.finalize();
     convection.add_system_async(target,boundary,status,TimedFlux{},cv::NoReconstruction{},TimedInflow{},Real{2});
     (void)status.check(comm);matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("custom inflow residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
@@ -373,7 +383,8 @@ void inflow(const Exec& exec)
 void face_inputs(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0,bc::FixedFlux<Real>{10});boundary.set(1,bc::NormalGradient<Real>{20});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs input(a,exec);
     Kokkos::View<double**,Kokkos::LayoutRight,Space> storage("strided face inputs",f.host.n_faces,3);
@@ -396,6 +407,7 @@ void face_inputs(const Exec& exec)
         linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
         const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
         Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+        boundary.finalize();
         convection.add_system_async(target,boundary,status,flux,cv::NoReconstruction{},incoming);
         (void)status.check(comm);matrix.commit();rhs.commit();
         Kokkos::View<double*,Space> residual("face input residual",f.host.n_own);
@@ -429,6 +441,7 @@ void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,F
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+    boundary.finalize();
     convection.add_system_async(target,boundary,status,flux,cv::NoReconstruction{},inflows,time);
     (void)status.check(comm);matrix.commit();rhs.commit();
     const auto b=snapshot(Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0),exec);rhs.commit();
@@ -442,7 +455,8 @@ void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,F
 void patch_profiles(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,7);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,2,7);
     Kokkos::View<float**,Kokkos::LayoutRight,Space> storage("strided patch profile",4,2);
     Kokkos::View<double*,Space> right("right patch profile",4),replacement("replacement profile",4);
     auto hl=Kokkos::create_mirror(storage);auto hr=Kokkos::create_mirror(right);
@@ -469,7 +483,8 @@ void patch_profiles(const Exec& exec)
 void profile_fallback(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});
     Kokkos::View<double*,Space> left("profile with analytic fallback",4);Kokkos::deep_copy(exec,left,10.0);
     auto inflows=cv::make_inflow_profiles(boundary,TimedInflow{});inflows.set(0,left);
@@ -483,7 +498,8 @@ void profile_unlabelled(const Exec& exec)
     const auto comm=mpi::CommView::world();auto f=bar(comm,false,false,false,4);
     for(auto& id:f.host.face_patch)if(id==1)id=-1;
     f.host.n_labeled_bfaces_g=4;
-    Attached a(f,comm,exec);Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,7);
+    Attached a(f,comm,exec);krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,2,7);
     boundary.set_unlabelled(bc::NormalGradient<Real>{0});
     Kokkos::View<double*,Space> values("unlabelled patch profile",4);auto h=Kokkos::create_mirror(values);
     for(std::size_t i=0;i<4;++i)h(i)=10.0*static_cast<double>(i+1);
@@ -497,10 +513,12 @@ void profile_unlabelled(const Exec& exec)
 void divergent(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,3,3);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,3,3);
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<double*,Space> field("constant",f.host.n_cells),out("divergent residual",f.host.n_own);
     Kokkos::deep_copy(exec,field,3.0);Kokkos::deep_copy(exec,out,0.0);status.begin_async();
+    boundary.finalize();
     convection.add_residual_async(field,out,boundary,status,DivergentFlux{});(void)status.check(comm);
     const auto h=snapshot(out,exec);for(std::size_t i=0;i<h.extent(0);++i)near(h(i),-3.0,1e-12,"Conservative transport incorrectly removed phi*div(mass flux)");
     Kokkos::deep_copy(exec,out,0.0);status.begin_async();convection.add_residual_async(field,out,boundary,status,VelocityFlux{3});(void)status.check(comm);
@@ -510,12 +528,14 @@ void divergent(const Exec& exec)
 void bsr(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,Real{-999});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,2,Real{-999});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs<float,Kokkos::LayoutRight> input(a,exec);
     const auto reconstruction=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},input.data(),1);
     linalg::BsrMatrix<double,Exec> matrix(a.assembly.pattern(),3);linalg::Vector<double,Exec> rhs(matrix.distribution());
     Kokkos::deep_copy(exec,matrix.overwrite_blocks(exec),0.0);Kokkos::deep_copy(exec,rhs.overwrite(exec),0.0);
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec,1);
+    boundary.finalize();
     status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3},reconstruction);(void)status.check(comm);matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("bsr residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
     convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{3},reconstruction);(void)status.check(comm);
@@ -528,11 +548,13 @@ void bsr(const Exec& exec)
 void additive(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,true);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary);
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,4.0);Kokkos::deep_copy(exec,target.rhs,5.0);
+    boundary.finalize();
     status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3});convection.add_system_async(target,boundary,status,VelocityFlux{3});(void)status.check(comm);
     matrix.commit();rhs.commit();const auto v=snapshot(matrix.read_values(exec),exec);matrix.commit();
     const auto d=snapshot(a.assembly.entry_map().diagonal,exec);
@@ -569,7 +591,8 @@ void quadratic_case(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
     check(comm.size()==1,"Explicit three-cell polynomial fixture is a serial case");
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,0,static_cast<Real>(f.total*f.total));
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,0,static_cast<Real>(f.total*f.total));
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<double*,Space> phi("quadratic averages",f.host.n_cells),gx("quadratic gradient",f.host.n_cells),zero("zero",f.host.n_cells);
     const auto mesh=a.mesh.view();
@@ -586,6 +609,7 @@ void quadratic_case(const Exec& exec)
         linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
         const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
         Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+        boundary.finalize();
         convection.add_system_async(target,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check(comm);matrix.commit();rhs.commit();
         Kokkos::View<double*,Space> residual("quadratic residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
         convection.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check(comm);
@@ -599,7 +623,8 @@ void quadratic(const Exec& e){quadratic_case<false>(e);}
 void frozen_system(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,0,static_cast<Real>(f.total));
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,0,static_cast<Real>(f.total));
     mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
     df::DiffusionPlan<Exec> diffusion_plan(f.host,a.mesh.view(),a.connectivity.view(),geometry.view(),comm,exec);
     df::DiffusionOperator diffusion(diffusion_plan);cv::ConvectionOperator convection(a.plan);
@@ -610,6 +635,7 @@ void frozen_system(const Exec& exec)
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution()),x(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+    boundary.finalize();
     diffusion.add_system_async(target,boundary,status,law);
     convection.add_system_async(target,boundary,status,VelocityFlux{});
     source.add_async(target.rhs,status,ts::UniformSource<Real>{1});
@@ -644,7 +670,8 @@ void frozen_system(const Exec& exec)
 void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty=false)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,empty_last,globally_empty);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,2,Real{2}+Real{2}*static_cast<Real>(f.total));
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,2,Real{2}+Real{2}*static_cast<Real>(f.total));
     Inputs<double,Kokkos::LayoutRight> input(a,exec,true);
     halo::Exchange<double,Exec> exchange(a.mesh.view(),a.mesh.halo_plan(),comm,53,exec,halo::Transfer::HostStaged);
     exchange.add_field(input.values.view());exchange.add_field(input.gradients.view());exchange.add_field(input.factors.view());exchange.prepare();exchange.exchange();
@@ -658,6 +685,7 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
+    boundary.finalize();
     convection.add_system_async(target,boundary,status,VelocityFlux{},reconstruction,inflows);(void)status.check(comm);matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("distributed convection residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
     convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{},reconstruction,inflows);(void)status.check(comm);
@@ -673,13 +701,15 @@ enum class Reject { MassFlux,Inflow,ShortFlux,ShortInflow,LongInflow,UnknownPatc
 void rejection(const Exec& exec,Reject which)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);conditions(boundary,4,7);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);conditions(boundary,4,7);
     if(which==Reject::Inflow)boundary.set(0,bc::NormalGradient<Real>{0});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs input(a,exec);
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);
     if(which!=Reject::Pending)status.begin_async();
+    boundary.finalize();
     if(which==Reject::MassFlux)convection.add_system_async(target,boundary,status,cv::UniformMassFlux<>{Kokkos::quiet_NaN_v<Real>});
     else if(which==Reject::ShortFlux){Kokkos::View<Real*,Space> flux("short flux",f.host.n_faces-1);convection.add_system_async(target,boundary,status,cv::FaceMassFlux{flux});}
     else if(which==Reject::ShortInflow||which==Reject::LongInflow){
@@ -688,7 +718,8 @@ void rejection(const Exec& exec,Reject which)
     }else if(which==Reject::UnknownPatch){
         auto inflows=cv::make_inflow_profiles(boundary);Kokkos::View<Real*,Space> values("profile",1);inflows.set(2,values);
     }else if(which==Reject::ForeignProfiles){
-        Boundary other(f.host,a.mesh.view(),exec);conditions(other);auto inflows=cv::make_inflow_profiles(other);
+        krona::boundary::BoundaryLayout<Exec, Real> other_layout(f.host, a.mesh.view(), exec);
+        Boundary other(other_layout);conditions(other);auto inflows=cv::make_inflow_profiles(other);
         convection.add_system_async(target,boundary,status,VelocityFlux{},cv::NoReconstruction{},inflows);
     }else if(which==Reject::ProfileNan){
         auto inflows=cv::make_inflow_profiles(boundary);Kokkos::View<Real*,Space> values("invalid profile",1);

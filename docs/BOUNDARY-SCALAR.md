@@ -1,315 +1,273 @@
 # Scalar boundary conditions
 
-`krona::boundary::scalar` assigns scalar conditions to external mesh patches. It can fill boundary-face values in an extended cell field, provide value/gradient relations to a solver, or dispatch your own face kernels. It does not solve an equation or exchange MPI ghosts.
+`krona::boundary::scalar` assigns conditions to exterior faces, fills face-value slots in extended fields, and supplies affine value/derivative relations to numerical operators. It performs no halo exchange or equation solve.
 
-## Architecture
+## Objects and ownership
 
-| Part | Responsibility |
+| Object | Responsibility |
 | --- | --- |
-| `Configuration` (`scalar/config.hpp`) | Host data for one scalar: patch IDs, names, built-in conditions, and optional unlabelled-face condition. Parsed from TOML or constructed in C++. |
-| `PatchCatalog` (`boundary/patches.hpp`) | Copies patch names and their local face intervals from a grouped host mesh. Records whether unlabelled external faces need a condition. |
-| `GeometryView` / `FaceContext` | Borrowed mesh geometry and the geometry of one external face, respectively. |
-| `FixedValue`, `NormalGradient`, `FixedFlux`, custom condition types | Describe the boundary condition independently of field storage and kernel scheduling. |
-| `Relation<Real>` | Expresses face value and outward normal derivative as affine functions of the owner-cell value. |
-| `Manager<Exec, Real, CustomConditions...>` | Stores one condition per patch, dispatches its concrete type on the host, and submits Kokkos work to `Exec`. Defaults: project execution space and `ComputeReal`. |
+| `BoundaryLayout<Exec, Real>` (`boundary/layout.hpp`) | Owns one host patch catalog, borrows compact mesh geometry, stores the execution instance and field sizes. Share it between scalar managers on the same mesh. |
+| `Manager<Exec, Real, ExtraConditions...>` | Borrows the layout; owns one condition per labelled patch and an optional unlabelled-face condition. Never binds or owns a field. |
+| `FixedValue`, `NormalGradient`, `FixedFlux` | Describe the mathematical condition. Their parameter can be a number or a provider evaluated at the current face/time. |
+| `Relation<Real>` | Affine face value and outward normal derivative, without a transport coefficient or face area. |
+| `Status<Exec>` | Owns small device/host diagnostic buffers, reusable across managers and submissions on the same execution instance. |
 
-The manager owns the patch catalog and condition objects. It borrows the mesh geometry; it does not own the scalar field. Pass the target field explicitly on each application. `Configuration::field` identifies the TOML section; the manager does not use it to find or check a field by name.
+Keep the layout and mesh allocations alive while managers use them. Keep fields, provider buffers, coefficient/gradient buffers and callback outputs alive until their kernels finish. Providers returned by `profile::patch_values()` borrow storage and retain no allocation ownership.
 
-## Mesh and field contracts
+## Prepare, assign, finalize, apply
 
-Use the host mesh and device view of the **same prepared mesh**. Faces must be grouped (`faces_grouped == true`), and geometry must already be computed. Select at least `MeshData::FaceCells | MeshData::Geometry` in `MeshStorage`.
-
-External faces occupy `[n_inner_faces, n_faces)`. MPI interface faces precede this interval and are not processed by the boundary manager. Each external face has an owned owner cell, a unit normal pointing out of that cell, positive area, and positive projected owner-to-face distance. Construction validates these properties in the selected computation precision.
-
-Boundary values are stored **at face centroids**, in slots appended after all local cells:
-
-| Field interval | Contents |
-| --- | --- |
-| `[0, n_own)` | Owned-cell values. |
-| `[n_own, n_cells)` | MPI ghost-cell values. |
-| `[n_cells, n_cells + n_bfaces)` | One value per external face; `n_bfaces = n_faces - n_inner_faces`. |
-
-For an external face `f`, its slot is `n_cells + (f - n_inner_faces)`. These appended slots are not additional mesh cells or values at reflected ghost-cell centres.
-
-`required_field_size()` returns `n_cells + n_bfaces`. `apply_async()` accepts a writable, one-component `FieldView`. `apply_component_async()` accepts a writable rank-one Kokkos view, including a strided component of an AoS field. The selected component must:
-
-- contain at least `required_field_size()` entries;
-- use a floating-point value type and memory accessible to `Exec`;
-- contain valid owner values wherever the condition needs them.
-
-Field storage may use a different floating-point type from the manager's `Real`: values are converted for computation and on assignment. The field's location tag is not checked; `CellExtnd` expresses the intended layout. Both application methods write only appended boundary slots. Owned cells, MPI ghosts, other components, and any trailing extra entries are preserved.
-
-For a selected component, use `manager.apply_component_async(vector.view().component(2), law)` instead of `apply_async()`.
-
-## Fill boundary values
-
-Sequence: prepare the mesh → create the manager → assign every condition → allocate an extended field → update owner values → apply the boundary conditions.
-
-The following fragments assume MPI and Kokkos are initialized and `host_mesh` is a prepared `mesh::host::MeshPart`. Use these headers and aliases:
+Assume active MPI/Kokkos and a prepared `host_mesh`. The host mesh and device view must describe the same local numbering and geometry. Faces must be grouped; select at least `FaceCells | Geometry`.
 
 ```cpp
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
-#include <krona/transport/diffusion/isotropic.hpp>
-#include <type_traits>
 
-namespace boundary = krona::boundary;
-namespace scalar = boundary::scalar;
-namespace device = krona::mesh::device;
-namespace fields = krona::fields;
+namespace bc = krona::boundary;
+namespace scalar = bc::scalar;
+namespace grad = krona::numerics::gradient;
 using Exec = krona::execution::ExecutionSpace;
 using Real = krona::ComputeReal;
 using Space = typename Exec::memory_space;
-```
 
-This example assigns `300` to every labelled patch and zero normal gradient to any unlabelled faces:
-
-```cpp
 Exec exec{};
-device::MeshStorage<Exec> mesh{
-    host_mesh,
-    {.data = device::MeshData::FaceCells | device::MeshData::Geometry},
-    exec};
-scalar::Manager<Exec, Real> manager{host_mesh, mesh.view(), exec};
+krona::mesh::device::MeshStorage<Exec> mesh(host_mesh,
+    {.data = krona::mesh::device::MeshData::FaceCells |
+             krona::mesh::device::MeshData::Geometry}, exec);
+bc::BoundaryLayout<Exec, Real> layout(host_mesh, mesh.view(), exec);
+scalar::Manager<Exec, Real> boundary(layout);
 
-for (const auto& patch : manager.catalog().patches())
-    manager.set(patch.range.patch_id, scalar::FixedValue<Real>{300});
-if (manager.catalog().needs_unlabelled())
-    manager.set_unlabelled(scalar::NormalGradient<Real>{0});
+for (const auto& patch : layout.catalog().patches())
+    boundary.set(patch.range.patch_id, scalar::FixedValue<Real>{300});
+if (layout.catalog().needs_unlabelled())
+    boundary.set_unlabelled(scalar::NormalGradient<Real>{0});
+boundary.finalize();
 
-fields::FieldStorage<Real, 1, Exec> temperature{
-    "temperature", manager.required_field_size(),
-    fields::FieldLocation::CellExtnd, exec};
+krona::fields::FieldStorage<Real, 1, Exec> temperature(
+    "temperature", layout.required_field_size(),
+    krona::fields::FieldLocation::CellExtnd, exec);
+scalar::Status<Exec> status(exec);
 
-krona::execution::complete(exec, [&] {
-    temperature.fill_async(exec, Real{350}); // Example initial state.
-    manager.apply_async(temperature.view());
-}); // The fill and boundary kernels have completed.
+temperature.fill_async(exec, Real{350});
+status.begin_async();
+boundary.apply_async(temperature.view(), status);
+status.check(); // Local blocking completion and fatal-error check.
 ```
 
-Each labelled patch must have a condition, **including patches with no faces on this rank**. If unlabelled external faces exist locally or according to the global mesh counts, call `set_unlabelled()` or provide the corresponding configuration. There is no implicit boundary-condition default.
+Assign every labelled patch, including patches empty on this rank. Unlabelled faces require an explicit condition if they exist locally or according to global mesh counts. There is no implicit condition.
 
-Reuse the manager and field. After changing owner values, call `apply_async()` again. Use `set(patch_id, condition)` to change a condition for subsequent submissions; no separate preparation or registration-closing step exists. Condition objects are copied into submitted kernels, so a later `set()` does not change an earlier submission.
+`finalize()` checks completeness and provider metadata and caches whether a flux law is needed. It reads no device values, submits no kernels, and performs no MPI communication. `set()`, `set_unlabelled()` and `configure()` invalidate it. Finalize again after changing a condition or provider binding. Changing time or updating an already-bound buffer's contents does not invalidate it.
 
-Basic filling reads owner values only. If your gradient reconstruction or custom providers need current MPI ghosts, complete the required halo exchange before using those inputs. This manager performs no halo exchange itself.
+Conditions are copied into submitted kernels. Later assignments affect later submissions; they do not change already-queued condition objects. Updating borrowed buffers still requires correct execution ordering.
 
-## Conditions and their meaning
+## Field and geometry contracts
 
-Let `phi_P` be the owner-cell value, `phi_f` the face value, and `g_n` the outward normal derivative. Geometry and an optional correction define:
+Exterior faces occupy `[n_inner_faces, n_faces)`; MPI interface faces are outside this range. Every exterior face must have an owned owner cell, an outward unit normal, positive area and positive projected owner-to-face distance. Layout construction validates these in `Real` and completes before returning.
 
-- `h = (x_f - x_P) · n > 0`: projected normal distance, not the Euclidean distance;
-- `t = x_f - x_P - h*n`: tangential displacement;
-- `delta`: supplied explicit reconstruction increment; zero by default.
+| Extended field interval | Contents |
+| --- | --- |
+| `[0, n_own)` | Owned cells. |
+| `[n_own, n_cells)` | MPI ghost cells. |
+| `[n_cells, n_cells + n_faces - n_inner_faces)` | Face-centred boundary values. |
 
-The reconstruction convention is `phi_f = phi_P + h*g_n + delta`.
+For exterior face `f`, the output index is `n_cells + (f - n_inner_faces)`. These are face values, not reflected ghost-cell values.
 
-| C++ condition | TOML type and parameter | Face value `phi_f` | Outward derivative `g_n` |
+`apply_async(field, status, ...)` accepts a writable scalar `FieldView`. `apply_component_async(view, status, ...)` accepts a writable rank-one Kokkos view, including a strided component. It requires floating-point storage, accessible memory and at least `required_field_size()` entries. Only boundary slots are written. Owned/ghost cells, other components and trailing entries are preserved.
+
+Storage precision may differ from `Real`. Computation uses `Real`; assignment converts to the storage type and checks for a finite result. Rounding and underflow are not diagnosed. Owner values must be finite where read. Fixed-value filling reads neither owners nor the correction.
+
+## Conditions and affine relations
+
+Let `h = (x_f - x_P)·n > 0`, `t = x_f - x_P - h*n`, and `delta` be the explicit correction. The convention is:
+
+`phi_f = phi_P + h*g_n + delta`, where `g_n = d(phi)/dn` uses the outward normal.
+
+| Condition | Parameter at the face | Face value | Normal derivative |
 | --- | --- | --- | --- |
-| `FixedValue<Real>{v}` | `FIXED_VALUE`, `value = v` | `v` | `(v - phi_P - delta) / h` |
-| `NormalGradient<Real>{g}` | `NORMAL_GRADIENT`, `gradient = g` | `phi_P + h*g + delta` | `g` |
-| `NormalGradient<Real>{0}` | `ZERO_GRADIENT`, no parameter | `phi_P + delta` | `0` |
-| `FixedFlux<Real>{q}` | `FIXED_FLUX`, `flux = q` | Uses the derivative returned by the supplied flux law. | `law.normal_gradient(context, q)` |
+| `FixedValue<Real>{v}` | Prescribed `v` | `v` | `(v - phi_P - delta)/h` |
+| `NormalGradient<Real>{g}` | Prescribed `g` | `phi_P + h*g + delta` | `g` |
+| `FixedFlux<Real>{q}` | Outward physical flux density `q` | Uses the derivative returned by the flux law | `law.normal_gradient(context, q)` |
 
-`FixedFlux` specifies **outward physical flux density**, not flux integrated over the face. It carries no conductivity, diffusivity, or area factor. Positive flux means outward transport; conversion to a derivative belongs to the supplied law.
+Zero gradient is `NormalGradient<Real>{0}`; with a correction its face value can differ from the owner value.
 
-For isotropic diffusion, KRONA provides `q_n = -k*g_n`:
+`Relation<Real>` stores:
 
 ```cpp
+phi_f = relation.value_owner * phi_P + relation.value_constant;
+g_n   = relation.gradient_owner * phi_P + relation.gradient_constant;
+```
+
+Use `face_value(phi_P)` and `normal_gradient(phi_P)` to avoid reading a mathematically unused owner value when the corresponding slope is zero.
+
+A flux condition requires a device-callable `law.normal_gradient(context, flux)` for `apply_*` and `evaluate_async()`, even if its patch is locally empty. Value/gradient conditions do not use this law. For isotropic conduction, `q = -k*g_n`: positive heat flux leaves the domain. Face area is not included.
+
+```cpp
+#include <krona/transport/diffusion/isotropic.hpp>
 const auto law = krona::transport::IsotropicDiffusion{
     krona::transport::UniformCoefficient<Real>{Real{2}}};
-manager.apply_async(temperature.view(), law);
-exec.fence("Boundary values ready");
+// Assign scalar::FixedFlux<Real>{4} to obtain g_n = -2.
+status.begin_async();
+boundary.apply_async(temperature.view(), status, law);
+status.check();
 ```
 
-Here a prescribed flux of `4` gives `g_n = -2`. A custom law supplies a device-callable `normal_gradient(const FaceContext<Real>&, Real flux)` returning a value convertible to `Real`. Built-in value and gradient conditions do not access this law. Any configured `FixedFlux` requires a law for `apply_*` and `evaluate_async()`, even when that patch is empty locally.
+Coefficients must satisfy their law's contract; isotropic conversion requires finite, positive conductivity. Validity checks for other law-specific inputs remain the law's responsibility.
 
-Law coefficients must be valid when kernels execute. In particular, the isotropic flux-to-gradient conversion requires finite, strictly positive `k`. The manager does not scan coefficient buffers during application.
+## Profiles: same condition, another parameter source
 
-### Optional gradient correction
+Providers live in `boundary/profiles.hpp`, independently of scalar conditions. They describe a parameter, not an inlet or outlet. Use the same mechanism for a wall temperature, a prescribed derivative or a heat-flux distribution.
 
-Pass `boundary::GradientCorrection{gx, gy, gz}` as the correction argument to compute `delta = t · grad(phi_P)`. Each input is an accessible rank-one view with at least `n_own` entries, indexed by owner cell. Gradients must already be available when the boundary kernels execute. A custom correction is a device-callable object returning an increment from `FaceContext<Real>`.
-
-Without a correction, `delta = 0`. With one, zero normal gradient generally gives `phi_f = phi_P + delta`, not simply `phi_P`. `apply_*` fills an exact built-in `FixedValue` directly without reading the owner or evaluating the correction; `evaluate_async()` evaluates the correction to form the derivative relation as well.
-
-## Read conditions from TOML
-
-Example for a mesh with patch `0` named `inlet`, patch `1` named `outlet`, and patch `2` named `wall`:
-
-```toml
-[[boundary_condition]]
-patch_id = 0
-name = "inlet"
-[boundary_condition.scalar.temperature]
-type = "FIXED_VALUE"
-value = 300.0
-
-[[boundary_condition]]
-patch_id = 1
-name = "outlet"
-[boundary_condition.scalar.temperature]
-type = "ZERO_GRADIENT"
-
-[[boundary_condition]]
-patch_id = 2
-name = "wall"
-[boundary_condition.scalar.temperature]
-type = "FIXED_FLUX"
-flux = 4.0
-
-[unlabelled.scalar.temperature]
-type = "NORMAL_GRADIENT"
-gradient = 0.0
-```
-
-Replace the programmatic condition assignment with configuration-based construction:
-
-```cpp
-const auto config = scalar::read_config("boundary.toml", "temperature");
-scalar::Manager<Exec, Real> configured{host_mesh, mesh.view(), config, exec};
-configured.apply_async(temperature.view(), law);
-exec.fence("Configured boundary values ready");
-```
-
-Alternatively, `parse_config(text, "temperature")` parses an existing string, and `manager.configure(config)` replaces the current assignments.
-
-Configuration must describe every mesh patch exactly once, with its exact ID and name; entry order does not matter. Every entry must contain the selected scalar's table. Type strings are case-sensitive. The table accepts only `type` and the parameter belonging to that type. Numbers must be finite and, when bound, representable in the manager's `Real`. `ZERO_GRADIENT` accepts no parameter. Multiple scalar tables can share the same patch entries. With no labelled patches, use `boundary_condition = []` explicitly.
-
-`read_config()` reads the file on each calling rank. It does not broadcast or synchronize. For root-only I/O, broadcast the text yourself, then parse it on each rank. Parsing accepts only the built-in condition types; assign custom types in C++. The mesh-generated BC template contains import/physical metadata: add the scalar tables shown above before using it here.
-
-## Use relations in your own computation
-
-`Relation<Real>` contains four coefficients:
-
-```text
-phi_f = value_owner    * phi_P + value_constant
-g_n   = gradient_owner * phi_P + gradient_constant
-```
-
-Use `relation.face_value(phi_P)` and `relation.normal_gradient(phi_P)` to evaluate them. These helpers avoid using `phi_P` when the corresponding coefficient is zero. The derivative relation already accounts for the supplied correction; do not subtract it again. Relations do not multiply the derivative by a material coefficient or face area.
-
-Choose the entry point matching what your computation needs:
-
-| Method | Callback and behaviour |
+| Provider | Sampling |
 | --- | --- |
-| `evaluate_async(sink, law, correction, time)` | Submits face kernels calling `sink(context, relation)`. Suitable for derivative output or implicit assembly; it neither reads a scalar field nor fills one automatically. |
-| `for_each_face_async(sink, time)` | Submits face kernels calling `sink(context, typed_condition)`. Performs no relation construction or flux conversion. Useful when consuming a prescribed flux directly. |
-| `for_each_patch(visitor)` | Calls `visitor(range, typed_condition)` on the host for each nonempty local range. Launch your own kernels with the supplied concrete condition type. |
+| Plain number | Constant on the patch. Existing `FixedValue<Real>{300}` syntax remains valid. |
+| `profile::Constant<T>{value}` | Returns `value`; supports scalars and `math::Vector3`. |
+| Device functor or Kokkos lambda | `provider(context)`; can use face coordinates, time or borrowed inputs. |
+| `profile::patch_values(range, view)` | Reads a borrowed value at `view(context.face - range.begin)`, preserving its stride. |
 
-All three require complete condition assignments. Empty local ranges are skipped. An unlabelled range uses `patch_id == -1`. Typed callbacks must compile for every condition alternative in the manager, not only the types currently assigned.
+Scalar condition factories are `fixed_value<Real>(provider)`, `normal_gradient<Real>(provider)` and `fixed_flux<Real>(provider)`. List the resulting additional condition types in the manager template; dispatch remains once per patch, with no device-side virtual calls.
 
-### Example: launch your own fill-and-gradient kernel
-
-This kernel fills face values and stores their outward derivatives in a separate boundary-sized array. It uses the same conditions as the manager; no type switches or TOML parsing occur on the device. Define it at namespace scope after the aliases above:
+For example, define an analytic temperature provider at namespace scope:
 
 ```cpp
-template<class Condition, class Law>
-struct FillAndGradient {
-    boundary::GeometryView<Space> geometry;
-    fields::FieldView<Real, 1, Space> field;
-    Kokkos::View<Real*, Space> normal_gradient;
-    Condition condition;
-    Law law;
-    Real time;
+struct TemperatureProfile {
+    KOKKOS_INLINE_FUNCTION Real operator()(const bc::FaceContext<Real>& c) const
+    { return Real{300} + Real{2}*c.y + Real{5}*c.time; }
+};
+```
 
-    KOKKOS_INLINE_FUNCTION void operator()(krona::LocalIndex face) const
+Create a manager supporting it; this fragment requires labelled patch `0`:
+
+```cpp
+const auto prescribed = scalar::fixed_value<Real>(TemperatureProfile{});
+scalar::Manager<Exec, Real, decltype(prescribed)> profiled(layout);
+for (const auto& patch : layout.catalog().patches())
+    profiled.set(patch.range.patch_id, scalar::NormalGradient<Real>{0});
+if (layout.catalog().needs_unlabelled())
+    profiled.set_unlabelled(scalar::NormalGradient<Real>{0});
+profiled.set(0, prescribed);
+profiled.finalize();
+
+status.begin_async();
+profiled.apply_async(temperature.view(), status, scalar::NoFluxLaw{},
+                     grad::NoCorrection{}, Real{1.5});
+status.check();
+```
+
+To use a compact patch array instead, replace `prescribed` above with:
+
+```cpp
+const auto range = layout.catalog().patches()[0].range;
+Kokkos::View<Real*, Space> patch_data("wall_temperature", range.end - range.begin);
+Kokkos::deep_copy(exec, patch_data, Real{300});
+const auto prescribed = scalar::fixed_value<Real>(bc::profile::patch_values(range, patch_data));
+```
+
+The array must have **exactly the local patch face count**, including zero for an empty patch. It is neither indexed by global face ID nor by the boundary-slot index. Its bound range/patch ID must match the assigned patch. Use `layout.catalog().unlabelled()` for an unlabelled profile. Const and strided views are supported; no copy, allocation or fence occurs in `patch_values()`.
+
+Update `patch_data` on `exec` before the next apply; no rebinding or refinalization is needed. Keep it alive until the last consumer completes. Do not alias profile inputs with outputs modified by the same operation.
+
+A custom provider must be device-copyable/callable, return a value convertible to `Real`, and capture accessible storage. An optional host `validate<Exec>(PatchRange)` hook checks its metadata; it must not submit work or synchronize. Providers should return the same parameter for the same context and current input data. Each built-in condition samples its provider once per face per evaluation.
+
+The common provider layer also supports vector values for physical-condition integration.
+
+## Gradient correction
+
+Use `numerics/gradient/correction.hpp`.
+
+```cpp
+const auto correction = grad::GradientCorrection{grad::cell_gradients(gx, gy, gz)};
+status.begin_async();
+boundary.apply_async(temperature.view(), status, law, correction);
+status.check();
+```
+
+`gx`, `gy`, `gz` are rank-one views, including strided views, with at least `n_own` entries. Alternatively, `cell_gradients(gradient_field.view(), component)` selects the gradient module's `3*component + axis` ordering. Projection is `delta = t·grad(phi_P)`; no coefficient or face area is applied. `grad::NoCorrection{}` returns zero and is the default.
+
+Complete gradient producers before reading them. Boundary filling uses owned gradients only; any halo requirements of their computation belong to the application.
+
+## Face context
+
+| Members | Meaning |
+| --- | --- |
+| `face`, `owner` | Absolute local face index and owned-cell index. |
+| `boundary_index`, `extended_index` | `face - n_inner_faces`, and `n_cells + boundary_index`. |
+| `x, y, z`; `nx, ny, nz` | Face centroid and outward unit normal. |
+| `distance`; `tx, ty, tz` | Positive normal distance `h` and tangential displacement `t`. |
+| `area`, `time` | Face area and the supplied evaluation time; time defaults to zero. |
+
+## Relations, callbacks and custom conditions
+
+| Method | Callback and purpose |
+| --- | --- |
+| `evaluate_async(sink, status, law, correction, time)` | Device `sink(context, Relation<Real>)`; finite relations are checked before delivery. Use for implicit assembly or boundary derivatives. |
+| `for_each_face_async(sink, time)` | Device `sink(context, typed_condition)`; raw dispatch without relation/law/correction/status handling. |
+| `for_each_patch(visitor)` | Host `visitor(PatchRange, typed_condition)` for each nonempty local patch, including unlabelled faces. Launch your own kernels from it. |
+
+Callbacks must compile for every condition alternative in the manager, including currently unassigned types. `for_each_patch`/`for_each_face_async` require finalization, but do not require a flux law merely to visit flux conditions.
+
+For example, define this sink at namespace scope:
+
+```cpp
+struct SaveGradient {
+    Kokkos::View<Real*, Space> owner_values, normal_gradient;
+    KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<Real>& c,
+                                          const scalar::Relation<Real>& r) const
     {
-        const auto c = geometry.template context<Real>(face, time);
-        const auto r = scalar::make_relation(condition, c, Real{0}, law);
-        const Real owner = (r.value_owner != Real{0} || r.gradient_owner != Real{0})
-            ? field(static_cast<std::size_t>(c.owner)) : Real{0};
-        field(c.extended_index) = r.face_value(owner);
+        const Real owner = r.gradient_owner == Real{0} ? Real{0} : owner_values(c.owner);
         normal_gradient(c.boundary_index) = r.normal_gradient(owner);
     }
 };
 ```
 
-Launch it using the existing `manager`, `temperature`, and `law`:
+Then launch:
 
 ```cpp
-const auto geometry = manager.geometry_view();
-const auto field = temperature.view();
-const auto boundary_count = manager.required_field_size()
-    - static_cast<std::size_t>(host_mesh.n_cells);
-Kokkos::View<Real*, Space> derivatives("boundary_normal_gradient", boundary_count);
-const Real time = Real{1.5}; // Must be finite.
-using Law = std::remove_cvref_t<decltype(law)>;
-using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<krona::LocalIndex>>;
-
-manager.for_each_patch([&](boundary::PatchRange range, const auto& condition) {
-    using Condition = std::remove_cvref_t<decltype(condition)>;
-    Kokkos::parallel_for("custom_boundary_fill",
-        Policy(manager.execution_space(), range.begin, range.end),
-        FillAndGradient<Condition, Law>{
-            geometry, field, derivatives, condition, law, time});
-});
-manager.execution_space().fence("Custom boundary results ready");
+Kokkos::View<Real*, Space> derivatives("boundary_derivatives",
+    host_mesh.n_faces - host_mesh.n_inner_faces);
+status.begin_async();
+boundary.evaluate_async(SaveGradient{temperature.view().component(0), derivatives}, status, law);
+status.check();
 ```
 
-`range.begin` and `range.end` are absolute local face indices, with an exclusive end. Each face has a unique output slot. If instead you accumulate contributions into owner cells, several faces can share an owner: use atomics or another safe assembly strategy.
+The manager checks the relation, not a custom sink's reads, arithmetic or writes. Validate the sink's buffers and results yourself. Multiple faces can share one owner: accumulation into owner-cell arrays needs atomics or another safe strategy.
 
-The example explicitly chooses zero correction. To include reconstruction, pass a correction object into the kernel and use `correction(c)` instead of `Real{0}` in `make_relation()`. This manual launch bypasses the manager's `apply_*` input checks: validate field/output extents, time, and provider inputs yourself. Unlike direct `FixedValue` filling, this example also evaluates normal derivatives, so its owner values must be valid even on `FixedValue` patches.
+For a new mathematical condition, implement device `operator()(const FaceContext<Real>&, Real increment)` returning `Relation<Real>`, and list that type in the manager template. An optional `validate<Exec>(PatchRange)` hook checks host metadata. For a law-aware custom closure, define `make_relation(condition, context, increment, law)` in the condition's namespace (found by argument-dependent lookup), and specialize `scalar::requires_flux_law<YourCondition>`. Its evaluation must also compile with `NoFluxLaw` for unassigned alternatives. Direct/custom launches must enforce their own input and numerical checks.
 
-### Add a custom condition
+## Configuration
 
-A custom scalar condition implements a device-callable `operator()(context, increment)` returning `Relation<Real>`. It can use face position and time. For example:
+`read_config(path, "temperature")` and `parse_config(text, "temperature")` read constant conditions from `[boundary_condition.scalar.temperature]` tables:
 
-```cpp
-struct TimeDependentValue {
-    Real base = 300, x_slope = 2, time_slope = 5;
+```toml
+[[boundary_condition]]
+patch_id = 0
+name = "wall"
+[boundary_condition.scalar.temperature]
+type = "FIXED_VALUE"
+value = 300.0
 
-    KOKKOS_INLINE_FUNCTION scalar::Relation<Real> operator()(
-        const boundary::FaceContext<Real>& c, Real increment) const
-    {
-        const Real value = base + x_slope*c.x + time_slope*c.time;
-        return scalar::FixedValue<Real>{value}(c, increment);
-    }
-};
+[unlabelled.scalar.temperature]
+type = "ZERO_GRADIENT"
 ```
 
-Add its type to the manager's template arguments; built-in conditions remain available. This example requires labelled patch `0`:
+Supported types are `FIXED_VALUE` (`value`), `NORMAL_GRADIENT` (`gradient`), `ZERO_GRADIENT` (no parameter), and `FIXED_FLUX` (`flux`). Every labelled mesh patch must appear exactly once with matching ID and exact name; order is irrelevant. With no labels, write `boundary_condition = []` explicitly. Unknown scalar keys and invalid numeric parameters are rejected. Profiles and custom conditions are assigned in C++, not interpreted from TOML.
 
-```cpp
-scalar::Manager<Exec, Real, TimeDependentValue> custom{host_mesh, mesh.view(), exec};
-for (const auto& patch : custom.catalog().patches())
-    custom.set(patch.range.patch_id, scalar::NormalGradient<Real>{0});
-if (custom.catalog().needs_unlabelled())
-    custom.set_unlabelled(scalar::NormalGradient<Real>{0});
-custom.set(0, TimeDependentValue{Real{300}, Real{2}, Real{5}});
-custom.apply_async(temperature.view(), scalar::NoFluxLaw{},
-                   boundary::NoCorrection{}, Real{1.5});
-exec.fence("Time-dependent boundary values ready");
-```
+Construct `Manager(layout, config)` or call `configure(config)`, then `finalize()`. `Configuration::field` selects the parsed scalar section; it does not bind a field buffer or check its name.
 
-Here the second argument to the condition's `operator()` is the reconstruction increment; time is `c.time`. Custom parameters, captured buffers, and returned coefficients are caller contracts: the manager does not validate them. Keep condition/provider objects device-callable, with accessible, valid backing storage, and produce finite results.
+## Asynchrony and errors
 
-## Face context reference
-
-| Member | Meaning |
+| Operation | Completion |
 | --- | --- |
-| `face`, `owner` | Absolute local face index and owned-cell index. |
-| `boundary_index` | `face - n_inner_faces`; index into boundary-only arrays. |
-| `extended_index` | `n_cells + boundary_index`; index into an extended cell field. |
-| `x, y, z` | Face centroid coordinates. |
-| `nx, ny, nz` | Outward unit normal. |
-| `distance` | Positive projected distance `h`. |
-| `tx, ty, tz` | Tangential displacement `t`. |
-| `area` | Face area; apply it explicitly when integrating flux density. |
-| `time` | Time supplied to the application/iteration method; defaults to zero. |
+| `BoundaryLayout(...)` | Local blocking geometry validation and fence; copies host catalog metadata. |
+| `Manager(...)`, `set*()`, `configure()`, `finalize()` | Host work only. No device submission, fence or MPI communication. |
+| `Status(...)` | Allocates small diagnostic buffers without initializing their device values. |
+| `status.begin_async()` | Queues a reset on its execution instance; requires the previous batch to have been checked. |
+| `apply_async()`, `apply_component_async()`, `evaluate_async()` | Host checks and kernel submission; no final fence. Require a begun status on the layout's execution instance. |
+| `for_each_face_async()` | Submits callback kernels without a final fence. |
+| `for_each_patch()` | Finishes host dispatch; does not wait for visitor-launched kernels. |
+| `status.check()` | Copies diagnostics and fences the instance. Calls `mpi::require` on local failure; no MPI collective. |
 
-## Asynchrony and lifetime
+Host contract violations terminate through `mpi::require`; unexpected host exceptions are handled by `mpi::guarded`. Standard fill/evaluation kernels record nonfinite results in the status and skip the affected write/sink call. No rollback is performed; a failed batch must not be consumed.
 
-| Operation | Completion behaviour |
-| --- | --- |
-| `Manager(...)` | Blocking setup: copies host metadata, validates external geometry, and fences its execution-space instance before returning. |
-| `read_config()`, `parse_config()`, `configure()`, `set()`, `set_unlabelled()` | Execute on the host. They do not submit boundary kernels or wait for previously submitted kernels. File reading/parsing completes before return. |
-| `apply_async()`, `apply_component_async()` | Validate host-visible inputs and submit boundary-fill kernels. No final fence. |
-| `evaluate_async()`, `for_each_face_async()` | Submit callback kernels. No final fence. |
-| `for_each_patch()` | Completes host callback dispatch before return; does not wait for kernels launched by the visitor. |
-| `execution_space().fence()` | Waits for work submitted to that execution-space instance. |
+Use one status for several submissions/managers on the same execution instance, then check once. Queue dependent producers/consumers on that instance or synchronize explicitly across instances. A fence alone completes kernels but does not inspect recorded errors. Synchronous backends may execute immediately; `_async` methods provide no portable completion guarantee.
 
-These operations perform no MPI communication or barrier. A local fence waits for local Kokkos work, not for other ranks. Kernels may finish immediately on a synchronous backend; methods without a final fence provide no portable completion guarantee.
-
-Queue dependent producers, boundary kernels, and consumers on the **same execution-space instance** for ordering. Synchronize explicitly when passing data between different instances, to host code, or to MPI. Finish boundary work before any host/MPI access that conflicts with its reads or writes.
-
-Keep mesh geometry, fields, correction/coefficient buffers, and custom callback storage valid and unchanged wherever the queued kernels read them. The manager has no destructor fence: complete outstanding work before releasing its backing data or finalizing Kokkos. A new condition assignment copies new parameters for later kernels; it does not synchronize changes to buffers referenced by those parameters.
+Layout/manager destruction does not fence. Status destruction drains a still-pending batch to protect its buffers, but does not replace `check()` or protect buffers already destroyed by the caller. Check before releasing any referenced storage or finalizing Kokkos. Custom `for_each_*` kernels own their numerical error handling.

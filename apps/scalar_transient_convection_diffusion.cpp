@@ -312,6 +312,7 @@ void update_boundary(Boundary& boundary, const ExactGaussian& exact, double time
 {
     boundary.set(0, bc::FixedValue<Real>{static_cast<Real>(exact.value(0.0,time))});
     boundary.set(1, bc::FixedValue<Real>{static_cast<Real>(exact.value(length,time))});
+    boundary.finalize();
 }
 
 template<class Field, class Boundary, class Law, class Output, class Reconstruction,
@@ -365,7 +366,8 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
     const df::DiffusionOperator<Exec,Real> diffusion{diffusion_plan};
     const cv::ConvectionOperator<Exec,Real> convection{convection_plan};
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh,comm,exec};
-    bc::Manager<Exec,Real> boundary{host_mesh,mesh.view(),load_boundary(paths[1],comm),exec};
+    const krona::boundary::BoundaryLayout<Exec,Real> boundary_layout{host_mesh,mesh.view(),exec};
+    bc::Manager<Exec,Real> boundary{boundary_layout,load_boundary(paths[1],comm)};
     const auto patches = boundary.catalog().patches();
     krona::mpi::require(patches.size()==3,"Gaussian app: expected patches left=0, right=1, side_walls=2");
     // This example fixes all three closures; end values are updated before every physical step.
@@ -442,13 +444,17 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
     Kokkos::View<Scalar*,Space> base_rhs(Kokkos::view_alloc(exec,Kokkos::WithoutInitializing,"gaussian/base_rhs"),settings.limited?owned_count:0);
     Kokkos::View<Real*,Space> residual(Kokkos::view_alloc(exec,Kokkos::WithoutInitializing,"gaussian/residual"),owned_count);
     ts::AssemblyStatus<Exec> status{exec};
+    bc::Status<Exec> boundary_status{exec};
     krona::linalg::SolverOptions options;
     options.method="GMRES";options.preconditioner.type="AMG";
     options.relative_tolerance=reduced_precision?1.e-5:1.e-10;
     options.maximum_iterations=2000;options.restart_length=100;
     krona::linalg::Solver<decltype(matrix)> solver{matrix,options};
     const auto prepare = [&]{
-        halo.start();halo.finish_async();boundary.apply_async(scalar.view(),law);
+        halo.start();halo.finish_async();
+        boundary_status.begin_async();
+        boundary.apply_async(scalar.view(),boundary_status,law);
+        boundary_status.check();
         if(high_order)high_order->update_async(scalar.view());
     };
     update_boundary(boundary,exact,0.0);prepare();

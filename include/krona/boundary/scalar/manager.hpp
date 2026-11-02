@@ -4,7 +4,8 @@
 #include <krona/mpi/error.hpp>
 #include <krona/boundary/scalar/config.hpp>
 #include <krona/boundary/scalar/detail/kernels.hpp>
-#include <krona/boundary/detail/kernels.hpp>
+#include <krona/boundary/layout.hpp>
+#include <krona/numerics/gradient/correction.hpp>
 #include <krona/boundary/patches.hpp>
 #include <krona/fields/fields_view.hpp>
 
@@ -18,41 +19,27 @@
 namespace krona::boundary::scalar {
 
 /// @brief Host dispatch per patch; typed conditions execute in portable Kokkos kernels.
-/// Setup is blocking and local. Apply is asynchronous; borrowed buffers must outlive submitted work.
+/// Borrows a shared BoundaryLayout; owns conditions, never a field. Finalize before dispatch.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal, class... CustomConditions>
 class Manager {
     static_assert(std::is_floating_point_v<Real>);
     using memory_space = typename Exec::memory_space;
-    using mesh_view_type = mesh::device::MeshView<memory_space>;
     using policy_type = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
     using condition_type = std::variant<std::monostate, FixedValue<Real>, NormalGradient<Real>,
-                                        FixedFlux<Real>, CustomConditions...>;
+                                        FixedFlux<Real>, std::remove_cvref_t<CustomConditions>...>;
 
 public:
-    /// @brief Copies patch labels/ranges and validates borrowed compute geometry once.
-    Manager(const mesh::host::MeshPart& host_mesh, mesh_view_type mesh_view, Exec exec) : catalog_(host_mesh), exec_(exec)
+    using layout_type = BoundaryLayout<Exec, Real>;
+    explicit Manager(const layout_type& layout) : layout_(&layout)
     {
         execution::require_kokkos();
-        const auto& s = mesh_view.sizes;
-        mpi::require(s.faces_grouped && s.n_own == host_mesh.n_own && s.n_cells == host_mesh.n_cells &&
-                     s.n_faces == host_mesh.n_faces && s.n_inner_faces == host_mesh.n_inner_faces,
-                     "Scalar boundary: host/compute mesh counts differ");
-        const std::size_t cells = static_cast<std::size_t>(s.n_cells);
-        const std::size_t boundary_count = static_cast<std::size_t>(s.n_faces - s.n_inner_faces);
-        mpi::require(cells <= std::numeric_limits<std::size_t>::max() - boundary_count,
-                     "Scalar boundary: extended size overflows size_t");
-        required_size_ = cells + boundary_count;
-        n_own_ = s.n_own;
-        mpi::guarded([&] {
-            conditions_.resize(catalog_.patches().size());
-            execution::complete(exec_, [&] {
-                geometry_ = boundary::detail::attach_geometry<Real>(exec_, mesh_view);
-            });
-        });
+        mpi::guarded([&] { conditions_.resize(catalog().patches().size()); });
     }
-
-    Manager(const mesh::host::MeshPart& host_mesh, mesh_view_type mesh_view, const Configuration& config, Exec exec)
-        : Manager(host_mesh, mesh_view, exec) { configure(config); }
+    Manager(const layout_type& layout, const Configuration& config) : Manager(layout)
+    { configure(config); }
+    
+    Manager(layout_type&&) = delete;
+    Manager(layout_type&&, const Configuration&) = delete;
 
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
@@ -66,16 +53,22 @@ public:
         static_assert(std::is_constructible_v<condition_type, C>, "Add the custom condition type to Manager's template parameters");
         mpi::require(patch_id >= 0 && static_cast<std::size_t>(patch_id) < conditions_.size(),
                      "Scalar boundary: unknown patch ID");
-        validate_condition(condition);
-        mpi::guarded([&] { conditions_[static_cast<std::size_t>(patch_id)] = std::move(condition); });
+        mpi::guarded([&] {
+            validate_condition(condition, catalog().patches()[static_cast<std::size_t>(patch_id)].range);
+            conditions_[static_cast<std::size_t>(patch_id)].template emplace<C>(std::move(condition));
+            finalized_ = false;
+        });
     }
 
     template<class C>
     void set_unlabelled(C condition)
     {
         static_assert(std::is_constructible_v<condition_type, C>);
-        validate_condition(condition);
-        mpi::guarded([&] { unlabelled_ = std::move(condition); });
+        mpi::guarded([&] {
+            validate_condition(condition, catalog().unlabelled());
+            unlabelled_.template emplace<C>(std::move(condition));
+            finalized_ = false;
+        });
     }
 
     /// @brief Binds all labelled patches by ID and exact name; requires explicit unlabelled handling when present.
@@ -90,24 +83,50 @@ public:
                              "Scalar boundary: configuration patch ID is out of range");
                 const std::size_t p = static_cast<std::size_t>(entry.patch_id);
                 mpi::require(!seen[p], "Scalar boundary: duplicate configuration patch ID");
-                mpi::require(entry.name == catalog_.patches()[p].name, "Scalar boundary: patch name does not match the mesh");
+                mpi::require(entry.name == catalog().patches()[p].name, "Scalar boundary: patch name does not match the mesh");
                 seen[p] = true;
-                conditions_[p] = from_config(entry.condition);
+                assign_config(conditions_[p], entry.condition);
             }
-            unlabelled_ = config.unlabelled ? from_config(*config.unlabelled) : condition_type{};
-            require_complete();
+            if (config.unlabelled) assign_config(unlabelled_, *config.unlabelled);
+            else unlabelled_.template emplace<std::monostate>();
+            finalized_ = false;
         });
     }
+
+    /// @brief Host-only completeness/provider checks. No kernels, fences or MPI communication.
+    void finalize()
+    {
+        mpi::guarded([&] {
+            require_complete();
+            needs_law_ = false;
+            const auto inspect = [&](PatchRange range, const condition_type& condition) {
+                std::visit([&](const auto& typed) {
+                    using C = std::remove_cvref_t<decltype(typed)>;
+                    if constexpr (!std::is_same_v<C, std::monostate>) {
+                        validate_condition(typed, range);
+                        needs_law_ = needs_law_ || requires_flux_law<C>;
+                    }
+                }, condition);
+            };
+            for (std::size_t p = 0; p < conditions_.size(); ++p)
+                inspect(catalog().patches()[p].range, conditions_[p]);
+            inspect(catalog().unlabelled(), unlabelled_);
+            finalized_ = true;
+        });
+    }
+    [[nodiscard]] bool finalized() const noexcept { return finalized_; }
 
     /// @brief Calls visitor(range, typed_condition) on the host for every nonempty local patch.
     /// The same dispatch supports field filling and solver-specific implicit assembly.
     template<class Visitor>
     void for_each_patch(Visitor&& visitor) const
     {
-        require_complete();
-        for (std::size_t p = 0; p < conditions_.size(); ++p)
-            visit(catalog_.patches()[p].range, conditions_[p], visitor);
-        visit(catalog_.unlabelled(), unlabelled_, visitor);
+        require_finalized();
+        mpi::guarded([&] {
+            for (std::size_t p = 0; p < conditions_.size(); ++p)
+                visit(catalog().patches()[p].range, conditions_[p], visitor);
+            visit(catalog().unlabelled(), unlabelled_, visitor);
+        });
     }
 
     /// @brief Calls a device-callable sink(context, typed_condition); no reconstruction or flux law is imposed.
@@ -117,58 +136,61 @@ public:
         mpi::require(std::isfinite(time), "Scalar boundary: time must be finite");
         for_each_patch([&](PatchRange range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
-            Kokkos::parallel_for("boundary/scalar/for_each_face", policy_type(exec_, range.begin, range.end),
-                boundary::detail::ForEachFace<memory_space, Real, Sink, C>{geometry_, sink, condition, time});
+            Kokkos::parallel_for("boundary/scalar/for_each_face", policy_type(execution_space(), range.begin, range.end),
+                boundary::detail::ForEachFace<memory_space, Real, Sink, C>{geometry_view(), sink, condition, time});
         });
     }
 
     /// @brief Fills boundary slots only; FixedFlux requires an explicit flux-to-gradient law.
-    template<class Field, class Law = NoFluxLaw, class Correction = NoCorrection>
-    void apply_async(Field field, Law law = {}, Correction correction = {}, Real time = 0) const
+    template<class Field, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
+    void apply_async(Field field, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const
     {
         static_assert(Field::components == 1, "Use apply_component_async for a selected component");
-        apply_component_async(field.component(0), law, correction, time);
+        apply_component_async(field.component(0), status, law, correction, time);
     }
 
     /// @brief Supports writable rank-one Kokkos Views, including strided component subviews.
-    template<class View, class Law = NoFluxLaw, class Correction = NoCorrection>
-    void apply_component_async(View field, Law law = {}, Correction correction = {}, Real time = 0) const
+    template<class View, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
+    void apply_component_async(View field, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const
     {
-        validate_view(field, required_size_);
+        validate_view(field, required_field_size());
         static_assert(!std::is_const_v<typename View::value_type>, "Boundary output must be writable");
         static_assert(std::is_floating_point_v<typename View::non_const_value_type>);
         validate_relation_inputs<Law>(correction);
-        for_each_face_async(detail::FillBoundary<Real, View, Law, Correction>{field, law, correction}, time);
+        for_each_face_async(detail::FillBoundary<Real, View, Law, Correction, typename Status<Exec>::flags_type>{
+            field, law, correction, status.device_flags(execution_space())}, time);
     }
 
     /// @brief Calls sink(context, relation); returned normal gradients already include the correction.
-    template<class Sink, class Law = NoFluxLaw, class Correction = NoCorrection>
-    void evaluate_async(Sink sink, Law law = {}, Correction correction = {}, Real time = 0) const
+    template<class Sink, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
+    void evaluate_async(Sink sink, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const
     {
         validate_relation_inputs<Law>(correction);
-        for_each_face_async(detail::EvaluateBoundary<Real, Sink, Law, Correction>{sink, law, correction}, time);
+        for_each_face_async(detail::EvaluateBoundary<Real, Sink, Law, Correction, typename Status<Exec>::flags_type>{
+            sink, law, correction, status.device_flags(execution_space())}, time);
     }
 
-    [[nodiscard]] GeometryView<memory_space> geometry_view() const noexcept { return geometry_; }
-    [[nodiscard]] const PatchCatalog& catalog() const noexcept { return catalog_; }
-    [[nodiscard]] const Exec& execution_space() const noexcept { return exec_; }
-    [[nodiscard]] std::size_t required_field_size() const noexcept { return required_size_; }
+    [[nodiscard]] GeometryView<memory_space> geometry_view() const noexcept { return layout_->geometry_view(); }
+    [[nodiscard]] const PatchCatalog& catalog() const noexcept { return layout_->catalog(); }
+    [[nodiscard]] const Exec& execution_space() const noexcept { return layout_->execution_space_instance(); }
+    [[nodiscard]] std::size_t required_field_size() const noexcept { return layout_->required_field_size(); }
+    [[nodiscard]] const layout_type& layout() const noexcept { return *layout_; }
 
 private:
-    PatchCatalog catalog_;
-    Exec exec_;
-    GeometryView<memory_space> geometry_;
+    const layout_type* layout_;
     std::vector<condition_type> conditions_;
     condition_type unlabelled_;
-    LocalIndex n_own_ = 0;
-    std::size_t required_size_ = 0;
+    bool finalized_ = false, needs_law_ = false;
+
+    void require_finalized() const
+    { mpi::require(finalized_, "Scalar boundary: call finalize() after assigning conditions"); }
 
     void require_complete() const
     {
         for (const auto& condition : conditions_)
             mpi::require(!std::holds_alternative<std::monostate>(condition),
                          "Scalar boundary: missing condition on a labelled patch");
-        mpi::require(!catalog_.needs_unlabelled() || !std::holds_alternative<std::monostate>(unlabelled_),
+        mpi::require(!catalog().needs_unlabelled() || !std::holds_alternative<std::monostate>(unlabelled_),
                      "Scalar boundary: unlabelled faces need an explicit condition");
     }
 
@@ -182,25 +204,26 @@ private:
         }, condition);
     }
 
-    static void validate_condition(FixedValue<Real> c)
-    { mpi::require(std::isfinite(c.value), "Scalar boundary: value must be finite"); }
-    static void validate_condition(NormalGradient<Real> c)
-    { mpi::require(std::isfinite(c.gradient), "Scalar boundary: normal gradient must be finite"); }
-    static void validate_condition(FixedFlux<Real> c)
-    { mpi::require(std::isfinite(c.flux), "Scalar boundary: flux must be finite"); }
-    // Custom conditions define their own parameter and backing-storage contracts.
-    template<class C> static void validate_condition(const C&) {}
+    template<class C>
+    static void validate_condition(const C& condition, PatchRange range)
+    {
+        if constexpr (is_fixed_value<C>) profile::validate<Exec>(condition.value, range);
+        else if constexpr (is_normal_gradient<C>) profile::validate<Exec>(condition.gradient, range);
+        else if constexpr (is_fixed_flux<C>) profile::validate<Exec>(condition.flux, range);
+        else if constexpr (requires { condition.template validate<Exec>(range); })
+            condition.template validate<Exec>(range);
+    }
 
-    static condition_type from_config(ConditionConfig config)
+    static void assign_config(condition_type& destination, ConditionConfig config)
     {
         mpi::require(std::isfinite(config.parameter) &&
                      std::abs(config.parameter) <= static_cast<double>(std::numeric_limits<Real>::max()),
                      "Scalar boundary: parameter is not representable in the selected precision");
         const Real value = static_cast<Real>(config.parameter);
         switch (config.kind) {
-            case Kind::FixedValue: return FixedValue<Real>{value};
-            case Kind::NormalGradient: return NormalGradient<Real>{value};
-            case Kind::FixedFlux: return FixedFlux<Real>{value};
+            case Kind::FixedValue: destination.template emplace<FixedValue<Real>>(FixedValue<Real>{value}); return;
+            case Kind::NormalGradient: destination.template emplace<NormalGradient<Real>>(NormalGradient<Real>{value}); return;
+            case Kind::FixedFlux: destination.template emplace<FixedFlux<Real>>(FixedFlux<Real>{value}); return;
         }
         mpi::fatal("Scalar boundary: unknown condition kind");
     }
@@ -219,25 +242,17 @@ private:
     template<class Law, class Correction>
     void validate_relation_inputs(const Correction& correction) const
     {
-        if constexpr (!FluxLaw<Law, Real>) {
-            bool needs_law = std::holds_alternative<FixedFlux<Real>>(unlabelled_);
-            for (const auto& condition : conditions_)
-                needs_law = needs_law || std::holds_alternative<FixedFlux<Real>>(condition);
-            mpi::require(!needs_law,
+        require_finalized();
+        if constexpr (!FluxLaw<Law, Real>)
+            mpi::require(!needs_law_,
                 "Scalar boundary: FIXED_FLUX requires a flux law with normal_gradient(context, flux)");
-        }
-        // Law/provider values are caller contracts; no application-time reduction or fence.
-        validate_correction(correction);
+        mpi::guarded([&] {
+            if constexpr (requires { correction.gradients.template validate<Exec>(layout_->owned_cells()); })
+                correction.gradients.template validate<Exec>(layout_->owned_cells());
+            else if constexpr (requires { correction.template validate<Exec>(layout_->owned_cells()); })
+                correction.template validate<Exec>(layout_->owned_cells());
+        });
     }
-
-    static void validate_correction(NoCorrection) {}
-    template<class X, class Y, class Z>
-    void validate_correction(GradientCorrection<X, Y, Z> correction) const
-    {
-        const std::size_t owned = static_cast<std::size_t>(n_own_);
-        validate_view(correction.x, owned); validate_view(correction.y, owned); validate_view(correction.z, owned);
-    }
-    template<class C> static void validate_correction(const C&) {}
 };
 
 } // namespace krona::boundary::scalar

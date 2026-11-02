@@ -134,7 +134,8 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     const auto comm = mpi::CommView::world();
     const auto f = bar(comm, duplicate, empty_last, all_empty);
     Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0, bc::FixedValue<Real>{1});
     const Real total = static_cast<Real>(f.total);
     if (kind == 1) boundary.set(1, bc::NormalGradient<Real>{2});
@@ -147,6 +148,7 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     if constexpr (std::is_same_v<Scalar, float>) options.linear.relative_tolerance = 1e-5;
     ts::SteadyDiffusion<Storage, Scalar, Exec, Real, Prec> solver(a.plan, a.assembly, field.view().component(1), options);
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
+    boundary.finalize();
     const auto result = solver.solve_owned(boundary, law);
     check(result.converged, "linear bar did not converge"); solver.solution().require_committed();
     auto h = snapshot(field, exec);
@@ -160,7 +162,10 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     }
     halo::Exchange<Storage, Exec> exchange(a.mesh.view(), a.mesh.halo_plan(), comm, 17, exec);
     exchange.add_component(field.view().component(1)); exchange.prepare(); exchange.exchange();
-    boundary.apply_component_async(field.view().component(1), law); boundary.execution_space().fence("test BC complete");
+    krona::boundary::scalar::Status<Exec> boundary_status_0(exec);
+    boundary_status_0.begin_async();
+    boundary.apply_component_async(field.view().component(1), boundary_status_0, law); boundary.execution_space().fence("test BC complete");
+    boundary_status_0.check();
     h = snapshot(field, exec);
     for (std::size_t i = 0; i < static_cast<std::size_t>(f.host.n_cells); ++i)
         test::near(static_cast<double>(h(i, 1)), 1+2*static_cast<double>(f.host.cell_centroid_x[i]), tolerance, "halo publication is incorrect");
@@ -179,12 +184,14 @@ void source_case(const Exec& exec) {
     for (auto& area : f.host.face_area) area *= 2;
     for (auto& metric : f.geometry.face_area_over_normal_dist) metric *= 2;
     Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{0});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{0});
     fields::FieldStorage<double, 3, Exec> field("source", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, 0);
     ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(0), settings());
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     Kokkos::View<Real*, Space> source("source density", static_cast<std::size_t>(f.host.n_own)); Kokkos::deep_copy(exec, source, Real{3});
     const ts::CellSource provider{source};
+    boundary.finalize();
     check(solver.solve_owned(boundary, law, provider).converged, "source solve failed");
     const auto h = snapshot(field, exec);
     for (LocalIndex i = 0; i < f.host.n_own; ++i) {
@@ -219,7 +226,8 @@ void variable_case(const Exec& exec) {
         f.geometry.face_interp_weight[face] = neighbour < 0 ? 0 : static_cast<GeometryReal>(width(gids[static_cast<std::size_t>(neighbour)])/(2*d));
     }
     Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
     fields::FieldStorage<double, 3, Exec> field("variable", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, 0);
     Kokkos::View<Real*, Space> coefficient("cell D", static_cast<std::size_t>(f.host.n_cells));
     auto hD = Kokkos::create_mirror(coefficient);
@@ -229,6 +237,7 @@ void variable_case(const Exec& exec) {
     Kokkos::deep_copy(exec, coefficient, hD);
     const auto law = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{coefficient}};
     ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(0), settings());
+    boundary.finalize();
     check(solver.solve_owned(boundary, law).converged, "variable coefficient solve failed");
     double resistance = 0; for (int i = 0; i < f.total; ++i) resistance += width(i)*(i%2 == 0 ? 1.0 : 0.25);
     const auto h = snapshot(field, exec);
@@ -246,7 +255,8 @@ void variable_case(const Exec& exec) {
 
 void shared_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
-    Boundary left(f.host, a.mesh.view(), exec), right(f.host, a.mesh.view(), exec);
+    krona::boundary::BoundaryLayout<Exec, Real> shared_layout(f.host, a.mesh.view(), exec);
+    Boundary left(shared_layout), right(shared_layout);
     left.set(0, bc::FixedValue<Real>{1}); left.set(1, bc::FixedValue<Real>{1+2*static_cast<Real>(f.total)});
     right.set(0, bc::FixedValue<Real>{3}); right.set(1, bc::FixedValue<Real>{3-static_cast<Real>(f.total)/2});
     fields::FieldStorage<double, 3, Exec, Kokkos::LayoutRight> field("two scalars", left.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, -77);
@@ -255,10 +265,18 @@ void shared_case(const Exec& exec) {
     check(first.assembly_plan().entry_map().owner_entries.data() == second.assembly_plan().entry_map().owner_entries.data(), "shared plan duplicated entry maps");
     check(first.operation().plan().geometry_view().face_normal_dist.data() == a.geometry.view().face_normal_dist.data(), "shared geometry was copied");
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
+    left.finalize();
+    right.finalize();
     check(first.solve_owned(left, law).converged && second.solve_owned(right, law).converged, "shared scalar solve failed");
     halo::Exchange<double, Exec> exchange(a.mesh.view(), a.mesh.halo_plan(), comm, 19, exec);
     exchange.add_component(field.view().component(0)); exchange.add_component(field.view().component(1)); exchange.prepare(); exchange.exchange();
-    left.apply_component_async(field.view().component(0), law); right.apply_component_async(field.view().component(1), law); exec.fence("two scalars published");
+    krona::boundary::scalar::Status<Exec> boundary_status_1(exec);
+    boundary_status_1.begin_async();
+    krona::boundary::scalar::Status<Exec> boundary_status_2(exec);
+    boundary_status_2.begin_async();
+    left.apply_component_async(field.view().component(0), boundary_status_1, law); right.apply_component_async(field.view().component(1), boundary_status_2, law); exec.fence("two scalars published");
+    boundary_status_1.check();
+    boundary_status_2.check();
     const auto h = snapshot(field, exec);
     for (LocalIndex i = 0; i < f.host.n_cells; ++i) {
         const auto j = static_cast<std::size_t>(i); const double x = static_cast<double>(f.host.cell_centroid_x[j]);
@@ -378,13 +396,15 @@ void assembly_case(const Exec& exec) {
         assembly_product(scalar_float, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
         assembly_product(block2, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
         assembly_product(block3, f, mesh.view(), connectivity.view(), assembly.entry_map(), exec);
-        Boundary boundary(f.host, mesh.view(), exec);
+        krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, mesh.view(), exec);
+        Boundary boundary(boundary_layout);
         boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
         td::DiffusionOperator<> diffusion(first);
         ts::AssemblyStatus<Exec> status(exec);
         linalg::Vector<double, Exec> rhs(scalar.distribution());
         const auto target = ts::make_system_view(scalar, rhs, assembly, exec);
         status.begin_async();
+        boundary.finalize();
         diffusion.add_system_async(target, boundary, status);
         (void)status.check(comm); scalar.commit(); rhs.commit();
     }
@@ -392,9 +412,11 @@ void assembly_case(const Exec& exec) {
 
 void nonconvergence(const Exec& exec) {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
     fields::FieldStorage<double, 3, Exec> field("unchanged", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, -77);
     ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(1), settings(true));
+    boundary.finalize();
     const auto result = solver.solve_owned(boundary);
     check(!result.converged && !result.iterations_started, "zero iteration solve started Krylov iterations");
     const auto h = snapshot(field, exec);
@@ -422,7 +444,8 @@ void additive_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm, true);
     for (auto& volume : f.host.cell_volume) volume *= 3;
     Attached a(f, comm, exec);
-    Boundary boundary(f.host, a.mesh.view(), exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0, bc::FixedValue<Real>{1}); boundary.set(1, bc::FixedValue<Real>{2});
     linalg::CsrMatrix<double, Exec> matrix(a.assembly.pattern());
     linalg::Vector<double, Exec> rhs(matrix.distribution());
@@ -431,6 +454,7 @@ void additive_case(const Exec& exec) {
     td::DiffusionOperator<> diffusion(a.plan);
     ts::SourceOperator<> source(a.mesh.view(), exec);
     ts::AssemblyStatus<Exec> status(exec); status.begin_async();
+    boundary.finalize();
     diffusion.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}});
     source.add_async(target.rhs, status, ts::UniformSource<Real>{4});
     diffusion.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}});
@@ -464,7 +488,8 @@ void residual_case_impl(const Exec& exec) {
     for(auto& v:f.host.face_area)v*=2;
     for(auto& v:f.geometry.face_area_over_normal_dist)v*=2;
     Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0,bc::FixedValue<Real>{2}); boundary.set(1,Robin{1,2,3});
     fields::FieldStorage<Storage,3,Exec,Layout> field("residual/input",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Storage,3,Exec,Layout> residual("residual/output",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
@@ -483,6 +508,7 @@ void residual_case_impl(const Exec& exec) {
     Kokkos::deep_copy(exec,target.values,0.0); Kokkos::deep_copy(exec,target.rhs,0.0);
     td::DiffusionOperator<> diffusion(a.plan); ts::SourceOperator<> source(a.mesh.view(),exec);
     ts::AssemblyStatus<Exec> status(exec); status.begin_async();
+    boundary.finalize();
     diffusion.add_system_async(target,boundary,status,law);
     source.add_async(target.rhs,status,ts::UniformSource<Real>{3});
     diffusion.add_residual_async(values,residual.view().component(1),boundary,status,law);
@@ -514,12 +540,14 @@ void matrix_free_case(const Exec& exec) {
     mesh::device::AuxConnectivityStorage<Exec> connectivity(f.connectivity,exec);
     mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
     td::DiffusionPlan<Exec,Real> plan(f.host,mesh.view(),connectivity.view(),geometry.view(),comm,exec);
-    Boundary boundary(f.host,mesh.view(),exec);
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});
     Kokkos::View<Real*,Space> field("matrix-free values",static_cast<std::size_t>(f.host.n_cells));
     Kokkos::View<Real*,Space> residual("matrix-free residual",static_cast<std::size_t>(f.host.n_own));
     Kokkos::deep_copy(exec,field,Real{3});Kokkos::deep_copy(exec,residual,Real{7});
     td::DiffusionOperator<> diffusion(plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
+    boundary.finalize();
     diffusion.add_residual_async(field,residual,boundary,status);
     const auto report=status.check(comm);
     check(!report.has_diffusion_anchor,"pure Neumann contribution acquired a value anchor");
@@ -530,7 +558,8 @@ void matrix_free_case(const Exec& exec) {
 
 void bsr_slice_case(const Exec& exec) {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
-    Boundary boundary(f.host,a.mesh.view(),exec);boundary.set(0,bc::FixedValue<Real>{1});boundary.set(1,bc::FixedValue<Real>{2});
+    krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);boundary.set(0,bc::FixedValue<Real>{1});boundary.set(1,bc::FixedValue<Real>{2});
     linalg::CsrMatrix<double,Exec> scalar(a.assembly.pattern());
     linalg::BsrPattern<Exec> pattern(a.assembly.pattern(),3);linalg::BsrMatrix<double,Exec> block(pattern);
     linalg::Vector<double,Exec> b(scalar.distribution()),bb(block.distribution());
@@ -539,6 +568,7 @@ void bsr_slice_case(const Exec& exec) {
     Kokkos::deep_copy(exec,scalar_target.values,7.0);Kokkos::deep_copy(exec,scalar_target.rhs,11.0);
     const auto block_target=ts::make_system_view(block,bb,a.assembly,exec,1);
     ts::AssemblyStatus<Exec> status(exec);status.begin_async();td::DiffusionOperator<> diffusion(a.plan);
+    boundary.finalize();
     diffusion.add_system_async(scalar_target,boundary,status);diffusion.add_system_async(block_target,boundary,status);
     (void)status.check(comm);scalar.commit();block.commit();b.commit();bb.commit();
     const auto sv=copy_view(scalar.read_values(exec),exec);
@@ -560,10 +590,12 @@ void rejected(const Exec& exec) {
         f.geometry.face_interp_weight.clear();
     }
     if constexpr (Which == 6) f.host.face_centroid_y[static_cast<std::size_t>(f.host.n_inner_faces)] = GeometryReal{0.25};
-    Attached a(f, comm, exec); Boundary boundary(f.host, a.mesh.view(), exec);
+    Attached a(f, comm, exec); krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(boundary_layout);
     boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
     if constexpr (Which == 1) { boundary.set(0, bc::NormalGradient<Real>{0}); boundary.set(1, bc::NormalGradient<Real>{0}); }
     if constexpr (Which == 7) boundary.set(1, NegativeRelation{});
+    boundary.finalize();
     if constexpr (Which == 1) {
         fields::FieldStorage<double, 1, Exec> field("neumann", static_cast<std::size_t>(f.host.n_own), fields::FieldLocation::Custom, exec);
         field.fill_async(exec, 0);
