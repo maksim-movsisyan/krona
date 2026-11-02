@@ -69,9 +69,9 @@ void run_exchange(const Exec& exec, std::string_view mode)
     const auto owned = static_cast<std::size_t>(fixture.mesh.n_own);
     krona::fields::FieldsManager<> fields({owned, n, 0, 0}, exec);
     using Location = krona::fields::FieldLocation;
-    const auto scalar = fields.template add_field<T>("scalar", Location::Cell);
-    const auto vector = fields.template add_field<T, 3>("vector", Location::Cell);
-    const auto tensor = fields.template add_field<T, 9, Kokkos::LayoutRight>("tensor", Location::Cell);
+    const auto scalar = fields.template add_field_async<T>("scalar", Location::Cell);
+    const auto vector = fields.template add_field_async<T, 3>("vector", Location::Cell);
+    const auto tensor = fields.template add_field_async<T, 9, Kokkos::LayoutRight>("tensor", Location::Cell);
 
     // Two independent groups are active together; finish order differs from start order.
     krona::halo::Exchange<T> primary(mesh.view(), mesh.halo_plan(), comm, 910, exec);
@@ -191,7 +191,7 @@ void selected(const Exec& exec)
     constexpr std::size_t boundary = 2;
     using Layout = Kokkos::LayoutRight;
     krona::fields::FieldsManager<> fields({.own_cells = owned, .cells = cells, .bfaces = boundary}, exec);
-    const auto field = fields.add_field<Real, 5, Layout>("selected", krona::fields::FieldLocation::CellExtnd);
+    const auto field = fields.add_field_async<Real, 5, Layout>("selected", krona::fields::FieldLocation::CellExtnd);
     krona::halo::Exchange<Real> halo(mesh.view(), mesh.halo_plan(), comm, 915, exec);
     halo.add_component(field.component(3));
     halo.add_component(field.component(1));
@@ -255,7 +255,7 @@ void loopback(const Exec& exec)
     const std::array<std::size_t, 2> offsets{0, 3};
     const HaloPlanView plan{peers, offsets, offsets};
     krona::fields::FieldsManager<> fields({3, 6, 0, 0}, exec);
-    const auto field = fields.add_field<Real, 3>("loopback", krona::fields::FieldLocation::Cell);
+    const auto field = fields.add_field_async<Real, 3>("loopback", krona::fields::FieldLocation::Cell);
     krona::halo::Exchange<> halo(mesh, plan, comm, 913, exec);
     halo.add_field(field);
     halo.prepare();

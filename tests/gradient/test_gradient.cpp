@@ -145,7 +145,7 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
         }
     }
     Kokkos::deep_copy(exec, q.kokkos_view(), hq);
-    output.fill(exec, T{-999});
+    output.fill_async(exec, T{-999});
     auto hg = output.create_host_buffer();
     if (distributed) {
         krona::halo::Exchange<T> exchange(mesh.view(), mesh.halo_plan(), comm, 931, exec);

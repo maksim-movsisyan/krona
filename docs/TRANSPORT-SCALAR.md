@@ -50,9 +50,9 @@ fields::FieldStorage<StorageReal, 3, Exec> g(
     "gradient/phi", cells, fields::FieldLocation::Custom, exec);
 fields::FieldStorage<StorageReal, 1, Exec> theta(
     "limiter/phi", cells, fields::FieldLocation::Custom, exec);
-phi.fill(exec, StorageReal{0}); // Replace with the chosen finite initial guess.
-g.fill(exec, StorageReal{0});   // Initial boundary correction uses zero gradients.
-theta.fill(exec, StorageReal{1});
+phi.fill_async(exec, StorageReal{0}); // Replace with the chosen finite initial guess.
+g.fill_async(exec, StorageReal{0});   // Initial boundary correction uses zero gradients.
+theta.fill_async(exec, StorageReal{1});
 const auto q = phi.view().component(0);
 
 cv::ConvectionPlan<Exec, Real> cplan(host, m, conn.view(), comm, exec);

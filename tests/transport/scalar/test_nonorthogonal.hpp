@@ -157,7 +157,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     SkewBoundary boundary(f.host,a.mesh.view(),exec);configure_affine(boundary,f,mixed);
     fields::FieldStorage<Storage,2,Exec,Layout> field("affine",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Storage,3,Exec,Layout> gradients("gradients",static_cast<std::size_t>(f.host.n_cells),fields::FieldLocation::Custom,exec);
-    field.fill(exec,Storage{-33});gradients.fill(exec,std::numeric_limits<Storage>::quiet_NaN());
+    field.fill_async(exec,Storage{-33});gradients.fill_async(exec,std::numeric_limits<Storage>::quiet_NaN());
     const auto phi=field.view().component(1);const auto m=a.mesh.view();
     using Policy=Kokkos::RangePolicy<Exec,Kokkos::IndexType<LocalIndex>>;
     Kokkos::parallel_for("test/affine_owned",Policy(exec,0,f.host.n_own),KOKKOS_LAMBDA(LocalIndex i){
@@ -287,7 +287,7 @@ void corrected_empty(const Exec& exec)
         boundary.set(0,bc::FixedValue<Real>{0});boundary.set(1,bc::FixedValue<Real>{0});
         fields::FieldStorage<Real,1,Exec> field("empty field",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
         fields::FieldStorage<Real,3,Exec> gradients("empty gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
-        field.fill(exec,Real{0});gradients.fill(exec,Real{0});
+        field.fill_async(exec,Real{0});gradients.fill_async(exec,Real{0});
         const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
             gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};
         const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}};
@@ -311,7 +311,7 @@ void corrected_iterations(const Exec& exec)
     SkewBoundary boundary(f.host,a.mesh.view(),exec);configure_affine(boundary,f);
     fields::FieldStorage<Real,1,Exec> field("iterate",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Real,3,Exec> gradients("iterate gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
-    field.fill(exec,Real{0});gradients.fill(exec,Real{0});const auto phi=field.view().component(0);
+    field.fill_async(exec,Real{0});gradients.fill_async(exec,Real{0});const auto phi=field.view().component(0);
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
         gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};

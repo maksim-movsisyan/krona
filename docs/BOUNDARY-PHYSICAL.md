@@ -114,9 +114,9 @@ const auto primitive = ph::primitive_views(
     pressure.view(), velocity.view(), temperature.view());
 
 krona::execution::complete(exec, [&] {
-    pressure.fill(exec, Real{100000});
-    velocity.fill(exec, Real{10}); // Example owner velocity: (10, 10, 10).
-    temperature.fill(exec, Real{300});
+    pressure.fill_async(exec, Real{100000});
+    velocity.fill_async(exec, Real{10}); // Example owner velocity: (10, 10, 10).
+    temperature.fill_async(exec, Real{300});
     manager.apply_async(primitive);
 }); // Initial field fills and boundary kernels are complete.
 ```

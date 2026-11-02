@@ -28,16 +28,16 @@ public:
 
     /// @brief Creates a mesh-associated field; zero initialization is queued by default.
     template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft>
-    auto add_field(const std::string& name, FieldLocation location,
+    auto add_field_async(const std::string& name, FieldLocation location,
                    FieldInitialization initialization = FieldInitialization::Zero)
     {
         mpi::require(location != FieldLocation::Custom, "Custom fields require an explicit size");
-        return add_field<T, Components, Layout>(name, entity_count(location), location, initialization);
+        return add_field_async<T, Components, Layout>(name, entity_count(location), location, initialization);
     }
 
     /// @brief Accepts explicit sizes; mesh-associated counts must match FieldSizes.
     template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft>
-    auto add_field(const std::string& name, std::size_t count, FieldLocation location,
+    auto add_field_async(const std::string& name, std::size_t count, FieldLocation location,
                    FieldInitialization initialization = FieldInitialization::Zero)
     {
         if (name.empty()) detail::field_error(name, "empty field name");
@@ -52,7 +52,7 @@ public:
         // Commit ownership before dispatch: an insertion failure has no pending fill.
         registry_.emplace(name, std::move(field));
         if (initialization == FieldInitialization::Zero) {
-            try { storage->fill(exec_, T{}); }
+            try { storage->fill_async(exec_, T{}); }
             catch (...) { exec_.fence("KRONA fields: drain failed initialization"); throw; }
         }
         return storage->view();
@@ -93,11 +93,11 @@ public:
 
     /// @brief Enqueues a uniform fill of all entities and components.
     template<class T = StorageReal, int Components = 1, class Layout = Kokkos::LayoutLeft>
-    void fill_field(const std::string& name, const std::type_identity_t<T>& value)
+    void fill_field_async(const std::string& name, const std::type_identity_t<T>& value)
     {
         auto* field = find_field<T, Components, Layout>(name);
         if (!field) detail::field_error(name, "invalid fill field or type/components/layout mismatch");
-        field->fill(exec_, value);
+        field->fill_async(exec_, value);
     }
 
     /// @brief Returns immutable metadata or nullptr; stored names cannot be changed.

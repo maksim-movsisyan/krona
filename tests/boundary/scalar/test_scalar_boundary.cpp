@@ -180,7 +180,7 @@ void custom_case(const Exec& exec)
     manager.set_unlabelled(scalar::NormalGradient<Real>{0});
     krona::fields::FieldStorage<Real, 1, Exec> a("a", 7, krona::fields::FieldLocation::Custom, exec);
     krona::fields::FieldStorage<Real, 1, Exec> b("b", 7, krona::fields::FieldLocation::Custom, exec);
-    a.fill(exec, Real{10}); b.fill(exec, Real{10});
+    a.fill_async(exec, Real{10}); b.fill_async(exec, Real{10});
     manager.apply_async(a.view(), scalar::NoFluxLaw{}, bc::NoCorrection{}, Real{1.5});
     manager.set(0, scalar::FixedValue<Real>{9});
     manager.apply_async(b.view());
@@ -458,7 +458,7 @@ void layout_case(const Exec& exec)
     scalar::Manager<Exec, Real> manager(m, mesh.view(), file_configuration(), exec);
     krona::fields::FieldStorage<Real, 3, Exec, Layout> field(
         "vector", manager.required_field_size() + 2, krona::fields::FieldLocation::Custom, exec);
-    field.fill(exec, Real{-17});
+    field.fill_async(exec, Real{-17});
     initialize_component(exec, field.view().component(1));
     manager.apply_component_async(field.view().component(1),
         transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}});

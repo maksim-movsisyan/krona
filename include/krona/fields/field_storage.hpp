@@ -92,7 +92,7 @@ public:
     [[nodiscard]] const_view_type view() const && = delete;
 
     /// @brief Enqueues a fill on exec; caller synchronizes before external access.
-    void fill(const Exec& exec, const T& value)
+    void fill_async(const Exec& exec, const T& value)
     { Kokkos::deep_copy(exec, buffer_, value); }
 
     /// @brief Allocates an independent, uninitialized host buffer with matching layout.

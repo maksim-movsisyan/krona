@@ -384,7 +384,7 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
 
     krona::fields::FieldStorage<Storage,1,Exec> scalar{
         "scalar",boundary.required_field_size(),krona::fields::FieldLocation::Custom,exec};
-    scalar.fill(exec,Storage{0});
+    scalar.fill_async(exec,Storage{0});
     const auto field = scalar.view().component(0);
     const auto owned_field = Kokkos::subview(field,std::pair<std::size_t,std::size_t>{0,owned_count});
     auto snapshot = scalar.create_host_buffer(); // Reused for all output snapshots and initialization.

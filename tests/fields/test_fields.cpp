@@ -25,12 +25,12 @@ void registry(const Exec& exec)
 {
     FieldsManager<> fields({.own_cells = 2, .cells = 3, .faces = 7, .nodes = 6}, exec);
     complete(exec, [&] {
-        fields.add_field("owned", FieldLocation::OwnCell);
-        fields.add_field("density", FieldLocation::Cell);
-        fields.add_field<Real, 3>("velocity", FieldLocation::Cell);
-        fields.add_field<int>("face_flag", FieldLocation::Face);
-        fields.add_field("node_value", FieldLocation::Node);
-        fields.add_field("scratch", 4, FieldLocation::Custom);
+        fields.add_field_async("owned", FieldLocation::OwnCell);
+        fields.add_field_async("density", FieldLocation::Cell);
+        fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell);
+        fields.add_field_async<int>("face_flag", FieldLocation::Face);
+        fields.add_field_async("node_value", FieldLocation::Node);
+        fields.add_field_async("scratch", 4, FieldLocation::Custom);
     });
     equal(fields.get_field_size("owned"), std::size_t{2}, "Owned field size");
     equal(fields.get_field_size("density"), std::size_t{3}, "Cell size includes ghosts");
@@ -70,12 +70,12 @@ void registry(const Exec& exec)
 void soa(const Exec& exec)
 {
     FieldsManager<> fields({.own_cells = 5, .cells = 5}, exec);
-    auto state = fields.add_field<Real, 2>("state", FieldLocation::Cell,
+    auto state = fields.add_field_async<Real, 2>("state", FieldLocation::Cell,
                                          FieldInitialization::Uninitialized);
     auto component = state.component(1);
     const auto* original = state.data();
     for (int field = 0; field < 64; ++field)
-        fields.add_field<int>("unrelated_" + std::to_string(field), 2,
+        fields.add_field_async<int>("unrelated_" + std::to_string(field), 2,
                               FieldLocation::Custom, FieldInitialization::Uninitialized);
     equal(state.data(), original, "Adding a field does not invalidate cached views");
     equal(fields.get_field_view<Real, 2>("state").data(), original,
@@ -105,7 +105,7 @@ void soa(const Exec& exec)
 void transfers(const Exec& exec)
 {
     FieldsManager<> fields({.own_cells = 4, .cells = 4}, exec);
-    auto velocity = fields.add_field<Real, 3>("velocity", FieldLocation::Cell,
+    auto velocity = fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell,
                                             FieldInitialization::Uninitialized);
     auto upload = fields.create_host_buffer<Real, 3>("velocity");
     for (std::size_t cell = 0; cell < 4; ++cell)
@@ -129,7 +129,7 @@ void transfers(const Exec& exec)
     auto unchanged = host_copy<Real, 3>(fields, "velocity");
     equal(unchanged(0, 0), Real{0}, "Editing a snapshot does not edit the field");
     complete(exec, [&] {
-        fields.fill_field<Real, 3>("velocity", Real{7});
+        fields.fill_field_async<Real, 3>("velocity", Real{7});
         Kokkos::deep_copy(exec, upload, velocity.kokkos_view());
     });
     equal(snapshot(0, 0), Real{99}, "A later fill does not edit the snapshot");
@@ -142,9 +142,9 @@ void transfers(const Exec& exec)
 void tensor(const Exec& exec)
 {
     FieldsManager<> fields({.own_cells = 2, .cells = 3}, exec);
-    auto velocity = fields.add_field<Real, 3>("velocity", FieldLocation::Cell,
+    auto velocity = fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell,
                                             FieldInitialization::Uninitialized);
-    auto stress = fields.add_field<Real, 9>("stress", FieldLocation::OwnCell,
+    auto stress = fields.add_field_async<Real, 9>("stress", FieldLocation::OwnCell,
                                           FieldInitialization::Uninitialized);
     auto host_velocity = fields.create_host_buffer<Real, 3>("velocity");
     auto host_stress = fields.create_host_buffer<Real, 9>("stress");
@@ -178,9 +178,9 @@ void empty(const Exec& exec)
 {
     FieldsManager<> fields({}, exec);
     complete(exec, [&] {
-        fields.add_field("density", FieldLocation::Cell);
-        fields.add_field<Real, 3>("velocity", FieldLocation::Node);
-        fields.add_field<int>("scratch", 0, FieldLocation::Custom);
+        fields.add_field_async("density", FieldLocation::Cell);
+        fields.add_field_async<Real, 3>("velocity", FieldLocation::Node);
+        fields.add_field_async<int>("scratch", 0, FieldLocation::Custom);
     });
     const auto density = fields.get_field_view<Real>("density");
     check(density.empty(), "Zero-sized field has an empty view");
@@ -194,8 +194,8 @@ void empty(const Exec& exec)
         Kokkos::parallel_for("test/empty_field", Policy(exec, 0, 0), KOKKOS_LAMBDA(Index cell) {
             density(static_cast<std::size_t>(cell)) = Real{1};
         });
-        fields.fill_field<Real>("density", Real{2});
-        fields.fill_field<Real, 3>("velocity", Real{3});
+        fields.fill_field_async<Real>("density", Real{2});
+        fields.fill_field_async<Real, 3>("velocity", Real{3});
         fields.copy_from_host_async<Real, 3>("velocity", host_velocity);
     });
     check(density.empty(), "Empty operations preserve the view shape");
@@ -206,26 +206,26 @@ void fill_types(const Exec& exec)
 {
     using Default = krona::StorageReal;
     FieldsManager<> fields({.own_cells = 3, .cells = 4}, exec);
-    fields.add_field("scalar", FieldLocation::Cell);
-    fields.add_field<int>("integer", FieldLocation::Cell);
-    fields.add_field<float>("single", FieldLocation::Cell);
-    fields.add_field<double>("double", FieldLocation::Cell);
+    fields.add_field_async("scalar", FieldLocation::Cell);
+    fields.add_field_async<int>("integer", FieldLocation::Cell);
+    fields.add_field_async<float>("single", FieldLocation::Cell);
+    fields.add_field_async<double>("double", FieldLocation::Cell);
 
     const double const_value = 3.5;
     double mutable_value = 4.5;
-    fields.fill_field("scalar", 0); // An int literal must not select an int field.
+    fields.fill_field_async("scalar", 0); // An int literal must not select an int field.
     auto zeros = fields.copy_to_host_async<>("scalar");
-    fields.fill_field("scalar", 2.5); // Also exercises double-to-float in FP32 builds.
+    fields.fill_field_async("scalar", 2.5); // Also exercises double-to-float in FP32 builds.
     auto literals = fields.copy_to_host_async<>("scalar");
-    fields.fill_field("scalar", const_value);
+    fields.fill_field_async("scalar", const_value);
     auto constants = fields.copy_to_host_async<>("scalar");
-    fields.fill_field("scalar", mutable_value);
+    fields.fill_field_async("scalar", mutable_value);
     auto variables = fields.copy_to_host_async<>("scalar");
-    fields.fill_field("scalar", Default{5});
+    fields.fill_field_async("scalar", Default{5});
     auto temporaries = fields.copy_to_host_async<>("scalar");
-    fields.fill_field<int>("integer", 7.0);
-    fields.fill_field<float>("single", 1.25);
-    fields.fill_field<double>("double", 6);
+    fields.fill_field_async<int>("integer", 7.0);
+    fields.fill_field_async<float>("single", 1.25);
+    fields.fill_field_async<double>("double", 6);
     auto integers = fields.copy_to_host_async<int>("integer");
     auto singles = fields.copy_to_host_async<float>("single");
     auto doubles = fields.copy_to_host_async<double>("double");
@@ -248,9 +248,9 @@ void aos(const Exec& exec)
 {
     using Layout = Kokkos::LayoutRight;
     FieldsManager<> fields({.own_cells = 5, .cells = 5}, exec);
-    auto velocity = fields.add_field<Real, 3, Layout>(
+    auto velocity = fields.add_field_async<Real, 3, Layout>(
         "velocity", FieldLocation::Cell, FieldInitialization::Uninitialized);
-    auto stress = fields.add_field<Real, 9, Layout>(
+    auto stress = fields.add_field_async<Real, 9, Layout>(
         "stress", FieldLocation::Cell, FieldInitialization::Uninitialized);
     auto z = velocity.component(2);
     const auto* original = velocity.data();
@@ -299,7 +299,7 @@ void aos(const Exec& exec)
                       "AoS tensors retain logical row-major component numbering");
     }
 
-    complete(exec, [&] { fields.fill_field<Real, 3, Layout>("velocity", 8); });
+    complete(exec, [&] { fields.fill_field_async<Real, 3, Layout>("velocity", 8); });
     auto filled = host_copy<Real, 3, Layout>(fields, "velocity");
     for (std::size_t cell = 0; cell < 5; ++cell)
         for (int c = 0; c < 3; ++c)
@@ -310,9 +310,9 @@ void aos(const Exec& exec)
 void extended(const Exec& exec)
 {
     FieldsManager<> fields({.own_cells = 2, .cells = 4, .faces = 9, .bfaces = 3, .nodes = 6}, exec);
-    auto scalar = fields.add_field("extended", FieldLocation::CellExtnd);
-    fields.add_field("cells", FieldLocation::Cell);
-    fields.add_field("explicit_extended", 7, FieldLocation::CellExtnd);
+    auto scalar = fields.add_field_async("extended", FieldLocation::CellExtnd);
+    fields.add_field_async("cells", FieldLocation::Cell);
+    fields.add_field_async("explicit_extended", 7, FieldLocation::CellExtnd);
     equal(scalar.size(), std::size_t{7}, "Extended fields include all cells and boundary faces");
     equal(fields.get_field_size("cells"), std::size_t{4}, "Cell fields exclude appended boundary entries");
     equal(fields.get_field_size("explicit_extended"), std::size_t{7}, "Explicit extended size matches FieldSizes");
@@ -340,7 +340,7 @@ void extended(const Exec& exec)
         equal(populated(i), static_cast<Real>(i + 31 + (i >= 4 ? 100 : 0)),
               "Boundary updates preserve the owned and ghost cell portions");
 
-    complete(exec, [&] { fields.fill_field("extended", -2); });
+    complete(exec, [&] { fields.fill_field_async("extended", -2); });
     auto filled = host_copy(fields, "extended");
     for (std::size_t i = 0; i < 7; ++i)
         equal(filled(i), Real{-2}, "Fill includes owned, ghost and boundary entries");
@@ -366,7 +366,7 @@ void storage(const Exec& exec)
     auto host = field.create_host_buffer();
     check(host.data() != values.data(), "A host buffer is independent even with host field storage");
     complete(exec, [&] {
-        field.fill(exec, Real{4});
+        field.fill_async(exec, Real{4});
         Kokkos::parallel_for("test/standalone_storage", Policy(exec, 0, 4), KOKKOS_LAMBDA(Index i) {
             values.y(static_cast<std::size_t>(i)) += static_cast<Real>(i);
         });

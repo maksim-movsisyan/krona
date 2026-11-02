@@ -94,7 +94,7 @@ eu::AssemblyStatus<Exec> status(exec);
 const Real time = 0;
 primitive_halo.exchange();
 boundary.apply_async(physical, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
-r.fill(exec, AccumulationReal{0});
+r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(first_order, output, boundary, status, eu::PreparedExterior{}, time);
 const auto report = status.check(comm); // Completes kernels and checks all ranks.
@@ -139,7 +139,7 @@ rec::compute_limiters_async<Real>(exec, stencil, unlimited, rec::field_pack(thet
     rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
 reconstruction_halo.exchange(); // Gradients and factors for real MPI ghosts.
 
-r.fill(exec, AccumulationReal{0});
+r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(high_order, output, boundary, status, eu::EvaluatedExterior<>{}, time);
 const auto high_order_report = status.check(comm);
@@ -205,7 +205,7 @@ For each evaluated side:
 ## Split calls and range contracts
 
 ```cpp
-r.fill(exec, AccumulationReal{0});
+r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_inner_residual_async(high_order, output, status,
     {0, m.sizes.n_internal_faces}); // Owned/owned faces.

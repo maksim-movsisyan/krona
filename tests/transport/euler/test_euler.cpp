@@ -86,7 +86,7 @@ void affine(const Exec& exec)
     near(tvd(0,0),-static_cast<double>(f.mass),tolerance(),"TVD internal face");near(tvd(0,4),-static_cast<double>(f.energy),tolerance(),"TVD batch energy");
     fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
     const auto first_order=fields.snapshot();fields.zero(exec);
-    krona::fields::FieldStorage<S,1,Exec> factors("factors",2,krona::fields::FieldLocation::Custom,exec);factors.fill(exec,S{0});
+    krona::fields::FieldStorage<S,1,Exec> factors("factors",2,krona::fields::FieldLocation::Custom,exec);factors.fill_async(exec,S{0});
     const auto limited=eu::Reconstruction{rec::LimitedLinear{},rec::data(fields.primitive(),rec::gradient_pack(gradients.view()),rec::field_pack(factors.view())),
         rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
     status.begin_async();op.add_inner_residual_async(limited,fields.output(),status);(void)status.check(comm);
@@ -101,7 +101,7 @@ void reconstruction_fallback(const Exec& exec)
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);const auto expected=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,15,Exec> gradients("bad_increment",2,krona::fields::FieldLocation::Custom,exec);
-    gradients.fill(exec,S{0});auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
+    gradients.fill_async(exec,S{0});auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
     h(0,0)=-10.;h(1,0)=10.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
     status.begin_async();op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::SecondOrderUpwind{}),fields.output(),status);
     const auto report=status.check(comm);check(report.reconstruction_fallbacks==4,"two bad sides per two row evaluations");
@@ -175,7 +175,7 @@ void partition_algebra(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();
     auto initialize=[&](auto& fields,const Grid& grid){
-        fields.initialize(grid,exec,true);fields.velocity.fill(exec,S{0});const auto velocity=fields.velocity.view();
+        fields.initialize(grid,exec,true);fields.velocity.fill_async(exec,S{0});const auto velocity=fields.velocity.view();
         Kokkos::parallel_for("test/subsonic",Kokkos::RangePolicy<Exec>(exec,0,static_cast<int>(fields.velocity.size())),
             SetSubsonicVelocity<decltype(velocity)>{velocity});
     };
@@ -297,7 +297,7 @@ void reject_alias(const Exec& exec)
 }
 void reject_state(const Exec& exec)
 {
-    const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);fields.pressure.fill(exec,S{-1});
+    const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);fields.pressure.fill_async(exec,S{-1});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);status.begin_async();
     op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
 }

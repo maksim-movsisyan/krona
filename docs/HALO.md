@@ -39,10 +39,10 @@ int main(int argc, char** argv)
         const auto cells = static_cast<std::size_t>(host_mesh.n_cells);
         const int rank = comm.rank();
         fields::FieldsManager<Exec> state{{.own_cells = owned, .cells = cells}, exec};
-        const auto density = state.add_field<Real>(
+        const auto density = state.add_field_async<Real>(
             "density", fields::FieldLocation::Cell,
             fields::FieldInitialization::Uninitialized);
-        const auto velocity = state.add_field<Real, 3, Kokkos::LayoutRight>(
+        const auto velocity = state.add_field_async<Real, 3, Kokkos::LayoutRight>(
             "velocity", fields::FieldLocation::Cell,
             fields::FieldInitialization::Uninitialized);
 

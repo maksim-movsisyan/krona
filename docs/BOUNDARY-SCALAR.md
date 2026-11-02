@@ -83,7 +83,7 @@ fields::FieldStorage<Real, 1, Exec> temperature{
     fields::FieldLocation::CellExtnd, exec};
 
 krona::execution::complete(exec, [&] {
-    temperature.fill(exec, Real{350}); // Example initial state.
+    temperature.fill_async(exec, Real{350}); // Example initial state.
     manager.apply_async(temperature.view());
 }); // The fill and boundary kernels have completed.
 ```

@@ -106,7 +106,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     // Extended storage: owned cells, MPI ghosts, then one face-centroid value per boundary face.
     krona::fields::FieldStorage<krona::StorageReal, 1, Exec> temperature{
         "temperature", boundary.required_field_size(), krona::fields::FieldLocation::Custom, exec};
-    temperature.fill(exec, static_cast<krona::StorageReal>(initial_temperature));
+    temperature.fill_async(exec, static_cast<krona::StorageReal>(initial_temperature));
 
     ts::SteadyDiffusionOptions options;
     options.linear.relative_tolerance = std::is_same_v<krona::SolverReal, float> ? 2.0e-6 : 1.0e-8;

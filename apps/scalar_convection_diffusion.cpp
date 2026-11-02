@@ -392,7 +392,7 @@ void report_balance(const Convection& convection, const Diffusion& diffusion, Fi
 
     krona::fields::FieldStorage<krona::StorageReal, 1, Exec> scalar{
         "scalar", boundary.required_field_size(), krona::fields::FieldLocation::Custom, exec};
-    scalar.fill(exec, krona::StorageReal{0});
+    scalar.fill_async(exec, krona::StorageReal{0});
     const auto field = scalar.view().component(0);
     krona::halo::Exchange<krona::StorageReal, Exec> halo{mesh.view(),
         {host_mesh.nb_ranks, host_mesh.send_offsets, host_mesh.recv_offsets}, comm, 0, exec,

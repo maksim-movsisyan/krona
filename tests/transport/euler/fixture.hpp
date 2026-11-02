@@ -110,7 +110,7 @@ struct Fields {
     auto reconstruction(const Grid& grid)const{
         return eu::Reconstruction{rec::FirstOrder{},rec::data(primitive()),rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
     }
-    void zero(const Exec& exec,A value=0){mass.fill(exec,value);momentum.fill(exec,value);energy.fill(exec,value);}
+    void zero(const Exec& exec,A value=0){mass.fill_async(exec,value);momentum.fill_async(exec,value);energy.fill_async(exec,value);}
     void initialize(const Grid& grid,const Exec& exec,bool affine=false){
         auto p=pressure.create_host_buffer();auto t=temperature.create_host_buffer();auto u=velocity.create_host_buffer();
         for(std::size_t i=0;i<pressure.size();++i){const auto q=profile(i<grid.host.cell_centroid_x.size()?static_cast<double>(grid.host.cell_centroid_x[i]):0.,affine);

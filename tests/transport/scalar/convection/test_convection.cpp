@@ -313,7 +313,7 @@ void limiting(const Exec& exec)
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f,comm,exec);
     Boundary boundary(f.host,a.mesh.view(),exec); conditions(boundary);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec); Inputs input(a,exec);
-    input.factors.fill(exec,0.0); input.gradients.fill(exec,Kokkos::quiet_NaN_v<double>);
+    input.factors.fill_async(exec,0.0); input.gradients.fill_async(exec,Kokkos::quiet_NaN_v<double>);
     const auto reconstruction = cv::make_reconstruction(a.plan,rec::Limited<rec::Tvd<>>{},input.data(),1);
     Kokkos::View<double*,Space> plain("plain",f.host.n_own),limited("limited",f.host.n_own);
     Kokkos::deep_copy(exec,plain,0.0);Kokkos::deep_copy(exec,limited,0.0);
@@ -605,7 +605,7 @@ void frozen_system(const Exec& exec)
     df::DiffusionOperator diffusion(diffusion_plan);cv::ConvectionOperator convection(a.plan);
     ts::SourceOperator source(a.mesh.view(),exec);ts::AssemblyStatus<Exec> status(exec);
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{Real{0.5}}};
-    Inputs input(a,exec);input.values.fill(exec,0.0);input.gradients.fill(exec,0.0);
+    Inputs input(a,exec);input.values.fill_async(exec,0.0);input.gradients.fill_async(exec,0.0);
     const auto reconstruction=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},input.data());
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution()),x(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);

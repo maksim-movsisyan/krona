@@ -112,7 +112,7 @@ The plan requires matching host/device counts, grouped face intervals, `FaceCell
 linalg::FaceAssemblyPlan<Exec> assembly(host, comm, exec);
 fields::FieldStorage<StorageReal, 1, Exec> phi(
     "phi", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
-phi.fill(exec, StorageReal{300});
+phi.fill_async(exec, StorageReal{300});
 
 ts::SteadyDiffusionOptions options;
 options.linear.relative_tolerance = 1e-6;

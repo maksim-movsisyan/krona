@@ -7,6 +7,7 @@
 | `krona/fields/fields_manager.hpp` — `FieldsManager<Exec>` | Owns a registry of named fields and uses one execution-space instance for initialization, fills and transfers. |
 | `krona/fields/field_storage.hpp` — `FieldStorage<T, Components, Exec, Layout>` | Owns one allocation in `Exec::memory_space`. Can also be used without a manager. |
 | `krona/fields/fields_view.hpp` — `FieldView<T, Components, Space, Layout>` | Non-owning descriptor passed by value into kernels. `Space` is a memory space. |
+| `krona/fields/pack.hpp` — `pack(...)`, `field_pack(...)` | Combines fields/components into one non-owning component pack. Preserves strides and supports mixed numeric types. |
 
 The module does not depend on a mesh object. It does not perform MPI communication, halo exchanges, boundary-condition updates or automatic resizing after mesh changes.
 
@@ -35,9 +36,9 @@ int main(int argc, char** argv)
         FieldsManager<Exec> fields{
             {.own_cells = 8, .cells = 10, .faces = 14, .bfaces = 4, .nodes = 12},
             exec};
-        const auto density = fields.add_field<Real>(
+        const auto density = fields.add_field_async<Real>(
             "density", FieldLocation::Cell, FieldInitialization::Uninitialized);
-        const auto velocity = fields.add_field<Real, 3>(
+        const auto velocity = fields.add_field_async<Real, 3>(
             "velocity", FieldLocation::Cell, FieldInitialization::Uninitialized);
 
         auto initial = fields.create_host_buffer<Real>("density");
@@ -46,7 +47,7 @@ int main(int argc, char** argv)
 
         krona::execution::complete(exec, [&] {
             fields.copy_from_host_async<Real>("density", initial);
-            fields.fill_field<Real, 3>("velocity", Real{0});
+            fields.fill_field_async<Real, 3>("velocity", Real{0});
             Kokkos::parallel_for("update_owned_cells",
                 Policy(exec, 0, fields.sizes().own_cells),
                 KOKKOS_LAMBDA(std::size_t cell) {
@@ -92,8 +93,8 @@ Counts must be consistent with the caller's indexing. In particular, `cells + bf
 Creation supports a location-derived size or an explicit count:
 
 ```cpp
-auto pressure = fields.add_field<Real>("pressure", FieldLocation::Cell);
-auto scratch = fields.add_field<Real, 3>(
+auto pressure = fields.add_field_async<Real>("pressure", FieldLocation::Cell);
+auto scratch = fields.add_field_async<Real, 3>(
     "scratch", 64, FieldLocation::Custom, FieldInitialization::Uninitialized);
 ```
 
@@ -152,6 +153,85 @@ const auto also_read_only = std::as_const(fields).get_field_view<Real>("density"
 
 Include `<utility>` for `std::as_const`. These views share the original allocation; neither copies values. Mutable-to-const view conversion is supported, but const-to-mutable conversion is not. Use the registered, non-const scalar type as the lookup template argument, including when looking up through a const manager.
 
+## Pack fields and components
+
+Include `<krona/fields/pack.hpp>`. `pack(...)` accepts one or more field views, rank-one Kokkos views or existing packs. A multicomponent field contributes all its components in their original order. Arguments are appended from left to right.
+
+Using `density` and `velocity` from the first example:
+
+```cpp
+#include <krona/fields/pack.hpp>
+
+const auto state = krona::fields::pack(density, velocity);
+static_assert(decltype(state)::components == 4);
+// Order: density, velocity.x, velocity.y, velocity.z.
+
+krona::execution::complete(exec, [&] {
+    Kokkos::parallel_for("write_packed_fields",
+        Policy(exec, 0, state.size()), KOKKOS_LAMBDA(std::size_t i) {
+            state(i, 0) = Real{1};
+            state(i, 1) = Real{2};
+            state(i, 2) = Real{3};
+            state(i, 3) = Real{4};
+        });
+});
+```
+
+These writes modify the original fields. Packing allocates no buffers, copies no values and retains no allocation ownership. SoA and AoS fields can be mixed: each component keeps its original entity stride.
+
+Select, reorder or regroup components explicitly:
+
+```cpp
+const auto selected = krona::fields::pack(velocity.component(2), density.component(0));
+const auto velocity_pack = krona::fields::field_pack(velocity); // Same as pack(velocity).
+const auto combined = krona::fields::pack(density, velocity_pack);
+// selected: velocity.z, density; combined: density, velocity.x, velocity.y, velocity.z.
+```
+
+### Access and mixed scalar types
+
+All components must use the same memory space and arithmetic scalar types. Their scalar types, layouts, lengths and constness may differ.
+
+| Access / property | Contract |
+| --- | --- |
+| `size()` / `empty()` | Common entity extent: the minimum input component length / whether it is zero. |
+| `components` | Compile-time total component count. |
+| `get<C>(i)` | Reference to component `C` in its exact scalar type; preserves that component's constness. `C` is a compile-time index. |
+| `component<C>()` | Unmanaged rank-one Kokkos view with the original scalar type/stride, restricted to `size()` entities. |
+| `operator()(i, c)` — same scalar type | Reference; writable only when every input component is mutable. |
+| `operator()(i, c)` — mixed scalar types | Value converted to `std::common_type_t` of the scalar types. Use `get<C>()` or `component<C>()` for writes. |
+| `homogeneous` / `writable` | Whether scalar types match, ignoring const / whether runtime-indexed access returns a writable reference. |
+| `as_const()` | Another pack of the same buffers with every component read-only. |
+
+For example, a mixed pack can combine floating-point data and integer flags:
+
+```cpp
+const auto samples = fields.add_field_async<float>("samples", FieldLocation::Cell);
+const auto flags = fields.add_field_async<int>("flags", FieldLocation::Cell);
+const auto mixed = krona::fields::pack(samples, density, flags);
+
+krona::execution::complete(exec, [&] {
+    Kokkos::parallel_for("write_mixed_fields",
+        Policy(exec, 0, mixed.size()), KOKKOS_LAMBDA(std::size_t i) {
+            mixed.get<0>(i) = 1.5f;    // float reference
+            mixed.get<1>(i) = Real{2}; // density's original scalar type
+            mixed.get<2>(i) = 7;       // int reference
+            // mixed(i, c) reads a common-type value; it is not a writable reference.
+        });
+});
+```
+
+Runtime reads use ordinary numeric conversion, which may lose precision for some type/value combinations. Typed access performs no conversion. Constness of the pack descriptor itself does not make its data read-only; use read-only input views or `as_const()`. With a mixture of mutable and read-only inputs, `get<C>()` preserves each input's individual access rights, while same-type runtime access is read-only for the whole pack.
+
+### Bounds, lifetime and execution
+
+- Indices satisfy `i < size()` and `c < components`. A longer input's tail is outside the pack's range. Any empty input makes the pack empty; never index an empty pack.
+- The caller ensures that entity `i` has the intended meaning in every component. Packing does not compare location tags or reconcile cell/face numbering.
+- `pack`/`field_pack` run on the host and only construct descriptors. They perform no allocation, data transfer, kernel launch, fence or MPI operation. Invalid nonempty pointer/stride descriptors terminate through `mpi::require`.
+- Pass a pack by value into a kernel whose execution space can access its memory space. Its element accessors, `component<C>()` and `as_const()` are device-callable and do not launch work.
+- Complete producers before consuming values, or enqueue dependent work on the same execution-space instance. Packing itself does not wait for initialization or uploads.
+- Keep all original allocations alive and at stable addresses until every user finishes. Passing an owning Kokkos view into `pack` does not transfer or retain ownership. Packed components may alias; the caller must avoid conflicting writes.
+
 ## Host buffers and transfers
 
 `create_host_buffer<T, N, Layout>(name)` allocates an independent host Kokkos buffer with the matching shape and layout. Values are uninitialized; no field values are copied. The buffer is independent even when the field itself resides in `HostSpace`.
@@ -176,13 +256,14 @@ The manager's optional `Exec exec = {}` selects the instance used for queued wor
 | --- | --- |
 | `FieldsManager(...)` | Host setup and validation only. Does not wait for previously submitted execution-space work. |
 | `FieldStorage(...)` | Allocates uninitialized storage; no initialization kernel or completion fence is requested by KRONA. |
-| `add_field(..., Zero)` | Allocates/registers storage and queues the `T{}` fill. Treat initialization as pending until completion. |
-| `add_field(..., Uninitialized)` | Allocates/registers storage; no fill is submitted. Values remain undefined until written. |
+| `add_field_async(..., Zero)` | Allocates/registers storage and queues the `T{}` fill. Treat initialization as pending until completion. |
+| `add_field_async(..., Uninitialized)` | Allocates/registers storage; no fill is submitted. Values remain undefined until written. |
 | `fill_field(...)` / `FieldStorage::fill(exec, value)` | Queue a fill of every entity and component. No KRONA completion wait. |
 | `copy_to_host_async(...)` | Allocates a host buffer and queues a download. Returned values may still be pending. |
 | `copy_from_host_async(...)` | Queues an upload. The source must remain alive and unchanged until completion. |
 | `create_host_buffer(...)` | Host allocation only; does not copy values or wait for field results. |
 | Lookup, metadata, `.view()`, `.as_const()`, `.component()` | Host/descriptor operations only; no field-data transfer or completion wait. |
+| `pack(...)` / `field_pack(...)` | Host descriptor construction only; no allocation, field-data copy, submitted work or completion wait. |
 | `FieldsManager::fence()` | **Blocking:** waits for work on the manager's execution-space instance. |
 | Destruction | Releases owned allocations; the module does not provide an automatic wait-for-users contract. Complete all users first. |
 
@@ -201,7 +282,7 @@ FieldStorage<Real, 3, Exec> standalone{
     "standalone", 64, FieldLocation::Custom, exec};
 const auto values = standalone.view();
 krona::execution::complete(exec, [&] {
-    standalone.fill(exec, Real{0});
+    standalone.fill_async(exec, Real{0});
 });
 ```
 

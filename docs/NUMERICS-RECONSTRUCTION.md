@@ -129,11 +129,11 @@ using Real = krona::StorageReal;
 using Space = typename Exec::memory_space;
 constexpr int N = 5;
 
-auto q = fields.template add_field<Real, N>(
+auto q = fields.template add_field_async<Real, N>(
     "reconstruction/q", krona::fields::FieldLocation::CellExtnd);
-auto g = fields.template add_field<Real, 3*N>(
+auto g = fields.template add_field_async<Real, 3*N>(
     "reconstruction/gradient", krona::fields::FieldLocation::Cell);
-auto theta = fields.template add_field<Real, N>(
+auto theta = fields.template add_field_async<Real, N>(
     "reconstruction/factor", krona::fields::FieldLocation::Cell);
 
 const auto m = device_mesh.view();

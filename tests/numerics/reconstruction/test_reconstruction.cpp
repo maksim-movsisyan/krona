@@ -239,7 +239,7 @@ void coupling(const Exec& exec)
         g("gx", 1, fields::FieldLocation::Custom, exec), zero("zero", 1, fields::FieldLocation::Custom, exec),
         factors("factors", 1, fields::FieldLocation::Custom, exec), shared("shared", 1, fields::FieldLocation::Custom, exec);
     const auto values = q.view(); const auto gx = g.view();
-    zero.fill(exec, 0.0);
+    zero.fill_async(exec, 0.0);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/coupled_inputs", IndexPolicy(exec, 0, 3), KOKKOS_LAMBDA(std::size_t c) {
             values(0, static_cast<int>(c)) = 0.5; values(1, static_cast<int>(c)) = 0; values(2, static_cast<int>(c)) = 1;
@@ -274,7 +274,7 @@ void ranges(const Exec& exec)
 {
     fields::FieldStorage<float, 3, Exec, Kokkos::LayoutRight> value("q", 7, fields::FieldLocation::Custom, exec),
         gradient("g", 5, fields::FieldLocation::Custom, exec), output("theta", 8, fields::FieldLocation::Custom, exec);
-    value.fill(exec, 2.0F); gradient.fill(exec, 0.0F); output.fill(exec, -7.0F);
+    value.fill_async(exec, 2.0F); gradient.fill_async(exec, 0.0F); output.fill_async(exec, -7.0F);
     const auto input = rec::data(rec::field_pack(value.view()), rec::gradients(rec::field_pack(gradient.view()), rec::field_pack(gradient.view()), rec::field_pack(gradient.view())));
     rec::compute_limiters_async<float>(exec, LineStencil{5}, input, rec::field_pack(output.view()), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {1, 4});
     const auto h = host_copy(output.view().kokkos_view(), exec);
@@ -492,7 +492,7 @@ void mesh_case(const Exec& exec, bool distributed)
     fields::FieldStorage<double, 2, Exec, Kokkos::LayoutRight> q("state", total, fields::FieldLocation::Custom, exec),
         theta("theta", static_cast<std::size_t>(f.mesh.n_cells), fields::FieldLocation::Custom, exec);
     fields::FieldStorage<double, 6, Exec, Kokkos::LayoutRight> gradient("gradient", static_cast<std::size_t>(f.mesh.n_cells), fields::FieldLocation::Custom, exec);
-    q.fill(exec, -99); theta.fill(exec, -99); gradient.fill(exec, -99);
+    q.fill_async(exec, -99); theta.fill_async(exec, -99); gradient.fill_async(exec, -99);
     const auto values = q.view(); const auto g = gradient.view();
     const auto mv = mesh.view();
     const auto owned = static_cast<std::size_t>(f.mesh.n_own);

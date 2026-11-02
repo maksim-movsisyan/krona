@@ -142,7 +142,7 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     else if (kind == 3) boundary.set(1, Robin{1, 1, Real{3}+Real{2}*total});
     else boundary.set(1, bc::FixedValue<Real>{Real{1}+Real{2}*total});
     fields::FieldStorage<Storage, 3, Exec, Layout> field("test/temperature", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
-    field.fill(exec, Storage{-77});
+    field.fill_async(exec, Storage{-77});
     auto options = settings();
     if constexpr (std::is_same_v<Scalar, float>) options.linear.relative_tolerance = 1e-5;
     ts::SteadyDiffusion<Storage, Scalar, Exec, Real, Prec> solver(a.plan, a.assembly, field.view().component(1), options);
@@ -180,7 +180,7 @@ void source_case(const Exec& exec) {
     for (auto& metric : f.geometry.face_area_over_normal_dist) metric *= 2;
     Attached a(f, comm, exec);
     Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{0});
-    fields::FieldStorage<double, 3, Exec> field("source", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, 0);
+    fields::FieldStorage<double, 3, Exec> field("source", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, 0);
     ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(0), settings());
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     Kokkos::View<Real*, Space> source("source density", static_cast<std::size_t>(f.host.n_own)); Kokkos::deep_copy(exec, source, Real{3});
@@ -220,7 +220,7 @@ void variable_case(const Exec& exec) {
     }
     Attached a(f, comm, exec);
     Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
-    fields::FieldStorage<double, 3, Exec> field("variable", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, 0);
+    fields::FieldStorage<double, 3, Exec> field("variable", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, 0);
     Kokkos::View<Real*, Space> coefficient("cell D", static_cast<std::size_t>(f.host.n_cells));
     auto hD = Kokkos::create_mirror(coefficient);
     for (std::size_t i = 0; i < hD.extent(0); ++i) {
@@ -249,7 +249,7 @@ void shared_case(const Exec& exec) {
     Boundary left(f.host, a.mesh.view(), exec), right(f.host, a.mesh.view(), exec);
     left.set(0, bc::FixedValue<Real>{1}); left.set(1, bc::FixedValue<Real>{1+2*static_cast<Real>(f.total)});
     right.set(0, bc::FixedValue<Real>{3}); right.set(1, bc::FixedValue<Real>{3-static_cast<Real>(f.total)/2});
-    fields::FieldStorage<double, 3, Exec, Kokkos::LayoutRight> field("two scalars", left.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, -77);
+    fields::FieldStorage<double, 3, Exec, Kokkos::LayoutRight> field("two scalars", left.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, -77);
     ts::SteadyDiffusion<double> first(a.plan, a.assembly, field.view().component(0), settings()), second(a.plan, a.assembly, field.view().component(1), settings());
     check(first.matrix().pattern().native().getRawPtr() == second.matrix().pattern().native().getRawPtr(), "shared plan duplicated the graph");
     check(first.assembly_plan().entry_map().owner_entries.data() == second.assembly_plan().entry_map().owner_entries.data(), "shared plan duplicated entry maps");
@@ -393,7 +393,7 @@ void assembly_case(const Exec& exec) {
 void nonconvergence(const Exec& exec) {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
     Boundary boundary(f.host, a.mesh.view(), exec); boundary.set(0, bc::FixedValue<Real>{0}); boundary.set(1, bc::FixedValue<Real>{1});
-    fields::FieldStorage<double, 3, Exec> field("unchanged", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill(exec, -77);
+    fields::FieldStorage<double, 3, Exec> field("unchanged", boundary.required_field_size(), fields::FieldLocation::Custom, exec); field.fill_async(exec, -77);
     ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(1), settings(true));
     const auto result = solver.solve_owned(boundary);
     check(!result.converged && !result.iterations_started, "zero iteration solve started Krylov iterations");
@@ -468,7 +468,7 @@ void residual_case_impl(const Exec& exec) {
     boundary.set(0,bc::FixedValue<Real>{2}); boundary.set(1,Robin{1,2,3});
     fields::FieldStorage<Storage,3,Exec,Layout> field("residual/input",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
     fields::FieldStorage<Storage,3,Exec,Layout> residual("residual/output",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
-    field.fill(exec,Storage{-77}); residual.fill(exec,Storage{13});
+    field.fill_async(exec,Storage{-77}); residual.fill_async(exec,Storage{13});
     const auto values=field.view().component(1);
     const auto centres=a.mesh.view().geometry.cell_centroid_x;
     using Policy=Kokkos::RangePolicy<Exec,Kokkos::IndexType<LocalIndex>>;
@@ -566,7 +566,7 @@ void rejected(const Exec& exec) {
     if constexpr (Which == 7) boundary.set(1, NegativeRelation{});
     if constexpr (Which == 1) {
         fields::FieldStorage<double, 1, Exec> field("neumann", static_cast<std::size_t>(f.host.n_own), fields::FieldLocation::Custom, exec);
-        field.fill(exec, 0);
+        field.fill_async(exec, 0);
         ts::SteadyDiffusion<double> solver(a.plan, a.assembly, field.view().component(0), settings());
         (void)solver.solve_owned(boundary);
     } else {
