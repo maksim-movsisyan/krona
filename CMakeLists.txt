@@ -312,6 +312,10 @@ endif()
 krona_require_target(Kokkos::kokkos)
 krona_interface(execution krona::build_config Kokkos::kokkos)
 
+# Header-only fixed-size math; independent of MPI and generated KRONA config.
+krona_interface(math Kokkos::kokkos)
+target_compile_features(krona_math INTERFACE cxx_std_20) 
+
 #==================================================================
 #==== COMPILE-TIME SANITY CHECK: KOKKOS BACKEND VERIFICATION ======
 #==================================================================

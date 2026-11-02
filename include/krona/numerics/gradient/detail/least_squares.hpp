@@ -1,41 +1,9 @@
 #pragma once
 
 #include <krona/numerics/gradient/detail/data.hpp>
+#include <krona/math/inverse_spd.hpp>
 
 namespace krona::numerics::gradient::detail {
-
-// Relative Cholesky pivot checks reject singular 3-D stencils instead of returning zero gradients.
-template<class Real>
-KOKKOS_INLINE_FUNCTION bool inverse_spd(const Real a[9], Real inverse[9], Real tolerance)
-{
-    Real l[9]{};
-    const Real threshold = tolerance * (a[0] + a[4] + a[8]);
-    for (int row = 0; row < 3; ++row) {
-        for (int col = 0; col <= row; ++col) {
-            Real v = a[3 * row + col];
-            for (int k = 0; k < col; ++k) v -= l[3 * row + k] * l[3 * col + k];
-            if (row == col) {
-                if (!Kokkos::isfinite(v) || v <= threshold) return false;
-                l[3 * row + col] = Kokkos::sqrt(v);
-            } else l[3 * row + col] = v / l[3 * col + col];
-        }
-    }
-    for (int col = 0; col < 3; ++col) {
-        Real y[3]{}, x[3]{};
-        for (int row = 0; row < 3; ++row) {
-            Real v = row == col ? Real{1} : Real{0};
-            for (int k = 0; k < row; ++k) v -= l[3 * row + k] * y[k];
-            y[row] = v / l[3 * row + row];
-        }
-        for (int row = 2; row >= 0; --row) {
-            Real v = y[row];
-            for (int k = row + 1; k < 3; ++k) v -= l[3 * k + row] * x[k];
-            x[row] = v / l[3 * row + row];
-            inverse[3 * row + col] = x[row];
-        }
-    }
-    return true;
-}
 
 template<class Space, class Coefficients, class Real>
 struct PrepareLeastSquares {
@@ -66,7 +34,7 @@ struct PrepareLeastSquares {
                 for (int col = 0; col < 3; ++col) a[3*row+col] += d[row]*d[col]/r2;
         }
         Real inverse[9];
-        if (!inverse_spd(a, inverse, static_cast<Real>(metrics.options.pivot_tolerance))) { ++bad; return; }
+        if (!math::inverse_spd(a, inverse, static_cast<Real>(metrics.options.pivot_tolerance))) { ++bad; return; }
         // A second pass avoids fixed-size neighbour buffers and their degree limits.
         for (auto k = begin; k < end; ++k) {
             Real d[3]; metrics.displacement(cell, conn.cell_faces(k), d);
