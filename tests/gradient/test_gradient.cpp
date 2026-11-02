@@ -142,7 +142,7 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
             T value = static_cast<T>(constant ? 9.0 : static_cast<double>(c+1)*(2*p[0]-3*p[1]+0.75*p[2]));
             if (distributed && i >= owned && i < static_cast<std::size_t>(m.n_cells)) value = std::numeric_limits<T>::quiet_NaN();
             if constexpr (N == 1) hq(i) = value; else hq(i, c) = value;
-        }
+        } 
     }
     Kokkos::deep_copy(exec, q.kokkos_view(), hq);
     output.fill_async(exec, T{-999});
@@ -152,7 +152,7 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
         for (int c = 0; c < N; ++c)
             exchange.add_component(Kokkos::subview(q.component(c), std::pair<std::size_t, std::size_t>{0, static_cast<std::size_t>(m.n_cells)}));
         exchange.prepare(); exchange.start(); exchange.finish_async();
-        op.apply(q.as_const(), g);
+        op.apply_async(q.as_const(), g);
         exchange.wait();
         // Gradient halo fills MPI ghosts; physical boundary entries retain the sentinel.
         krona::halo::Exchange<T> gradient_exchange(mesh.view(), mesh.halo_plan(), comm, 932, exec);
@@ -162,12 +162,12 @@ void numerical(const Exec& exec, Fixture data, gradient::Options options, bool c
         Kokkos::deep_copy(exec, hg, g.kokkos_view()); exec.fence();
     } else {
         if (ranges && owned > 0) {
-            op.apply(q, g, {0, 1});
+            op.apply_async(q, g, {0, 1});
             Kokkos::deep_copy(exec, hg, g.kokkos_view()); exec.fence();
             for (std::size_t i = 1; i < n; ++i) for (int c = 0; c < 3*N; ++c)
                 equal(hg(i, c), T{-999}, "Partial range preserves remaining cells");
-            op.apply(q, g, {1, m.n_own});
-        } else op.apply(q, g);
+            op.apply_async(q, g, {1, m.n_own});
+        } else op.apply_async(q, g);
         Kokkos::deep_copy(exec, hg, g.kokkos_view()); exec.fence();
     }
     const std::size_t ready = distributed ? static_cast<std::size_t>(m.n_cells) : owned;
@@ -297,7 +297,7 @@ void layouts_case(const Exec& exec)
         Kokkos::deep_copy(exec, g, -999.0);
 
         // Reverse input order and scatter axes into unrelated columns.
-        op.apply_set(
+        op.apply_set_async(
             std::array{column(input, 1), column(input, 0)},
             std::array{column(g, 5), column(g, 2)},
             std::array{column(g, 0), column(g, 7)},
@@ -309,7 +309,7 @@ void layouts_case(const Exec& exec)
         // Verify independently so this call cannot hide a batch error.
         Kokkos::deep_copy(exec, g, -999.0);
 
-        op.apply_component(
+        op.apply_component_async(
             column(input, 0),
             column(g, 6), column(g, 1), column(g, 0),
             {1, m.n_own});

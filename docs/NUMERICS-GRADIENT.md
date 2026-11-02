@@ -2,7 +2,13 @@
 
 `krona::numerics::gradient::GradientOperator` computes cell-centred gradients of scalar or multicomponent fields on a static 3D mesh. It writes owned cells only and reuses one mesh-dependent plan for different fields and repeated updates.
 
-Header: `<krona/numerics/gradient/gradient_operator.hpp>`.
+| Header | Purpose |
+| --- | --- |
+| `krona/numerics/gradient/types.hpp` | Schemes, interpolation options, requirements and owned-cell ranges. |
+| `krona/numerics/gradient/gradient_operator.hpp` | Prepared gradient operator and asynchronous application methods. |
+| `krona/numerics/gradient/correction.hpp` | Borrowed gradient adapters and local geometric projections. No dependency from other modules (except fields). |
+
+The implementation separates compact mesh descriptors (`detail/data.hpp`), LS preparation and its unchanged 3-D SPD inverse (`detail/least_squares.hpp`), and application kernels (`detail/kernels.hpp`).
 
 ## Input and output
 
@@ -20,7 +26,7 @@ The operator does not fill boundaries or exchange ghosts. In an application, upd
 
 Outputs need at least `n_own` entries per component. A call replaces gradients in the requested owned-cell interval; output initialization is not required for those cells. Other entries, including any allocated ghost or boundary slots, remain unchanged. Allocate `n_cells` output entries and perform a separate halo exchange if a later algorithm needs ghost gradients.
 
-For an input with `N` components, `apply()` writes `3*N` output components:
+For an input with `N` components, `apply_async()` writes `3*N` output components:
 
 | Input component | Output components |
 | --- | --- |
@@ -143,7 +149,7 @@ for (krona::LocalIndex f = host_mesh.n_inner_faces; f < host_mesh.n_faces; ++f) 
 auto observed = grad_phi.create_host_buffer();
 krona::execution::complete(exec, [&] {
     Kokkos::deep_copy(exec, phi.view().kokkos_view(), initial);
-    op.apply(phi.view().as_const(), grad_phi.view());
+    op.apply_async(phi.view().as_const(), grad_phi.view());
     Kokkos::deep_copy(exec, observed, grad_phi.view().kokkos_view());
 });
 // Host reads are now safe. For a well-conditioned stencil:
@@ -166,14 +172,14 @@ When a requirement mask is `None`, an empty corresponding device auxiliary view 
 
 | Method | Inputs and outputs |
 | --- | --- |
-| `apply(input, output, range = {})` | Input `FieldView<T, N>` and mutable output `FieldView<T, 3*N>`. Computes every input component with the ordering above. |
-| `apply_component(input, x, y, z, range = {})` | One rank-one input view and three rank-one output views. Supports selected, strided components. |
-| `apply_set(inputs, x, y, z, range = {})` | Four `std::array` objects with the same positive compile-time length. Entry `k` selects input scalar `inputs[k]` and its three output views. Fuses the batch into each algorithm's traversal. |
+| `apply_async(input, output, range = {})` | Input `FieldView<T, N>` and mutable output `FieldView<T, 3*N>`. Computes every input component with the ordering above. |
+| `apply_component_async(input, x, y, z, range = {})` | One rank-one input view and three rank-one output views. Supports selected, strided components. |
+| `apply_set_async(inputs, x, y, z, range = {})` | Four `std::array` objects with the same positive compile-time length. Entry `k` selects input scalar `inputs[k]` and its three output views. Fuses the batch into each algorithm's traversal. |
 
 For one component of an existing multicomponent field:
 
 ```cpp
-op.apply_component(phi.view().component(0),
+op.apply_component_async(phi.view().component(0),
                    grad_phi.view().component(0),
                    grad_phi.view().component(1),
                    grad_phi.view().component(2));
@@ -198,14 +204,14 @@ krona::execution::complete(exec, [&] {
             q(i, 0) = source(i);
             q(i, 1) = Real{2}*source(i);
         });
-    op.apply_set(std::array{q.component(0), q.component(1)},
+    op.apply_set_async(std::array{q.component(0), q.component(1)},
                  std::array{g.component(0), g.component(3)},
                  std::array{g.component(1), g.component(4)},
                  std::array{g.component(2), g.component(5)});
 });
 ```
 
-For this example, `op.apply(q, g)` would produce the same component mapping. `apply_set()` is useful when the desired inputs or output positions do not form one complete field. Each individual `std::array` has one concrete view type; use compatible view descriptors when collecting components from different layouts. All inputs and outputs in a batch still share one scalar precision.
+For this example, `op.apply_async(q, g)` would produce the same component mapping. `apply_set_async()` is useful when the desired inputs or output positions do not form one complete field. Each individual `std::array` has one concrete view type; use compatible view descriptors when collecting components from different layouts. All inputs and outputs in a batch still share one scalar precision.
 
 ## Compute a subset of owned cells
 
@@ -213,14 +219,74 @@ For this example, `op.apply(q, g)` would produce the same component mapping. `ap
 
 ```cpp
 const krona::LocalIndex split = host_mesh.n_own / 2;
-op.apply(phi.view(), grad_phi.view(), {0, split});
-op.apply(phi.view(), grad_phi.view(), {split, -1});
+op.apply_async(phi.view(), grad_phi.view(), {0, split});
+op.apply_async(phi.view(), grad_phi.view(), {split, -1});
 op.execution_space().fence("Both owned ranges ready");
 ```
 
 Ranges must satisfy `0 <= begin <= end <= n_own`. An empty range submits no kernels. Views must still satisfy the full input and owned-output extent contracts, even for partial or empty ranges. Input neighbours may lie outside the selected range.
 
 The cell schemes traverse only selected cell rows. `GreenGaussFace` clears only the selected cells but scans all local faces for each nonempty range call; splitting its application into many ranges repeats that scan. Output entries outside the selected interval are preserved.
+
+## Project gradients for explicit corrections
+
+`correction.hpp` provides a numerical projection, not a boundary condition or a diffusion flux. It reads existing gradients and applies a caller-supplied geometric vector. It does not compute or exchange gradients itself.
+
+Create a borrowed reader from an existing `3*N` gradient field:
+
+```cpp
+#include <krona/numerics/gradient/correction.hpp>
+
+const auto gradients = gradient::cell_gradients(grad_phi.view()); // Scalar component 0.
+gradients.template validate<Exec>(owned);
+const gradient::GradientCorrection correction{gradients};
+```
+
+For scalar component `c`, use `cell_gradients(field, c)`: it selects field components `3*c`, `3*c+1`, `3*c+2`. Alternatively, `cell_gradients(gx, gy, gz)` accepts three rank-one Kokkos views, including strided views. The adapter stores read-only `fields::ComponentDescriptor`s and the minimum input extent; it does not retain allocation ownership. All three components share a memory space, may have different floating-point types, and are read in their common scalar type. `size()` returns the accessible cell count. Optional `validate<Exec>(count)` checks accessibility, extent and pointer/stride descriptors locally without fencing or inspecting values.
+
+For a cell gradient, the projection is:
+
+$$
+\delta_P=\mathbf t\cdot\nabla\phi_P.
+$$
+
+Evaluate it inside your own kernel:
+
+```cpp
+using CorrectionPolicy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
+Kokkos::View<Real*, typename Exec::memory_space> increments("gradient/increments", owned);
+Kokkos::parallel_for("project_gradients", CorrectionPolicy(exec, 0, owned),
+    KOKKOS_LAMBDA(std::size_t cell) {
+        increments(cell) = correction.increment(cell, Real{0.25}, Real{-0.5}, Real{0.125});
+    });
+// For the affine field above, every result is approximately 2.09375.
+// Keep increments and gradient storage alive until this kernel finishes.
+```
+
+For an interior face, `interior(owner, neighbour, owner_weight, tx, ty, tz)` returns:
+
+$$
+\delta_f=\mathbf t\cdot
+\left[w\nabla\phi_P+(1-w)\nabla\phi_N\right].
+$$
+
+`owner_weight` multiplies the **owner** gradient. The caller supplies the actual interpolation weight; there is no automatic midpoint, clamping or geometry lookup.
+
+| Method | Inputs and result |
+| --- | --- |
+| `increment(cell, tx, ty, tz)` | One cell index and a geometric vector; returns its dot product with that cell's gradient. |
+| `interior(owner, neighbour, w, tx, ty, tz)` | Two cell indices, owner weight and geometric vector; returns the projection of the interpolated gradient. |
+| `operator()(context)` | Structural adapter: reads `context.owner`, `tx`, `ty`, `tz`, then calls `increment`. |
+| `interior(context, tx, ty, tz)` | Structural adapter: reads `context.owner`, `neighbour`, `owner_weight`. |
+| `NoCorrection` | Same evaluation forms, returning zero without a gradient provider. |
+
+A boundary tangential increment uses `t = x_face - x_owner - h*n`, where `n` is the unit outward normal and `h = (x_face - x_owner).dot(n)`. An interior nonorthogonal diffusion projection can use `t = A*(n - d/(d.dot(n)))`, where `d = x_neighbour - x_owner`, `n` is the unit owner-to-neighbour normal, `A` is the face area and the denominator is nonzero. These vectors have different units: the caller chooses the vector and applies any transport coefficient, flux sign or other scaling. No area or coefficient is added by the correction policy itself. Boundary and diffusion modules retain their existing implementations until explicitly migrated to this interface.
+
+`GradientCorrection` can also hold a custom device-callable provider with the interface `gradients(cell)[axis]`, axes `0,1,2`. Such a provider may read another layout or compute gradients on demand; it need not use `CellGradients` or allocate storage. Its validity and lifetime are caller contracts.
+
+All accessed indices must be in range; gradient components, geometric vectors and interpolation weights must be finite. Evaluation does not validate or clamp numerical data and may overflow like ordinary arithmetic. A consuming operator must check the resulting increment according to its error policy. Method scalar arguments use a floating-point type; their `Real` determines projection arithmetic and the result type, and gradient values are converted to it. If an interior neighbour is an MPI ghost, exchange its gradient before evaluation; owned gradients alone are insufficient.
+
+The reader and correction are passed by value into kernels. Construction performs no field-data copies, allocations, kernel launches or MPI. Evaluation runs within the caller's kernel, with no additional submission or synchronization. Order gradient production and correction consumption on the same `Exec` instance, or synchronize their dependency explicitly. Keep all backing allocations alive at stable addresses until every consumer finishes.
 
 ## Precision and plan storage
 
@@ -244,7 +310,9 @@ The plan borrows compact mesh/auxiliary descriptors and owns only its least-squa
 | --- | --- |
 | `requirements(options)` | Host-only mask query; no kernels or allocation. |
 | `GradientOperator(...)` | Blocking local setup. Validates descriptors/topology/required geometry, prepares least-squares coefficients if selected, and fences `exec` before returning. |
-| `apply()`, `apply_component()`, `apply_set()` | Validate descriptors/range on the host, then submit kernels to the stored execution-space instance. No final fence, despite the absence of an `_async` suffix. |
+| `apply_async()`, `apply_component_async()`, `apply_set_async()` | Validate descriptors/range on the host, then submit kernels to the stored execution-space instance. No final fence; output values may still be pending on return. |
+| `cell_gradients(...)`, reader `validate<Exec>(count)` | Host descriptor setup/checks only; no allocation, kernels or completion wait. |
+| `GradientCorrection` / `NoCorrection` evaluation | Local device-callable arithmetic inside the caller's kernel; no submission, synchronization or MPI. |
 | `execution_space().fence()` | Waits for work on that instance. |
 
 The operator performs no MPI communication, halo exchange, or barrier during either construction or application. A local fence does not wait for other ranks. A synchronous backend may complete kernels during submission; the application methods provide no portable completion guarantee on return.

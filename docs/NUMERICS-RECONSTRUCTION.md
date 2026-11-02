@@ -159,7 +159,7 @@ Once the application has filled the current owned and boundary values, perform a
 ```cpp
 exec.fence("q ready for halo exchange");
 values_halo.exchange();
-gradient_operator.apply(q, g);
+gradient_operator.apply_async(q, g);
 
 const auto raw = rec::data(rec::field_pack(q), rec::gradient_pack(g));
 rec::compute_limiters_async(exec, stencil, raw, rec::field_pack(theta));

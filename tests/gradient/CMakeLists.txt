@@ -17,7 +17,7 @@ foreach(case IN ITEMS constant affine weighted layouts range scale precision deg
     set_tests_properties("gradient.${case}" PROPERTIES
         LABELS "gradient;numerical"
         PROCESSORS "${ranks}"
-        TIMEOUT 120
+        TIMEOUT 120 
         RUN_SERIAL TRUE
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
@@ -33,3 +33,37 @@ add_test(NAME gradient.singular
 set_tests_properties(gradient.singular PROPERTIES
     LABELS "gradient;numerical" TIMEOUT 120 RUN_SERIAL TRUE
     ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+
+add_executable(krona_test_gradient_correction test_correction.cpp)
+target_link_libraries(krona_test_gradient_correction PRIVATE krona_test_support krona::gradient krona::halo)
+
+foreach(case IN ITEMS boundary interior layouts custom extents distributed)
+    set(ranks 1)
+    if(case STREQUAL "distributed")
+        set(ranks 2)
+    endif()
+    add_test(NAME "gradient.correction.${case}"
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
+            ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_gradient_correction>" ${MPIEXEC_POSTFLAGS} "${case}")
+    set_tests_properties("gradient.correction.${case}" PROPERTIES
+        LABELS "gradient;numerical" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endforeach()
+
+foreach(case IN ITEMS short component)
+    if(case STREQUAL "short")
+        set(expected "Gradient correction: gradient extent is too short")
+    else()
+        set(expected "Gradient correction: component index is out of range")
+    endif()
+    add_test(NAME "gradient.correction.reject_${case}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DTEST_EXECUTABLE=$<TARGET_FILE:krona_test_gradient_correction>"
+            "-DCASE=reject_${case}" "-DEXPECT=${expected}"
+            "-DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}" "-DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}"
+            "-DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}" "-DMPIEXEC_POSTFLAGS=${MPIEXEC_POSTFLAGS}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_failure.cmake")
+    set_tests_properties("gradient.correction.reject_${case}" PROPERTIES
+        LABELS "gradient;validation" TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endforeach()

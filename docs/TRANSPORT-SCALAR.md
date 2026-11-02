@@ -130,7 +130,7 @@ auto prepare_iterate = [&] {
     phi_halo.exchange();
     // Use initialized/previous gradients for the first boundary sampling pass.
     boundary.apply_async(phi.view(), law, correction, time);
-    gradient.apply(phi.view(), g.view()); // Writes owned gradients only.
+    gradient.apply_async(phi.view(), g.view()); // Writes owned gradients only.
     // Refresh gradient-dependent boundary samples before limiter preparation.
     boundary.apply_async(phi.view(), law, correction, time);
     rec::compute_limiters_async<Real>(exec, stencil, unlimited,

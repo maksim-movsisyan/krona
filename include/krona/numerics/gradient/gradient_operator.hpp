@@ -3,9 +3,9 @@
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/fields/fields_view.hpp>
-#include <krona/mesh/device/detail/array_transfer.hpp>
 #include <krona/mesh/device/validation.hpp>
 #include <krona/numerics/gradient/detail/kernels.hpp>
+#include <krona/numerics/gradient/detail/least_squares.hpp>
 
 #include <array>
 #include <cmath>
@@ -33,20 +33,22 @@ public:
                      geometry_view_type geometry, Options options, Exec exec = {})
         : metrics_{mesh_view, connectivity, geometry, options}, exec_(exec)
     {
-        validate_descriptors();
-        execution::complete(exec, [&](){
-            validate_mesh(mesh_view, connectivity, geometry);
-            std::size_t bad = 0;
-            const bool least_squares = options.scheme == Scheme::LeastSquaresFace;
-            if (least_squares) {
-                const auto count = connectivity.cell_faces.extent(0);
-                mpi::require(count <= std::numeric_limits<std::size_t>::max() / (3 * sizeof(Coefficient)),
-                             "Gradient: coefficient allocation overflows size_t");
-                coefficients_ = coefficients_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"), count);
-                Kokkos::parallel_reduce("gradient/prepare_least_squares", policy_type(exec_, 0, mesh_view.sizes.n_own),
-                    detail::PrepareLeastSquares<memory_space, coefficients_type, double>{metrics_, coefficients_}, bad);
-                mpi::require(bad == 0, "Gradient: singular/ill-conditioned 3-D LS stencil or invalid sample displacement");
-            }
+        mpi::guarded([&] {
+            validate_descriptors();
+            execution::complete(exec, [&](){
+                validate_mesh(mesh_view, connectivity, geometry);
+                std::size_t bad = 0;
+                const bool least_squares = options.scheme == Scheme::LeastSquaresFace;
+                if (least_squares) {
+                    const auto count = connectivity.cell_faces.extent(0);
+                    mpi::require(count <= std::numeric_limits<std::size_t>::max() / (3 * sizeof(Coefficient)),
+                                 "Gradient: coefficient allocation overflows size_t");
+                    coefficients_ = coefficients_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"), count);
+                    Kokkos::parallel_reduce("gradient/prepare_least_squares", policy_type(exec_, 0, mesh_view.sizes.n_own),
+                        detail::PrepareLeastSquares<memory_space, coefficients_type, double>{metrics_, coefficients_}, bad);
+                    mpi::require(bad == 0, "Gradient: singular/ill-conditioned 3-D LS stencil or invalid sample displacement");
+                }
+            });
         });
     }
 
@@ -57,14 +59,14 @@ public:
 
     /// @brief Computes all input components; output component 3*c+axis is d(input_c)/d(axis).
     template<class T, int N, class InputSpace, class InputLayout, class U, class OutputSpace, class OutputLayout>
-    void apply(fields::FieldView<T, N, InputSpace, InputLayout> input,
-               fields::FieldView<U, 3*N, OutputSpace, OutputLayout> output, CellRange range = {}) const
+    void apply_async(fields::FieldView<T, N, InputSpace, InputLayout> input,
+                     fields::FieldView<U, 3*N, OutputSpace, OutputLayout> output, CellRange range = {}) const
     {
         using Value = std::remove_const_t<T>;
         static_assert(std::is_same_v<Value, U> && std::is_floating_point_v<Value>);
         static_assert(Kokkos::SpaceAccessibility<Exec, InputSpace>::accessible &&
                       Kokkos::SpaceAccessibility<Exec, OutputSpace>::accessible);
-        detail::Batch<Value, static_cast<std::size_t>(N)> batch;
+        detail::Batch<Value, static_cast<std::size_t>(N), memory_space> batch;
         for (int c = 0; c < N; ++c) {
             const std::size_t index = static_cast<std::size_t>(c);
             batch.input[index] = input_component<Value>(input.component(c));
@@ -77,20 +79,23 @@ public:
 
     /// @brief Computes one scalar component into three rank-one Views, including strided subviews.
     template<class Input, class OutputX, class OutputY, class OutputZ>
-    void apply_component(Input input, OutputX x, OutputY y, OutputZ z, CellRange range = {}) const
+    void apply_component_async(Input input, OutputX x, OutputY y, OutputZ z, CellRange range = {}) const
     {
-        apply_set(std::array{input}, std::array{x}, std::array{y}, std::array{z}, range);
+        apply_set_async(std::array{input}, std::array{x}, std::array{y}, std::array{z}, range);
     }
 
     /// @brief Fuses a compile-time batch of unrelated scalar components without device pointer tables.
     template<class Input, class OutputX, class OutputY, class OutputZ, std::size_t N>
-    void apply_set(const std::array<Input, N>& input, const std::array<OutputX, N>& x,
-                   const std::array<OutputY, N>& y, const std::array<OutputZ, N>& z, CellRange range = {}) const
+    void apply_set_async(const std::array<Input, N>& input, 
+                         const std::array<OutputX, N>& x,
+                         const std::array<OutputY, N>& y, 
+                         const std::array<OutputZ, N>& z, 
+                         CellRange range = {}) const
     {
         static_assert(N > 0);
         using T = std::remove_const_t<typename Input::value_type>;
         static_assert(std::is_floating_point_v<T>);
-        detail::Batch<T, N> batch;
+        detail::Batch<T, N, memory_space> batch;
         for (std::size_t c = 0; c < N; ++c) {
             batch.input[c] = input_component<T>(input[c]);
             batch.x[c] = output_component<T>(x[c]);
@@ -171,23 +176,23 @@ private:
     }
 
     template<class T, class View>
-    detail::Component<const T> input_component(View view) const
+    fields::ComponentDescriptor<const T, memory_space> input_component(View view) const
     {
         accessible_component<View>();
         static_assert(std::is_same_v<std::remove_const_t<typename View::value_type>, T>);
         mpi::require(view.extent(0) >= input_size_, "Gradient: input must include owned, MPI ghost and boundary values");
-        mpi::require(view.extent(0) == 0 || (view.data() != nullptr && view.stride(0) > 0), "Gradient: invalid input storage");
-        return {view.data(), view.stride(0)};
+        const auto descriptor = fields::descriptor_from_view(view);
+        return {descriptor.data, descriptor.stride};
     }
 
     template<class T, class View>
-    detail::Component<T> output_component(View view) const
+    fields::ComponentDescriptor<T, memory_space> output_component(View view) const
     {
         accessible_component<View>();
         static_assert(std::is_same_v<typename View::value_type, T>, "Gradient output must be mutable and match input precision");
         mpi::require(view.extent(0) >= static_cast<std::size_t>(metrics_.mesh.sizes.n_own), "Gradient: output must contain all owned cells");
-        mpi::require(view.extent(0) == 0 || (view.data() != nullptr && view.stride(0) > 0), "Gradient: invalid output storage");
-        return {view.data(), view.stride(0)};
+        const auto descriptor = fields::descriptor_from_view(view);
+        return {descriptor.data, descriptor.stride};
     }
 
     CellRange resolve(CellRange range) const
@@ -199,25 +204,27 @@ private:
     }
 
     template<class T, std::size_t N>
-    void submit(detail::Batch<T, N> batch, CellRange range) const
+    void submit(detail::Batch<T, N, memory_space> batch, CellRange range) const
     {
         if (range.begin == range.end) return;
-        const policy_type policy(exec_, range.begin, range.end);
-        switch (scheme()) {
-            case Scheme::GreenGaussCell:
-                Kokkos::parallel_for("gradient/green_gauss_cell", policy,
-                    detail::CellKernel<false, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
-                break;
-            case Scheme::LeastSquaresFace:
-                Kokkos::parallel_for("gradient/least_squares_face", policy,
-                    detail::CellKernel<true, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
-                break;
-            case Scheme::GreenGaussFace:
-                Kokkos::parallel_for("gradient/clear_owned", policy, detail::ClearKernel<T, N>{batch});
-                Kokkos::parallel_for("gradient/green_gauss_face", policy_type(exec_, 0, metrics_.mesh.sizes.n_faces),
-                    detail::FaceKernel<memory_space, T, N, Accumulator>{metrics_, batch, range});
-                break;
-        }
+        mpi::guarded([&] {
+            const policy_type policy(exec_, range.begin, range.end);
+            switch (scheme()) {
+                case Scheme::GreenGaussCell:
+                    Kokkos::parallel_for("gradient/green_gauss_cell", policy,
+                        detail::CellKernel<false, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
+                    break;
+                case Scheme::LeastSquaresFace:
+                    Kokkos::parallel_for("gradient/least_squares_face", policy,
+                        detail::CellKernel<true, memory_space, coefficients_type, T, N, Accumulator>{metrics_, coefficients_, batch});
+                    break;
+                case Scheme::GreenGaussFace:
+                    Kokkos::parallel_for("gradient/clear_owned", policy, detail::ClearKernel<T, N, memory_space>{batch});
+                    Kokkos::parallel_for("gradient/green_gauss_face", policy_type(exec_, 0, metrics_.mesh.sizes.n_faces),
+                        detail::FaceKernel<memory_space, T, N, Accumulator>{metrics_, batch, range});
+                    break;
+            }
+        });
     }
 
     void validate_descriptors()

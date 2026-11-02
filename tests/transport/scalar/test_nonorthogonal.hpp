@@ -168,7 +168,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     field_halo.add_component(phi);field_halo.prepare();field_halo.exchange();
     boundary.apply_component_async(phi,law,td::NonOrthogonalCorrection{ExactGradient{}});
     numerics::gradient::GradientOperator<Exec> gradient(m,a.connectivity.view(),a.geometry.view(),{},exec);
-    gradient.apply_component(phi,gradients.view().component(0),gradients.view().component(1),gradients.view().component(2));
+    gradient.apply_component_async(phi,gradients.view().component(0),gradients.view().component(1),gradients.view().component(2));
     halo::Exchange<Storage,Exec> gradient_halo(m,a.mesh.halo_plan(),comm,32,exec);
     gradient_halo.add_field(gradients.view());gradient_halo.prepare();gradient_halo.exchange();
     const auto g=gradients.create_host_buffer();Kokkos::deep_copy(exec,g,gradients.view().kokkos_view());exec.fence("test gradients ready");
@@ -330,7 +330,7 @@ void corrected_iterations(const Exec& exec)
     double error=1;int iterations=0;
     for(;iterations<60&&error>2e-9;++iterations) {
         field_halo.exchange();boundary.apply_async(field.view(),law,correction);
-        gradient.apply(field.view(),gradients.view());gradient_halo.exchange();
+        gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
         const auto b=Kokkos::subview(rhs.overwrite(exec),Kokkos::ALL(),0);
         Kokkos::deep_copy(exec,b,base_rhs);status.begin_async();
         diffusion.add_correction_async(b,boundary,status,law,correction);(void)status.check(comm);rhs.commit();
@@ -346,7 +346,7 @@ void corrected_iterations(const Exec& exec)
     check(iterations>1&&error<=2e-9,"nonorthogonal outer iterations did not converge to affine solution");
     // The convenience solver also accepts one frozen-gradient corrected solve.
     field_halo.exchange();boundary.apply_async(field.view(),law,correction);
-    gradient.apply(field.view(),gradients.view());gradient_halo.exchange();
+    gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
     ts::SteadyDiffusion<> steady(a.plan,a.assembly,phi,settings());
     check(steady.solve_owned(boundary,law,ts::UniformSource<Real>{0},correction).converged,"corrected convenience solve failed");
     test::near(steady.balance(boundary,law,ts::UniformSource<Real>{0},correction).defect,0.0,1e-7,"corrected convenience balance");

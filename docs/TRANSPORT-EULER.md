@@ -134,7 +134,7 @@ reconstruction_halo.prepare();
 // Repeat after owned primitives change, e.g. at every time-integration stage.
 primitive_halo.exchange();
 boundary.apply_async(physical, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
-gradient.apply(q.view(), g.view()); // Computes 15 owned derivative components.
+gradient.apply_async(q.view(), g.view()); // Computes 15 owned derivative components.
 rec::compute_limiters_async<Real>(exec, stencil, unlimited, rec::field_pack(theta.view()),
     rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
 reconstruction_halo.exchange(); // Gradients and factors for real MPI ghosts.

@@ -104,6 +104,7 @@ All components in one exchanger have the same mutable scalar type `T`. It defaul
 | --- | --- |
 | `add_field(view)` | Mutable `fields::FieldView<T, N, Space, Layout>`; registers components `0 ... N-1`. Scalars, vectors, full tensors and other positive fixed component counts are supported. |
 | `add_component(view)` | Mutable rank-one Kokkos view of exactly `T`, including strided component subviews or externally owned arrays. |
+| `add_pack(field::pack(...))` | Packed components from general fields packing module. |
 
 The execution space must be able to access each component's memory. SoA, AoS and accessible strided components can be mixed within one group. Packing handles their strides; the MPI message uses a packed SoA arrangement regardless of source layout.
 

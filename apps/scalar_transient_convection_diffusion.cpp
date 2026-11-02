@@ -94,7 +94,7 @@ public:
     template<class Field>
     void update_async(Field scalar)
     {
-        gradient_.apply(scalar, gradients_.view());
+        gradient_.apply_async(scalar, gradients_.view());
         const auto input = rec::data(rec::field_pack(scalar), rec::gradient_pack(gradients_.view()));
         rec::compute_limiters_async<Real>(exec_, stencil_, input, rec::field_pack(factors_.view()),
             rec::BarthJespersen{}, rec::SecondOrderUpwind{});
