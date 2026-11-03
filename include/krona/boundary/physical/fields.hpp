@@ -2,6 +2,8 @@
 
 #include <krona/boundary/physical/state.hpp>
 #include <krona/fields/fields_view.hpp>
+#include <krona/fields/component.hpp>
+#include <Kokkos_NumericTraits.hpp>
 #include <krona/mpi/error.hpp>
 #include <type_traits>
 
@@ -18,8 +20,16 @@ void validate_component(V v, std::size_t count)
     static_assert(Kokkos::SpaceAccessibility<Exec, typename V::memory_space>::accessible);
     static_assert(std::is_floating_point_v<typename V::non_const_value_type>);
     if constexpr (Writable) static_assert(!std::is_const_v<typename V::value_type>);
-    mpi::require(v.extent(0) >= count && (v.extent(0) == 0 || (v.data() && v.stride(0) > 0)),
-                 "Physical boundary: invalid or undersized primitive component");
+    mpi::require(v.extent(0)>=count,"Physical boundary: invalid or undersized primitive component");
+    (void)fields::descriptor_from_view(v);
+}
+
+template<class To,class From>
+KOKKOS_INLINE_FUNCTION bool representable(From value)
+{
+    using R=std::common_type_t<To,From>;
+    constexpr R limit = static_cast<R>(Kokkos::finite_max_v<To>);
+    return Kokkos::isfinite(value)&&static_cast<R>(value)<=limit&&static_cast<R>(value)>=-limit;
 }
 
 }
@@ -38,6 +48,16 @@ struct PrimitiveViews {
         s.velocity = {static_cast<Real>(u(i)),static_cast<Real>(v(i)),static_cast<Real>(w(i))};
         if constexpr (thermal) s.temperature = static_cast<Real>(temperature(i));
         return s;
+    }
+    template<class Real>
+    KOKKOS_INLINE_FUNCTION bool can_store(const Primitive<Real,thermal>& s) const
+    {
+        bool ok=detail::representable<typename P::non_const_value_type>(s.pressure)&&
+            detail::representable<typename U::non_const_value_type>(s.velocity.x)&&
+            detail::representable<typename V::non_const_value_type>(s.velocity.y)&&
+            detail::representable<typename W::non_const_value_type>(s.velocity.z);
+        if constexpr (thermal) ok=ok&&detail::representable<typename T::non_const_value_type>(s.temperature);
+        return ok;
     }
     template<class Real>
     KOKKOS_INLINE_FUNCTION void write(std::size_t i, const Primitive<Real, thermal>& s) const

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/boundary/physical/models.hpp>
+#include <krona/boundary/physical/profiles.hpp>
 #include <krona/mpi/error.hpp>
 #include <cmath>
 
@@ -20,6 +21,26 @@ Vector<Real> unit_vector(Vector<Real> v)
 template<class Real>
 void positive(Real v)
 { mpi::require(std::isfinite(v)&&v>Real{0},"Physical boundary: require a finite positive parameter"); }
+
+// Profile values are checked after sampling; model incompatibilities are known on the host.
+template<class C, class Model> void require_compatible(std::type_identity<C>,const Model&) {}
+template<class R, class Model> void require_compatible(std::type_identity<IsothermalWall<R>>,const Model&)
+{ mpi::require(Model::thermal,"Physical boundary: isothermal wall requires a temperature field"); }
+template<class R, class Model> void require_compatible(std::type_identity<HeatFluxWall<R>>,const Model&)
+{ mpi::require(Model::thermal,"Physical boundary: heat-flux wall requires a temperature field"); }
+template<class R, class Model> void require_compatible(std::type_identity<TotalConditionsInlet<R>>,const Model&)
+{ mpi::require(Model::compressible&&Model::has_characteristics,"Physical boundary: total inlet requires a compatible compressible characteristic model"); }
+template<class R, class Model> void require_compatible(std::type_identity<VelocityInlet<R>>,const Model&)
+{ mpi::require(!Model::compressible,"Physical boundary: VelocityInlet currently targets incompressible flow"); }
+template<class R, class Model> void require_compatible(std::type_identity<SupersonicInlet<R>>,const Model&)
+{ mpi::require(Model::compressible,"Physical boundary: supersonic inlet requires compressible flow"); }
+template<class Model> void require_compatible(std::type_identity<SupersonicOutlet>,const Model&)
+{ mpi::require(Model::compressible,"Physical boundary: supersonic outlet requires compressible flow"); }
+template<class R, class Model> void require_compatible(std::type_identity<PressureOutlet<R>>,const Model&)
+{ if constexpr (Model::compressible) mpi::require(Model::has_characteristics,"Physical boundary: pressure outlet requires a characteristic policy"); }
+template<class C, class P, class Model>
+Profiled<C,P> prepare(Profiled<C,P> c,const Model& model)
+{ require_compatible(std::type_identity<C>{},model); return c; }
 
 template<class C,class Model>
 C prepare(C c,const Model& model)

@@ -658,7 +658,7 @@ add_library(krona::boundary_physical ALIAS krona_boundary_physical)
 target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_physical PUBLIC)
 target_link_libraries(krona_boundary_physical
-    PUBLIC krona::boundary_scalar
+    PUBLIC krona::boundary_scalar krona::gradient krona::math
     PRIVATE krona::warnings krona::tomlplusplus)
 
 

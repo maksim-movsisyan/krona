@@ -1,204 +1,360 @@
 # Physical boundary conditions
 
-`krona::boundary::physical` evaluates coupled pressure, velocity, and optional temperature conditions on external faces. It supports compressible and incompressible models. It can fill primitive boundary slots or provide boundary states to your own flux, residual, or output kernel.
+`krona::boundary::physical` evaluates coupled pressure, velocity and optional temperature conditions on exterior faces. It fills physical face slots or supplies two states to a caller's kernel. It performs no halo exchange, numerical flux evaluation or equation solve.
 
-It does not solve the flow equations, compute a numerical flux, move mesh geometry, or exchange MPI ghosts.
+## Objects and ownership
 
-## Architecture and data flow
-
-| Part | Responsibility |
+| Object | Responsibility |
 | --- | --- |
-| `Model` (`models.hpp`) | Declares compressible/thermal capabilities and supplies an EOS or incompressible material. A compressible characteristic policy closes pressure outlets and total-condition inlets. |
-| Condition (`conditions.hpp`) | Holds prescribed wall, inlet, or outlet parameters. Independent of field storage. |
-| `Configuration` (`config.hpp`) | Host assignments read from TOML: patch IDs, exact names, conditions, and optional unlabelled-face handling. |
-| `PatchCatalog` / `GeometryView` | Copied patch metadata and borrowed external-face geometry, shared with scalar boundaries. |
-| `PrimitiveViews` (`fields.hpp`) | Binds existing pressure, velocity, and optional temperature components without allocating or copying field values. |
-| `evaluate()` (`evaluate.hpp`) | Device-callable evaluation of one typed condition using a face context, interior primitive state, model, and optional helpers. Returns two states. |
-| `Manager<Model, Exec, Real, CustomConditions...>` | Stores assignments, validates setup, dispatches concrete condition types on the host, and launches Kokkos kernels. `Exec` and `Real` default to the project execution space and `ComputeReal`. |
+| `BoundaryLayout<Exec, Real>` | Owns one host patch catalog and borrows mesh geometry. Share it between scalar/physical managers using the same mesh, execution instance and computation precision. |
+| `Manager<Model, Exec, Real, ExtraConditions...>` | Borrows the layout; owns its model and condition objects. Fields remain arguments to operations. |
+| Numeric conditions (`conditions.hpp`) | Store prescribed values and policy flags. Existing aggregate syntax remains valid. |
+| `Profiled<Condition, Provider>` (`profiles.hpp`) | Stores a provider that constructs one numeric condition at the current face/time. Factories combine individual scalar/vector providers. |
+| `PrimitiveViews` (`fields.hpp`) | Binds existing pressure, three velocity components and optional temperature. No field-value copy or allocation. |
+| `evaluate()` | Device-local evaluation of one condition and interior state. Returns `Evaluation{face, exterior}`. |
+| `Status<Exec>` | Owns reusable device flags and a host mirror for explicitly checked submissions. |
 
-The evaluation pipeline is:
+`Primitive<Real, false>` contains pressure and velocity; `Primitive<Real, true>` also contains temperature. States remain in this module. `Vector<Real>` and `Matrix<Real>` name the common `math::Vector3` and `math::Matrix3` types.
 
-1. The manager selects the condition for a patch.
-2. A reader supplies the interior state for each face; `OwnerReader` reads the owner cell.
-3. `evaluate()` computes the physical face state and exterior inviscid state.
-4. A sink consumes the result. `apply_async()` supplies a sink that writes only the physical face state into the bound fields.
+**The two returned states have different purposes:**
 
-The manager owns the model and condition objects by value. It owns its small patch catalog and borrows mesh geometry. Fields are passed explicitly on each call; no field-name lookup occurs.
-
-## Two different boundary states
-
-`Primitive<Real, false>` contains `pressure` and `velocity`. `Primitive<Real, true>` also contains `temperature`. Velocity is `Vector<Real>{x, y, z}`.
-
-`Evaluation<State>` contains:
-
-| Member | Meaning |
+| State | Meaning |
 | --- | --- |
-| `face` | Physical state at the face centroid. Contains prescribed no-slip wall velocity and, where applicable, wall temperature. Use it for physical boundary values and viscous reconstruction. |
-| `exterior` | Exterior inviscid state for a boundary flux computation. It is not a stored ghost-cell value or a value at a reflected cell centre. |
+| `face` | Physical face-centred trace: includes prescribed no-slip velocity and viscous wall temperature. |
+| `exterior` | Exterior inviscid state for a numerical boundary flux; not a stored ghost-cell value. |
 
-For a stationary isothermal no-slip wall, `face.velocity = 0` and `face.temperature = T_wall`. The exterior state retains the interior pressure and temperature and reflects only the normal velocity. Its tangential velocity remains unchanged. Thus `face` and `exterior` serve different purposes.
+For a stationary isothermal wall, the face has zero velocity and the wall temperature. The exterior keeps interior pressure, temperature and tangential velocity, and reverses normal velocity. `apply_async()` stores **only `face`**, never exterior or conservative states.
 
-**`apply_async()` stores `face` only.** It does not store `exterior`, density, momentum, or energy. Use `evaluate_async()` or direct evaluation when you need those outputs. For a compressible model, `model.conservative(state)` converts a primitive state into density, momentum, and total energy; `model.primitive(state)` performs the reverse conversion.
+## Models and mesh contracts
 
-## Mesh and field contracts
-
-Use the host mesh and device view of the same prepared mesh. Faces must be grouped, geometry must already be computed, and `MeshStorage` must include at least `MeshData::FaceCells | MeshData::Geometry`.
-
-External faces occupy `[n_inner_faces, n_faces)`. MPI interface faces are outside this interval and are not processed. Every external face must have an owned owner cell, finite geometry, outward unit normal, positive area, and positive projected owner-to-face distance. Manager construction validates the required geometry in the selected computation precision.
-
-Extended primitive fields use these intervals:
-
-| Interval | Contents |
+| Model | Capabilities |
 | --- | --- |
-| `[0, n_own)` | Owned-cell values. |
-| `[n_own, n_cells)` | MPI ghost-cell values. |
-| `[n_cells, n_cells + n_bfaces)` | Physical face values, one per external face; `n_bfaces = n_faces - n_inner_faces`. |
+| `Compressible<EOS, Characteristics = NoCharacteristics>` | Thermal primitive states; EOS conversion. Pressure outlets and total-condition inlets additionally require a compatible characteristic policy. |
+| `Incompressible<Material, Thermal = false>` | Prescribed-density material; optional temperature equation. Pressure may be gauge pressure. |
 
-For external face `f`, the appended slot is `n_cells + f - n_inner_faces`. `required_field_size()` returns the required total size.
+`Compressible::conservative(state)` returns density, momentum density and total-energy density. `primitive(conservative)` inverts them using the EOS. Energy references belong to the EOS. These are local device functions, not field-transfer operations.
 
-`apply_async()` requires writable pressure, three velocity components, and temperature exactly when `Model::thermal == true`. All components must be rank-one floating-point Kokkos views, accessible to `Exec`, with at least `required_field_size()` entries and valid positive strides. Split arrays, SoA fields, and strided AoS components are supported. Component types may differ from `Real`; reads and writes perform conversions. Location tags and field names are not checked.
+Use host/device descriptions of the same prepared mesh. Faces must be grouped and the mesh view must contain at least `FaceCells | Geometry`. Exterior faces are `[n_inner_faces, n_faces)`; interface faces are not processed. Layout construction validates owned owners, finite geometry, outward unit normals, positive areas and positive normal owner-to-face distances.
 
-Bind `FieldView` objects with `primitive_views(p, velocity[, T])`, or separate rank-one views with `primitive_components(p, u, v, w[, T])`. These are borrowed descriptors; use separate, non-overlapping storage for distinct writable components. The manager does not detect aliases.
+Extended fields contain owned cells, real MPI ghosts, then one face value per exterior face. Face `f` uses slot `n_cells + f - n_inner_faces`; `required_field_size()` returns `n_cells + n_faces - n_inner_faces`.
 
-`OwnerReader` reads the complete owner primitive state, even for prescribed inlets. Supply finite pressure/velocity and positive finite temperature when thermal. Compressible calculations require valid absolute pressure and thermodynamic states; incompressible pressure may be gauge pressure. `apply_async()` writes only appended boundary slots, preserving owned cells, MPI ghosts, and trailing entries.
+All bound components must be accessible, rank-one floating-point Kokkos views with sufficient extent and valid storage/strides. Split arrays and strided AoS components work. Use non-overlapping writable components and do not alias outputs with concurrently read profile inputs. Names/location tags are not checked.
 
-## Fill primitive boundary values
+`OwnerReader` reads the complete owner state, including for prescribed inlets. Supply finite pressure/velocity, positive finite thermal temperature and positive compressible absolute pressure. Values read or sampled into `Real` must be representable in that type and valid for the EOS/material. Standard filling checks output representability before writing any component of a face; rounding/underflow are not diagnosed. Owned cells, MPI ghosts, other storage and trailing entries are preserved.
 
-Sequence: prepare the mesh → select a model → create the manager → assign every condition → bind extended fields → update owner values → apply the conditions.
+## Prepare and fill fields
 
-The examples assume MPI and Kokkos are initialized and `host_mesh` is a prepared `mesh::host::MeshPart`. Shared headers and aliases:
+Assume active MPI/Kokkos and a prepared `host_mesh`:
 
 ```cpp
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
-#include <krona/thermodynamics/ideal_gas.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
-#include <type_traits>
 
-namespace boundary = krona::boundary;
-namespace ph = boundary::physical;
-namespace thermo = krona::thermodynamics;
-namespace device = krona::mesh::device;
-namespace fields = krona::fields;
+namespace bc = krona::boundary;
+namespace ph = bc::physical;
+namespace grad = krona::numerics::gradient;
 using Exec = krona::execution::ExecutionSpace;
 using Real = krona::ComputeReal;
+using Storage = krona::StorageReal;
 using Space = typename Exec::memory_space;
-using Model = ph::Compressible<thermo::IdealGas<Real>, ph::PerfectGasCharacteristics>;
-using State = ph::Primitive<Real, true>;
+using Model = ph::Compressible<krona::thermodynamics::IdealGas<Real>,
+                               ph::PerfectGasCharacteristics>;
+using State = ph::Primitive<Real, Model::thermal>;
 ```
 
-This example treats all external faces as stationary isothermal walls at `350`:
+Create one layout, configure the manager and bind extended fields:
 
 ```cpp
 Exec exec{};
-device::MeshStorage<Exec> mesh{
-    host_mesh,
-    {.data = device::MeshData::FaceCells | device::MeshData::Geometry}, exec};
-Model model{thermo::IdealGas<Real>{}, ph::PerfectGasCharacteristics{}};
-ph::Manager<Model, Exec, Real> manager{host_mesh, mesh.view(), model, exec};
+krona::mesh::device::MeshStorage<Exec> mesh(host_mesh,
+    {.data = krona::mesh::device::MeshData::FaceCells |
+             krona::mesh::device::MeshData::Geometry}, exec);
+bc::BoundaryLayout<Exec, Real> layout(host_mesh, mesh.view(), exec);
+Model model{};
+ph::Manager<Model, Exec, Real> boundary(layout, model);
+for (const auto& patch : layout.catalog().patches())
+    boundary.set(patch.range.patch_id, ph::Symmetry{});
+if (layout.catalog().needs_unlabelled()) boundary.set_unlabelled(ph::Symmetry{});
+boundary.finalize();
 
-for (const auto& patch : manager.catalog().patches())
-    manager.set(patch.range.patch_id, ph::IsothermalWall<Real>{Real{350}, {}});
-if (manager.catalog().needs_unlabelled())
-    manager.set_unlabelled(ph::IsothermalWall<Real>{Real{350}, {}});
-
-const auto size = manager.required_field_size();
-fields::FieldStorage<Real, 1, Exec> pressure{
-    "pressure", size, fields::FieldLocation::CellExtnd, exec};
-fields::FieldStorage<Real, 3, Exec, Kokkos::LayoutRight> velocity{
-    "velocity", size, fields::FieldLocation::CellExtnd, exec};
-fields::FieldStorage<Real, 1, Exec> temperature{
-    "temperature", size, fields::FieldLocation::CellExtnd, exec};
-const auto primitive = ph::primitive_views(
-    pressure.view(), velocity.view(), temperature.view());
-
-krona::execution::complete(exec, [&] {
-    pressure.fill_async(exec, Real{100000});
-    velocity.fill_async(exec, Real{10}); // Example owner velocity: (10, 10, 10).
-    temperature.fill_async(exec, Real{300});
-    manager.apply_async(primitive);
-}); // Initial field fills and boundary kernels are complete.
+const auto count = layout.required_field_size();
+krona::fields::FieldStorage<Storage, 1, Exec> pressure(
+    "p", count, krona::fields::FieldLocation::CellExtnd, exec);
+krona::fields::FieldStorage<Storage, 3, Exec> velocity(
+    "u", count, krona::fields::FieldLocation::CellExtnd, exec);
+krona::fields::FieldStorage<Storage, 1, Exec> temperature(
+    "T", count, krona::fields::FieldLocation::CellExtnd, exec);
+pressure.fill_async(exec, Storage{100000});
+velocity.fill_async(exec, Storage{0});
+temperature.fill_async(exec, Storage{300});
+const auto primitive = ph::primitive_views(pressure.view(), velocity.view(), temperature.view());
+const auto heat_law = krona::transport::IsotropicDiffusion{
+    krona::transport::UniformCoefficient<Real>{Real{2}}};
+ph::Status<Exec> status(exec);
+status.begin_async();
+boundary.apply_async(primitive, status, heat_law);
+status.check();
 ```
 
-Every labelled patch needs a condition, including patches empty on this rank. If unlabelled faces exist locally or according to the global mesh counts, assign them explicitly with `set_unlabelled()` or configuration. Empty local ranges submit no kernels; a rank without local boundary faces is supported.
+Assign every labelled patch, even if locally empty. Unlabelled faces need an explicit assignment when present locally or according to global mesh counts. No default condition is supplied. For a nonthermal model, bind `primitive_views(pressure, velocity)` without temperature. Separate rank-one arrays use `primitive_components(p, u, v, w[, T])`.
 
-Reuse the manager and binding for later updates. After updating owner values, call `apply_async()` again. `set()` changes subsequent submissions; condition parameters are copied into submitted kernels. There is no registration-closing or separate preparation call.
-
-Basic evaluation uses owner values only. Complete any halo exchange needed by your reconstruction or custom reader before using those inputs. This module performs no halo exchange itself.
-
-## Select a model
-
-| Model | Required primitive channels and capabilities |
-| --- | --- |
-| `Compressible<EOS, Characteristics>` | Pressure, velocity, temperature. EOS supplies thermodynamics; characteristic policy supports total inlets and pressure outlets. The example uses `IdealGas` with `PerfectGasCharacteristics`. |
-| `Compressible<EOS>` | Same channels, but no characteristic closure. Suitable for walls and explicit supersonic conditions; total inlets and pressure outlets are rejected. |
-| `Incompressible<thermo::ConstantDensity<Real>>` | Pressure and velocity only. Supports mechanical walls, velocity inlets, and pressure outlets. |
-| `Incompressible<thermo::ThermalConstantDensity<Real>, true>` | Pressure, velocity, temperature. Also supports isothermal and heat-flux walls. |
-
-For nonthermal models, omit temperature from the field binding. Isothermal and heat-flux conditions require a thermal model. An adiabatic wall remains a valid mechanical no-slip wall without a temperature channel.
-
-Model parameters are validated during manager construction. The provided ideal gas requires finite `gamma > 1`, positive gas constant, and positive reference states; constant-density materials require positive density and, where applicable, positive heat capacity/reference temperature.
-
-`PerfectGasCharacteristics` implements local one-dimensional normal compatibility for a calorically perfect gas. It is not a general multidimensional nonreflecting boundary condition. Use a compatible policy when replacing the EOS.
+`set()`, `set_unlabelled()` and `configure()` invalidate finalization. Call `finalize()` after assignments, including time-step updates made through `set()`. It checks completeness/provider metadata and caches flux-law requirements; it does not scan device values, submit work, fence or communicate. Updating bound buffer contents or the evaluation time does not require refinalization.
 
 ## Built-in conditions
 
-The table describes zero-correction behaviour. `n` points out of the domain; normal velocity is `u · n`.
+Let `n` be the outward unit normal, `h = (x_f - x_P)·n > 0`, and `delta` a supplied reconstruction increment. Table entries describe numeric conditions; the profile factories below produce the same closures.
 
-| C++ condition | Physical face state and requirements |
+| Condition | Behaviour and requirements |
 | --- | --- |
-| `Symmetry{}` | Extrapolates pressure/temperature; removes the normal velocity. Exterior reflects the interior normal velocity. |
-| `SlipWall<Real>{wall_velocity}` | Sets normal face velocity to the wall's normal velocity and retains interior tangential velocity. Pressure/temperature are extrapolated. Exterior reflects normal velocity relative to the wall. |
-| `AdiabaticWall<Real>{wall_velocity}` | No-slip face velocity; extrapolated pressure. Thermal channel imposes zero heat flux with a supplied law, or zero normal temperature gradient without one. |
-| `IsothermalWall<Real>{temperature, wall_velocity}` | No-slip velocity; extrapolated pressure; prescribed positive wall temperature. Requires a thermal model. |
-| `HeatFluxWall<Real>{flux, wall_velocity}` | No-slip velocity; extrapolated pressure; prescribed outward heat-flux density converted through an explicit law. Requires a thermal model. |
-| `PressureOutlet<Real>{pressure, backflow}` | Compressible: characteristic outlet, including supersonic-outflow and reverse-flow handling below. Incompressible: prescribed pressure and extrapolated velocity/temperature during outward flow. |
-| `TotalConditionsInlet<Real>{total_pressure, total_temperature, direction, allow_choking}` | Uses total reservoir data, prescribed inward direction, and an interior characteristic to determine static state and speed. Requires a compressible characteristic model. |
-| `VelocityInlet<Real>{velocity, temperature}` | Prescribes velocity and, when thermal, positive temperature; extrapolates pressure. Currently incompressible only. |
-| `SupersonicInlet<Real>{pressure, temperature, velocity, mach, direction}` | Prescribes a complete compressible inflow state. `mach == 0` selects explicit velocity; positive `mach` selects `mach * sound_speed * direction`. |
-| `SupersonicOutlet{}` | Returns the interior state unchanged. Requires compressible outward normal velocity at least equal to sound speed. |
+| `Symmetry` | Projects reconstructed face velocity onto the tangent plane; exterior reflects normal velocity. Face pressure/thermal temperature include their correction increments. |
+| `SlipWall<Real>{velocity}` | Same tangential treatment, with face normal velocity set by the wall. Exterior reflects velocity relative to the wall. |
+| `AdiabaticWall<Real>{velocity}` | No-slip face velocity; zero outward heat flux. Without a supplied law this uses zero normal temperature derivative; an explicit law converts zero flux. |
+| `IsothermalWall<Real>{temperature, velocity}` | No-slip velocity and positive prescribed face temperature. Filling does not read temperature correction/gradients. |
+| `HeatFluxWall<Real>{flux, velocity}` | No-slip velocity and prescribed outward heat-flux density. Requires a flux-to-gradient law and a thermal model. |
+| `VelocityInlet<Real>{velocity, temperature}` | Incompressible only: prescribed full velocity and thermal temperature; pressure extrapolates with correction. It does not enforce an inward velocity direction. |
+| `TotalConditionsInlet<Real>{p0, T0, direction, allow_choking}` | Compressible characteristic inlet with positive total pressure/temperature and an inward direction. |
+| `PressureOutlet<Real>{pressure, backflow}` | Prescribed-pressure closure; compressible flow requires characteristics. Reverse flow uses explicit backflow data. |
+| `SupersonicInlet<Real>{pressure, temperature, velocity, mach, direction}` | Compressible prescribed state. `mach == 0` uses velocity; positive Mach uses `mach * sound_speed * direction`. Resulting normal inflow must be strictly supersonic. |
+| `SupersonicOutlet` | Compressible extrapolation; requires outward normal speed at least equal to sound speed. |
 
-Wall velocities default to zero and must be finite. Directions are normalized when assigned through `set()` or configuration, and must be finite and nonzero. Direction relative to a particular face and the actual flow regime are checked during device evaluation. Supersonic inflow requires **normal** velocity below `-sound_speed`; a large total Mach number alone is insufficient.
+Wall velocity is a physical velocity, not a normalized direction. Constant inlet/backflow directions are normalized when assigned to a manager; profile directions are normalized after sampling. Numeric conditions evaluated directly outside a manager require caller-normalized directions. All direction vectors must be finite and nonzero where required.
 
-For inlet and outlet conditions, `face` and `exterior` are the same returned state. For no-slip walls, the exterior mirror retains the interior pressure/temperature and tangential velocity; prescribing wall temperature does not change that inviscid mirror.
+For no-slip walls, face pressure extrapolates with its correction. Wall thermal data act on the physical trace; exterior pressure/temperature remain interior. For isotropic conduction, `q_n = -k*dT/dn`: positive flux leaves the domain. `flux` is a density, without face area. A custom law supplies device `normal_gradient(context, flux)` returning a derivative; its coefficient/domain checks remain its responsibility.
 
-### Pressure outlet, backflow, and choking
+### Characteristic inlet/outlet and backflow
 
-A compressible pressure outlet ignores the target pressure when the interior normal flow is already supersonic outward. Otherwise it applies the characteristic closure. With `PerfectGasCharacteristics`, sufficiently low back pressure produces a sonic outlet limit rather than enforcing an incompatible target pressure. Reverse interior flow, or a characteristic solution that reverses the flow, invokes the configured backflow policy.
+`PerfectGasCharacteristics` is a calorically perfect-gas, local normal closure. It preserves normal compatibility `u_n + 2*a/(gamma - 1)`, not a multidimensional nonreflecting condition. A different EOS needs its own compatible policy.
 
-An incompressible outlet checks the interior normal velocity for reverse flow. During backflow it preserves that normal velocity, aligns velocity with the supplied inward direction, sets outlet pressure, and sets temperature if thermal.
+The total inlet combines compatibility with reservoir entropy and total enthalpy. Supersonic interior inflow and incompatible reservoir data are rejected. `allow_choking` permits the sonic fallback when the requested compatibility has no solution on the subsonic inlet branch; it defaults to false.
 
-| `BackflowMode` | Required data |
+A compressible pressure outlet extrapolates an already supersonic outward interior state. Otherwise it uses the characteristic closure. With `PerfectGasCharacteristics`, a target pressure that would produce a supersonic boundary state is replaced by a compatible sonic state; both its speed and pressure are determined by that limit. Interior reverse flow, or a closure that reverses flow, invokes backflow handling.
+
+| Backflow mode | Data and action |
 | --- | --- |
-| `Reject` (default) | Reverse flow terminates evaluation. There is no automatic inlet fallback. |
-| `TotalConditions` | Compressible only: `reservoir` is a `TotalConditionsInlet` with positive total pressure/temperature and inward direction. |
-| `DirectionTemperature` | Incompressible only: inward `direction`, plus positive `temperature` for a thermal model. |
+| `Reject` (default) | Actual reverse flow is an error. |
+| `TotalConditions` | Compressible only: use the configured reservoir inlet closure. |
+| `DirectionTemperature` | Incompressible only: impose the inward direction while preserving interior normal speed; use outlet pressure and prescribed thermal temperature. |
 
-A total-condition inlet rejects a supersonic interior inflow or incompatible reservoir data. If its solution reaches the sonic limit, `allow_choking` must explicitly permit that limit; the default is `false`.
+## Profiles and parameter providers
 
-### Heat-flux law and reconstruction corrections
+Common providers live in `boundary/profiles.hpp`. A parameter can be a number, a `math::Vector3`, `profile::Constant<T>`, a device callable `provider(context)`, or `profile::patch_values(range, view)`. A raw Kokkos view needs an explicit indexing adapter; it is not a face-context provider by itself.
 
-`HeatFluxWall` specifies outward heat-flux **density**, without a face-area factor. Supply a device-callable law with `normal_gradient(context, flux)` returning the temperature derivative. For isotropic conduction, `q_n = -k * dT/dn`:
+Factories return `Profiled<NumericCondition, Sampler>` objects. List each distinct additional condition type once in the manager template. Sampling constructs the ordinary numeric condition; physical interpretation and validation belong to that condition, not the provider.
+
+| Factory | Profile-capable parameters |
+| --- | --- |
+| `slip_wall<Real>(velocity)` | Wall velocity. |
+| `adiabatic_wall<Real>(velocity = {})` | Wall velocity. |
+| `isothermal_wall<Real>(temperature, velocity = {})` | Temperature and velocity. |
+| `heat_flux_wall<Real>(flux, velocity = {})` | Heat flux and velocity. |
+| `velocity_inlet<Real>(velocity, temperature = {})` | Velocity and thermal temperature. |
+| `total_conditions_inlet<Real>(p0, T0, direction, allow_choking = false)` | Total pressure, temperature and direction; the policy flag is a bool. |
+| `supersonic_inlet<Real>(pressure, temperature, velocity)` | Static pressure, temperature and explicit velocity. |
+| `supersonic_mach_inlet<Real>(pressure, temperature, mach, direction)` | Static pressure, temperature, Mach and direction. |
+| `pressure_outlet<Real>(pressure, backflow = {})` | Pressure and optional profiled backflow data. |
+| `total_backflow<Real>(reservoir)` | Reservoir returned by `total_conditions_inlet()`, or an ordinary numeric reservoir. |
+| `directional_backflow<Real>(direction, temperature = {})` | Incompressible backflow direction and thermal temperature. |
+
+For example, define providers at namespace scope:
 
 ```cpp
-const auto heat_law = krona::transport::IsotropicDiffusion{
-    krona::transport::UniformCoefficient<Real>{Real{2}}};
-manager.apply_async(primitive, heat_law);
-exec.fence("Physical boundary values ready");
+struct WallTemperature {
+    KOKKOS_INLINE_FUNCTION Real operator()(const bc::FaceContext<Real>& c) const
+    { return Real{350} + Real{2}*c.y + Real{5}*c.time; }
+};
+struct WallVelocity {
+    KOKKOS_INLINE_FUNCTION ph::Vector<Real> operator()(const bc::FaceContext<Real>& c) const
+    { return {Real{0}, Real{10}*c.time, Real{0}}; }
+};
 ```
 
-For example, flux `10` with `k = 2` gives `dT/dn = -5`. Heat-flux walls require a law even when their patches are empty locally. The isotropic conversion requires finite, strictly positive conductivity. Coefficient values are caller contracts, not scanned by the manager on each application. An adiabatic wall without a law uses a zero normal gradient; with a law it asks that law to convert zero flux.
+This fragment requires labelled patch `0`:
 
-The correction argument is `Corrections{pressure_provider, velocity_provider, temperature_provider}`. Defaults are zero scalar increments and zero vector increment. Each provider receives `FaceContext`; velocity returns `Vector<Real>`, the others return a scalar increment.
+```cpp
+const auto wall = ph::isothermal_wall<Real>(WallTemperature{}, WallVelocity{});
+ph::Manager<Model, Exec, Real, decltype(wall)> profiled(layout, model);
+for (const auto& patch : layout.catalog().patches())
+    profiled.set(patch.range.patch_id, ph::Symmetry{});
+if (layout.catalog().needs_unlabelled()) profiled.set_unlabelled(ph::Symmetry{});
+profiled.set(0, wall);
+profiled.finalize();
+status.begin_async();
+profiled.apply_async(primitive, status, heat_law, ph::Corrections<>{}, Real{0.5});
+status.check();
+```
 
-For a scalar, `boundary::GradientCorrection{gx, gy, gz}` computes `delta = (x_f - x_P - h*n) · grad(phi_P)`, where `h = (x_f - x_P) · n`. Components need at least `n_own` entries. `VectorCorrection{u_provider, v_provider, w_provider}` combines three scalar providers. Supply valid, current gradients before evaluation.
+For a compact patch array, replace the `wall` declaration with:
 
-Pressure increments affect symmetry/slip/no-slip walls and velocity inlets. Velocity increments affect symmetry/slip face reconstruction and outward incompressible pressure outlets. Temperature increments affect extrapolated symmetry/slip states, thermal wall reconstruction, and outward incompressible pressure outlets. Prescribed no-slip velocity, prescribed inlet states, and characteristic states are not replaced by these increments. Thermal wall relations use `T_f = T_P + h*dT/dn + delta`; an isothermal face remains exactly prescribed.
+```cpp
+const auto range = layout.catalog().patches()[0].range;
+Kokkos::View<Real*, Space> patch_temperature(
+    "wall_temperature", static_cast<std::size_t>(range.end - range.begin));
+Kokkos::deep_copy(exec, patch_temperature, Real{350});
+const auto wall = ph::isothermal_wall<Real>(bc::profile::patch_values(range, patch_temperature));
+```
 
-## Configure from TOML
+The array must have exactly the local patch face count, including zero for an empty patch. Indexing is `context.face - range.begin`, not a global ID, cell index or boundary-slot index. Its bound range/patch ID must match the assigned patch. Const/strided scalar views and views of `math::Vector3` work. Use `catalog().unlabelled()` for unlabelled profiles.
 
-Physical condition parameters are at patch-table level, unlike the scalar module's nested field tables. Example for patch `0` named `wall` and patch `1` named `outlet`:
+`patch_values()` borrows pointer/stride metadata and retains no allocation ownership. Update buffers on the layout's execution instance before the next use; no rebinding/refinalization is needed. Keep them alive through completion. Constants are stored inline; custom providers may borrow their own storage. Optional `validate<Exec>(PatchRange)` hooks check host metadata only.
+
+A generic `profiled<Condition>(provider)` accepts a device provider returning exactly that numeric/custom condition type. `sample_condition(condition, context)` exposes the raw numeric snapshot; it does not normalize or validate it. `condition_type_t<C>` identifies the underlying condition kind in typed callbacks. Standard evaluation samples each factory parameter once per face; custom callbacks must control any additional sampling they perform.
+
+For a profiled compressible reverse-flow reservoir:
+
+```cpp
+const auto reservoir = ph::total_conditions_inlet<Real>(
+    Real{130000}, Real{330}, ph::Vector<Real>{-1, 0, 0});
+const auto outlet = ph::pressure_outlet<Real>(Real{90000}, ph::total_backflow<Real>(reservoir));
+```
+
+The existing Euler adapters recognize profiled conditions. `PreparedExterior` uses prepared inlet/pressure slots; `EvaluatedExterior` evaluates them again. Factory wall profiles supply their mechanical velocity without sampling temperature/heat-flux parameters for an inviscid mirror.
+
+## Corrections and affine helpers
+
+`Corrections{pressure, velocity, temperature}` supplies reconstruction increments. Pressure/temperature defaults use `numerics::gradient::NoCorrection`; velocity defaults to a zero vector. These are trace increments, not already-integrated fluxes.
+
+For owned-cell temperature gradients `gx`, `gy`, `gz`:
+
+```cpp
+const auto temperature_increment = grad::GradientCorrection{grad::cell_gradients(gx, gy, gz)};
+const ph::Corrections correction{
+    grad::NoCorrection{}, ph::ZeroVelocityIncrement{}, temperature_increment};
+status.begin_async();
+boundary.apply_async(primitive, status, heat_law, correction);
+status.check();
+```
+
+Projection is `(x_f - x_P - h*n)·grad(T_P)`. Views must be accessible and long enough for owned cells. `cell_gradients(field, component)` also selects the gradient module's `3*component + axis` layout. `VectorCorrection{x, y, z}` combines three scalar policies into a velocity increment; each can use the shared gradient correction. Gradient computation/exchange belongs to the application.
+
+`no_slip_relation()` and `slip_relation()` return `VelocityRelation<Real>`: matrix/vector affine expressions for face velocity and outward normal derivative. Slip uses `I - n*n^T`, so its component coupling generally needs a full matrix. `wall_temperature_relation(numeric_wall, context, increment, law)` returns the scalar affine temperature relation. Helpers contain no area factor, allocation, launch or synchronization; direct callers supply valid geometry/parameters.
+
+## Read interior states and consume both traces
+
+`evaluate_async(sink, reader, status, law, correction, time)` calls device `reader(context, typed_condition)`, evaluates the closure and then calls `sink(context, evaluation)` for successful faces. Use a custom reader for reconstructed interior traces. Optional `reader.validate<Exec>(owned_count)` checks host metadata before submission.
+
+For example, define this sink at namespace scope:
+
+```cpp
+struct SaveTraces {
+    Kokkos::View<State*, Space> face, exterior;
+    KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<Real>& c,
+                                          const ph::Evaluation<State>& result) const
+    { face(c.boundary_index) = result.face; exterior(c.boundary_index) = result.exterior; }
+};
+```
+
+Then launch:
+
+```cpp
+const auto boundary_count = layout.required_field_size() - static_cast<std::size_t>(host_mesh.n_cells);
+Kokkos::View<State*, Space> face_trace("face_trace", boundary_count);
+Kokkos::View<State*, Space> exterior_state("exterior_state", boundary_count);
+status.begin_async();
+boundary.evaluate_async(SaveTraces{face_trace, exterior_state}, ph::OwnerReader{primitive}, status, heat_law);
+status.check();
+```
+
+The manager checks returned states, not a custom sink's arithmetic/output buffers. Validate those yourself. Several faces can share an owner; accumulation into owner-cell arrays needs atomics or another safe strategy.
+
+## Your own kernel
+
+`for_each_face_async()` passes `(context, typed_condition)` to a device functor. `for_each_patch()` passes `(PatchRange, typed_condition)` to a host visitor for manual launches. Both require finalization and skip empty local patches; neither imposes a flux law, reader or diagnostic policy.
+
+This kernel uses the same status buffer for checked direct evaluation:
+
+```cpp
+template<class Reader, class Law>
+struct BoundaryKernel {
+    Model model; Reader reader; Law law;
+    typename ph::Status<Exec>::flags_type flags;
+    Kokkos::View<State*, Space> exterior;
+    template<class Condition>
+    KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<Real>& c, const Condition& condition) const
+    {
+        bool failed = false; // Local to this executing thread.
+        const ph::DeviceErrors errors{flags, &failed};
+        const auto result = ph::evaluate(condition, c, reader(c, condition), model,
+                                         law, ph::Corrections<>{}, errors);
+        if (!failed) exterior(c.boundary_index) = result.exterior;
+    }
+};
+```
+
+Launch on the manager's execution instance:
+
+```cpp
+const auto reader = ph::OwnerReader{primitive};
+status.begin_async();
+boundary.for_each_face_async(BoundaryKernel<decltype(reader), decltype(heat_law)>{
+    model, reader, heat_law, status.device_flags(exec), exterior_state}, Real{0.5});
+status.check();
+```
+
+Raw callbacks must validate their buffer extents, time/helper inputs and any condition-specific requirements. Callbacks compile for every variant alternative, not only assigned types. For a custom model with `at(context, typed_condition)`, the manager selects that local model before evaluation; it must preserve the global compressible/thermal capabilities. Direct custom kernels perform this selection themselves when needed.
+
+## A custom coupled condition
+
+Use providers for prescribed data. Implement a custom condition when the closure depends on the interior state or changes its mathematics. It returns `Evaluation<State>` from `(context, inside, model, law, correction[, errors])`.
+
+This example models a no-slip Newton-cooling wall with conductivity `k`, transfer coefficient `H`, and ambient temperature `T_inf`. With `alpha = H*h/k`, its trace is `(T_P + delta + alpha*T_inf)/(1 + alpha)`:
+
+```cpp
+struct ConvectiveWall {
+    Real conductivity = 2, transfer = 10, ambient = 290;
+    KOKKOS_INLINE_FUNCTION bool valid_parameters() const
+    {
+        return conductivity > Real{0} && transfer >= Real{0} && ambient > Real{0} &&
+            Kokkos::isfinite(conductivity) && Kokkos::isfinite(transfer) && Kokkos::isfinite(ambient);
+    }
+    template<class M> void validate(const M&) const
+    { krona::mpi::require(M::thermal && valid_parameters(), "ConvectiveWall: invalid model or parameters"); }
+    template<class M, class Law, class Correction, class Errors>
+    KOKKOS_INLINE_FUNCTION auto operator()(const bc::FaceContext<Real>& c,
+        ph::Primitive<Real, M::thermal> inside, const M& model,
+        const Law& law, const Correction& correction, const Errors& errors) const
+    {
+        if constexpr (!M::thermal) {
+            errors.fail(ph::Error::Unsupported, "ConvectiveWall needs temperature");
+            return ph::Evaluation{inside, inside};
+        } else {
+            if (!valid_parameters()) {
+                errors.fail(ph::Error::Relation, "ConvectiveWall: invalid parameters");
+                return ph::Evaluation{inside, inside};
+            }
+            const Real alpha = transfer*c.distance/conductivity;
+            const Real delta = static_cast<Real>(correction.temperature(c));
+            if (!Kokkos::isfinite(alpha) || !Kokkos::isfinite(delta)) {
+                errors.fail(ph::Error::Relation, "ConvectiveWall: invalid relation inputs");
+                return ph::Evaluation{inside, inside};
+            }
+            const Real wall_temperature = (inside.temperature + delta + alpha*ambient)/(Real{1} + alpha);
+            return ph::evaluate(ph::IsothermalWall<Real>{wall_temperature, {}},
+                                c, inside, model, law, correction, errors);
+        }
+    }
+};
+```
+
+Register and apply it like any additional condition:
+
+```cpp
+ph::Manager<Model, Exec, Real, ConvectiveWall> coupled(layout, model);
+for (const auto& patch : layout.catalog().patches()) coupled.set(patch.range.patch_id, ph::Symmetry{});
+if (layout.catalog().needs_unlabelled()) coupled.set_unlabelled(ph::Symmetry{});
+coupled.set(0, ConvectiveWall{}); // Requires labelled patch 0.
+coupled.finalize();
+status.begin_async();
+coupled.apply_async(primitive, status, heat_law);
+status.check();
+```
+
+Custom conditions may keep the old five-argument callable interface; a sixth error-handler argument enables deferred failure reporting. Use `errors.fail(ph::Error::..., "message")` and return an evaluation of the correct shape; failed results are not delivered to the sink. Pass the handler to nested `physical::evaluate()` calls. Conditions needing an explicit flux law specialize `ph::requires_flux_law<YourCondition>` and must still compile for unassigned alternatives with `NoFluxLaw`.
+
+## Configuration
+
+`read_config(path)` and `parse_config(text)` read constant conditions. Every labelled patch must appear exactly once with matching ID and exact name; order is irrelevant. Unlabelled faces use `[unlabelled]`. With no labels, write `boundary_condition = []` explicitly.
 
 ```toml
 [[boundary_condition]]
@@ -208,228 +364,84 @@ type = "ISOTHERMAL_WALL"
 temperature = 350.0
 velocity = [0.0, 0.0, 0.0]
 
+[unlabelled]
+type = "SYMMETRY"
+```
+
+Construct `Manager(layout, model, config)` or call `configure(config)`, then `finalize()`. Supported type names match the condition table: `SYMMETRY`, `SLIP_WALL`, `ADIABATIC_WALL`, `ISOTHERMAL_WALL`, `HEAT_FLUX_WALL`, `VELOCITY_INLET`, `TOTAL_CONDITIONS_INLET`, `PRESSURE_OUTLET`, `SUPERSONIC_INLET`, `SUPERSONIC_OUTLET`.
+
+Canonical parameters are `pressure`, `temperature`, `velocity`, `flux`, `total_pressure`, `total_temperature`, `mach`, `direction`, `allow_choking`. Supersonic TOML accepts velocity **or** positive Mach with direction. A pressure outlet's nested `backflow` table uses type `REJECT`, `TOTAL_CONDITIONS_INLET`, or `DIRECTION_TEMPERATURE` and the corresponding parameters above.
+
+Legacy aliases remain accepted: `WALL_ADIABATIC`, `WALL_ISOTHERMAL`, `OUTLET_BACK_PRESSURE`, `INLET_TOTAL_TP`, `INLET_SUPERSONIC`, `OUTLET_SUPERSONIC`; parameter aliases `T_wall`, `p_back`, `p`, `T`, `p0`, `T0`, `M` retain their original condition-specific meanings. Do not supply a parameter and its alias together.
+
+Unknown condition keys/types are rejected. Import metadata (`family`, `source_type`, `global_face_count`) and other scalar tables are accepted, but `scalar.temperature` conflicts with the physical temperature channel and is rejected. `FARFIELD` and `USER_DEFINED` are not implemented parser types. Profiles/custom closures are assigned in C++.
+
+### Compressible flow: pressure outlet with reservoir backflow
+
+```toml
 [[boundary_condition]]
-patch_id = 1
+patch_id = 0
 name = "outlet"
 type = "PRESSURE_OUTLET"
-pressure = 100000.0
+pressure = 100000.0           # Static outlet pressure [Pa].
+
 [boundary_condition.backflow]
 type = "TOTAL_CONDITIONS_INLET"
-total_pressure = 120000.0
-total_temperature = 320.0
+total_pressure = 120000.0    # Backflow reservoir total pressure [Pa].
+total_temperature = 330.0   # Backflow reservoir total temperature [K].
 direction = [-1.0, 0.0, 0.0]
 allow_choking = false
-
-[unlabelled]
-type = "ADIABATIC_WALL"
 ```
 
-The backflow direction here assumes an outlet normal along positive x. Adapt it to your geometry. Read and bind the configuration instead of the programmatic assignments:
+For outward flow, the outlet uses `pressure` according to its local flow regime. Reverse flow uses the reservoir's total conditions and direction. The compressible model must provide a compatible characteristic policy.
 
-```cpp
-const auto config = ph::read_config("boundary.toml");
-ph::Manager<Model, Exec, Real> configured{
-    host_mesh, mesh.view(), model, config, exec};
-configured.apply_async(primitive, heat_law);
-exec.fence("Configured physical boundaries ready");
+### Incompressible thermal flow: pressure outlet with directed backflow
+
+```toml
+[[boundary_condition]]
+patch_id = 0
+name = "outlet"
+type = "PRESSURE_OUTLET"
+pressure = 0.0              # Outlet pressure in the solver's pressure reference [Pa].
+
+[boundary_condition.backflow]
+type = "DIRECTION_TEMPERATURE"
+direction = [-1.0, 0.0, 0.0]
+temperature = 300.0         # Incoming fluid temperature [K].
 ```
 
-`parse_config(text)` parses an existing string; `manager.configure(config)` replaces assignments. `read_config()` performs local file I/O on each calling rank, with no broadcast. For root-only reading, broadcast the text yourself and parse it on each rank.
+Reverse flow uses the specified direction and temperature while preserving the interior normal velocity. Omit `temperature` for a nonthermal incompressible model.
 
-| TOML `type` | Parameters |
+Both examples assume the outlet's outward normal points along positive `x`; the backflow direction points into the domain. Replace the patch ID/name with those from the mesh and adjust the direction for the actual geometry. Each example describes one patch; add entries for the remaining labelled patches.
+
+### Reject reverse flow
+
+To reject reverse flow instead, replace the nested table with:
+
+```toml
+[boundary_condition.backflow]
+type = "REJECT"
+```
+
+`REJECT` is also the default when the `backflow` table is omitted.
+
+## Asynchrony, lifetime and errors
+
+| Operation | Completion |
 | --- | --- |
-| `SYMMETRY` | None. |
-| `SLIP_WALL`, `ADIABATIC_WALL` | Optional `velocity`, default zero. |
-| `ISOTHERMAL_WALL` | `temperature`; optional `velocity`. |
-| `HEAT_FLUX_WALL` | `flux`; optional `velocity`. |
-| `PRESSURE_OUTLET` | `pressure`; optional `backflow` table, default rejection. |
-| `TOTAL_CONDITIONS_INLET` | `total_pressure`, `total_temperature`, `direction`; optional `allow_choking = false`. |
-| `VELOCITY_INLET` | `velocity`; `temperature` required when bound to a thermal model. |
-| `SUPERSONIC_INLET` | `pressure`, `temperature`, and either `velocity` or positive `mach` with `direction`. Do not supply both forms. |
-| `SUPERSONIC_OUTLET` | None. |
+| `BoundaryLayout(...)` | Local blocking geometry preparation/validation and fence. |
+| `Manager(...)`, `set*()`, `configure()`, `finalize()` | Host work only; no device submission/fence or MPI communication. Validation hooks must follow that contract. |
+| Profile factories and field-binding helpers | Construct parameter/descriptor objects; no field-value copies or work submission. |
+| `status.begin_async()` | Queues flag reset; the previous batch must have been checked. |
+| `apply_async()`, `evaluate_async()` | Host checks and kernel submission; no final fence. Require a begun status on the layout's execution instance. |
+| `for_each_face_async()` | Submits callback kernels without a final fence. |
+| `for_each_patch()` | Completes host dispatch, not visitor-launched kernels. |
+| `status.check()` | Local blocking flag copy/fence and fatal diagnostics; no MPI collective. |
 
-Backflow tables accept `type = "REJECT"`, `"TOTAL_CONDITIONS_INLET"` with reservoir parameters, or `"DIRECTION_TEMPERATURE"` with direction and thermal temperature. Physical type strings are case-sensitive. Recognized legacy aliases are:
+Standard checks record invalid sampled parameters, interior/returned states, BC compatibility and wall relations; affected faces skip their sink/write. No rollback occurs. Host contract failures use `mpi::require`; unexpected host exceptions are caught by `mpi::guarded`. Check before consuming a batch's results. A fence alone does not inspect its flags.
 
-| Canonical spelling | Alias |
-| --- | --- |
-| `ADIABATIC_WALL`, `ISOTHERMAL_WALL` | `WALL_ADIABATIC`, `WALL_ISOTHERMAL` |
-| `PRESSURE_OUTLET`, `TOTAL_CONDITIONS_INLET` | `OUTLET_BACK_PRESSURE`, `INLET_TOTAL_TP` |
-| `SUPERSONIC_INLET`, `SUPERSONIC_OUTLET` | `INLET_SUPERSONIC`, `OUTLET_SUPERSONIC` |
-| `pressure`, `temperature` | `p_back` for outlet pressure; `p`, `T` for supersonic inflow; `T_wall` for wall temperature |
-| `total_pressure`, `total_temperature`, `mach` | `p0`, `T0`, `M` |
+EOS/material/custom-policy routines retain their own domains and error handling; an internal abort cannot be intercepted by `Status`. Custom characteristic policies may accept an extra error-handler argument and propagate it; old signatures remain supported for valid inputs. Direct `physical::evaluate()` without an explicit handler uses `Kokkos::abort` on BC errors.
 
-Do not supply a parameter and its alias together. Every labelled patch must appear exactly once with matching ID and exact name; order is irrelevant. Unlabelled faces need their own physical condition. With no labelled patches, write `boundary_condition = []` explicitly.
+Queue dependent producers, boundary work and consumers on one execution instance, or synchronize explicitly across instances/host/MPI. `_async` provides no portable completion guarantee even if a CPU backend executes immediately. Reuse one status across several managers/submissions on that instance, then check once.
 
-Unexpected condition keys are rejected. Import metadata (`family`, `source_type`, `global_face_count`) and nested scalar tables are accepted, but **`scalar.temperature` conflicts with the physical temperature channel and is rejected**. Other scalar fields can coexist. Numbers/vectors must be finite; model-specific positivity and compatibility are checked when assigning conditions. Custom conditions are assigned in C++, not parsed from TOML. `FARFIELD` and `USER_DEFINED` are not implemented physical types in this parser, even if a mesh-generated template suggests them.
-
-## Use a custom reader or sink
-
-`evaluate_async(sink, reader, law, corrections, time)` evaluates all assigned conditions without automatically writing fields. `law`, `corrections`, and `time` default to no flux law, zero increments, and zero time.
-
-- `reader(context, typed_condition)` runs on the device and returns `Primitive<Real, Model::thermal>`. Use `OwnerReader{primitive}` for cell-centred data, or supply your own reconstructed interior trace. If the reader defines `template<class Exec> validate(std::size_t owned_count)`, the manager calls it on the host before submission.
-- `sink(context, evaluation)` runs on the device and consumes both states. Its output layout and write conflicts are your responsibility.
-
-For example, store both states in boundary-only arrays. Define this sink at namespace scope:
-
-```cpp
-struct SaveStates {
-    Kokkos::View<State*, Space> face, exterior;
-
-    KOKKOS_INLINE_FUNCTION void operator()(
-        const boundary::FaceContext<Real>& c,
-        const ph::Evaluation<State>& result) const
-    {
-        face(c.boundary_index) = result.face;
-        exterior(c.boundary_index) = result.exterior;
-    }
-};
-```
-
-Launch with the manager and field binding from the first example:
-
-```cpp
-const auto boundary_count = manager.required_field_size()
-    - static_cast<std::size_t>(host_mesh.n_cells);
-Kokkos::View<State*, Space> face_states("physical_face_states", boundary_count);
-Kokkos::View<State*, Space> exterior_states("exterior_states", boundary_count);
-manager.evaluate_async(SaveStates{face_states, exterior_states},
-                       ph::OwnerReader{primitive}, heat_law);
-exec.fence("Both boundary states ready");
-```
-
-The sink can instead call `model.conservative(result.exterior)` and feed a numerical flux. Supply the matching interior trace to that flux as well. This module does not select a flux scheme or assemble contributions for you.
-
-## Launch your own Kokkos kernel
-
-`for_each_patch(visitor)` calls `visitor(PatchRange, typed_condition)` on the host for each nonempty local patch, including unlabelled faces with `patch_id == -1`. The range is an absolute local face interval `[begin, end)`.
-
-This example evaluates conditions directly inside your kernel and stores both states. It uses the same `Model` and `State` aliases as above; define it at namespace scope:
-
-```cpp
-template<class Condition, class Reader>
-struct BoundaryKernel {
-    boundary::GeometryView<Space> geometry;
-    Condition condition;
-    Model model;
-    Reader reader;
-    SaveStates output;
-    Real time;
-
-    KOKKOS_INLINE_FUNCTION void operator()(krona::LocalIndex face) const
-    {
-        const auto c = geometry.template context<Real>(face, time);
-        const auto inside = reader(c, condition);
-        const auto result = ph::evaluate(condition, c, inside, model);
-        output(c, result);
-    }
-};
-```
-
-Launch it using the previously allocated outputs:
-
-```cpp
-const auto reader = ph::OwnerReader{primitive};
-using Reader = std::remove_cvref_t<decltype(reader)>;
-using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<krona::LocalIndex>>;
-manager.for_each_patch([&](boundary::PatchRange range, const auto& condition) {
-    using Condition = std::remove_cvref_t<decltype(condition)>;
-    Kokkos::parallel_for("custom_physical_boundary",
-        Policy(manager.execution_space(), range.begin, range.end),
-        BoundaryKernel<Condition, Reader>{
-            manager.geometry_view(), condition, manager.model(), reader,
-            SaveStates{face_states, exterior_states}, Real{1.5}});
-});
-manager.execution_space().fence("Custom boundary kernel complete");
-```
-
-The four-argument `evaluate()` uses no flux law and zero corrections. For heat-flux conditions or reconstruction, capture helpers and call `evaluate(condition, c, inside, model, law, corrections)` instead. The shown assignments are all isothermal walls, so no heat-flux law is needed.
-
-Direct evaluation assumes prepared condition parameters and valid geometry, states, and helper buffers. Conditions obtained from a manager have already passed host assignment checks. Your launch must provide valid extents, finite time, and any additional state checks; it does not automatically run the manager's reader/provider validation or its compressible output-pressure check.
-
-An alternative is `for_each_face_async(sink, time)`: the manager launches kernels calling `sink(context, typed_condition)` without reading fields, evaluating a condition, or requiring a heat-flux law. It is useful for completely custom evaluation or direct access to prescribed parameters. Typed visitors/readers must compile for every condition alternative in the manager, not only currently assigned types.
-
-Each external face has a unique boundary slot. If your kernel accumulates into owner-cell residuals, several faces may share an owner; use atomics or another safe assembly strategy.
-
-## Add a custom condition
-
-A custom condition implements a device-callable function taking `(context, inside, model, law, corrections)` and returning `Evaluation<Primitive<Real, Model::thermal>>`. Add its type to the manager's template arguments. An optional host `validate(model)` method is called when assigning it.
-
-This example delegates to the built-in adiabatic wall with time-dependent wall velocity:
-
-```cpp
-struct AcceleratingWall {
-    Real acceleration = 2;
-
-    template<class R, class M, class Law, class Correction>
-    KOKKOS_INLINE_FUNCTION auto operator()(
-        const boundary::FaceContext<R>& c, ph::Primitive<R, M::thermal> inside,
-        const M& model, const Law& law, const Correction& correction) const
-    {
-        const ph::Vector<R> velocity{static_cast<R>(acceleration)*c.time, R{0}, R{0}};
-        return ph::evaluate(ph::AdiabaticWall<R>{velocity},
-                            c, inside, model, law, correction);
-    }
-};
-```
-
-Create a separate manager, complete its assignments, and apply it. This example requires labelled patch `0`:
-
-```cpp
-ph::Manager<Model, Exec, Real, AcceleratingWall> custom{
-    host_mesh, mesh.view(), model, exec};
-for (const auto& patch : custom.catalog().patches())
-    custom.set(patch.range.patch_id, ph::AdiabaticWall<Real>{});
-if (custom.catalog().needs_unlabelled())
-    custom.set_unlabelled(ph::AdiabaticWall<Real>{});
-custom.set(0, AcceleratingWall{Real{2}});
-custom.apply_async(primitive, heat_law, ph::Corrections<>{}, Real{1.5});
-exec.fence("Custom wall values ready");
-```
-
-The assigned wall velocity on patch `0` is `(3, 0, 0)`. Prescribing this velocity does not move the mesh. Custom conditions must return physically valid finite states, and their captured buffers must be accessible and remain valid during execution. The manager does not automatically validate arbitrary custom parameters or recompute an EOS closure for their outputs.
-
-Custom models declare `compressible`, `thermal`, and `has_characteristics`, provide host `validate()`, and implement the operations needed by the selected conditions. If `model.at(context, condition)` is available, the manager's `evaluate_async()` uses that device-selected local model for evaluation; this supports existing per-cell material buffers without precomputing a face model array. A manually launched kernel must perform that selection itself if needed.
-
-## Relations for viscous or implicit work
-
-Primitive evaluation returns states, not derivative relations. The following helpers are available separately in `relations.hpp`:
-
-| Helper | Result |
-| --- | --- |
-| `no_slip_relation(context, wall_velocity, vector_increment)` | `VelocityRelation`: prescribed wall velocity and `(wall_velocity - owner_velocity - increment) / distance` normal derivative. |
-| `slip_relation(context, wall_velocity, vector_increment)` | Coupled velocity relation: prescribed normal velocity with tangential reconstruction and zero tangential normal derivative. |
-| `wall_temperature_relation(wall, context, scalar_increment, law)` | `scalar::Relation<Real>` for adiabatic, isothermal, or heat-flux walls. |
-
-`VelocityRelation` stores matrices `value_owner`, `gradient_owner` and vectors `value_constant`, `gradient_constant`. Use `face_value(owner_velocity)` and `normal_gradient(owner_velocity)` to evaluate them. Slip couples components through the normal projection, so it is not three independent scalar Dirichlet conditions. These helpers do not apply viscosity, conductivity, or face-area factors, except for the supplied flux-to-gradient law used in a thermal relation.
-
-## Face context
-
-| Member | Meaning |
-| --- | --- |
-| `face`, `owner` | Absolute local face index and owned-cell index. |
-| `boundary_index` | `face - n_inner_faces`, for boundary-only arrays. |
-| `extended_index` | `n_cells + boundary_index`, for extended cell fields. |
-| `x, y, z` | Face centroid. |
-| `nx, ny, nz` | Outward unit normal. |
-| `distance` | Positive normal projection `(x_f - x_P) · n`, not Euclidean distance. |
-| `tx, ty, tz` | Tangential displacement `x_f - x_P - distance*n`. |
-| `area` | Face area; multiply flux density by it explicitly when integrating. |
-| `time` | Supplied finite time, default zero. |
-
-## Asynchrony and lifetime
-
-| Operation | Completion behaviour |
-| --- | --- |
-| `Manager(...)` | Blocking local setup: copies patch metadata, validates model/geometry, and fences its execution-space instance before returning. |
-| `read_config()`, `parse_config()`, `configure()`, `set()`, `set_unlabelled()` | Complete host work before return. They do not wait for earlier boundary kernels. |
-| `apply_async()` | Validates field descriptors and submits physical-face filling. No final fence. |
-| `evaluate_async()` | Validates known inputs and submits reader/evaluation/sink kernels. No final fence. |
-| `for_each_face_async()` | Submits raw typed callbacks. No final fence. |
-| `for_each_patch()` | Completes host dispatch before return; does not wait for kernels launched by the visitor. |
-| `execution_space().fence()` | Waits for work on that execution-space instance. |
-
-These operations perform no MPI communication or barrier. Local setup completion does not wait for other ranks. A synchronous backend may finish a kernel during submission; methods without a final fence provide no portable completion guarantee.
-
-Submit dependent producers, boundary work, and consumers on the same execution-space instance for ordering. Synchronize explicitly before dependent work on another instance or conflicting host/MPI access. Keep mesh arrays, fields, reader/sink outputs, and model/law/correction backing buffers alive until their submitted users finish. Changing host condition assignments affects later submissions; changing referenced buffer contents still requires correct execution ordering.
-
-The manager has no destructor fence. Complete outstanding work before releasing backing data or finalizing Kokkos. Custom kernels and callbacks have the same lifetime and ordering responsibilities.
+Keep layout/mesh owners and every captured field, provider, gradient, coefficient and callback buffer alive until completion. Condition objects are copied into kernels; reassignment affects later submissions but does not synchronize their backing buffers. Layout/manager destruction does not fence. Status destruction drains a pending batch to protect its flags, but neither checks errors nor protects buffers the caller has already released. Complete and check work before freeing storage or finalizing Kokkos.

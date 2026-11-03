@@ -131,5 +131,12 @@ inline void open_boundaries(Boundary& boundary,bool affine=false)
     boundary.set(0,ph::SupersonicInlet<R>{left.pressure,left.temperature,left.velocity});
     boundary.set(1,ph::SupersonicOutlet{});boundary.set(2,ph::Symmetry{});
 }
+template<class B,class F,class... Args>
+void publish_boundary(B& boundary,F fields,Args... args)
+{
+    boundary.finalize();
+    ph::Status<Exec> status(boundary.execution_space());
+    status.begin_async(); boundary.apply_async(fields,status,args...); status.check();
+}
 inline double tolerance(){return 1024.*static_cast<double>(Kokkos::epsilon_v<R>);}
 }

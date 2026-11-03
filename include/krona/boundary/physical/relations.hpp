@@ -2,20 +2,13 @@
 
 #include <krona/boundary/physical/conditions.hpp>
 #include <krona/boundary/scalar/conditions.hpp>
-#include <krona/boundary/correction.hpp>
+#include <krona/numerics/gradient/correction.hpp>
+#include <krona/math/matrix3.hpp>
 
 namespace krona::boundary::physical {
 
 template<class Real>
-struct Matrix {
-    Real data[3][3]{};
-    KOKKOS_INLINE_FUNCTION Vector<Real> operator*(Vector<Real> u) const
-    {
-        return {data[0][0]*u.x+data[0][1]*u.y+data[0][2]*u.z,
-                data[1][0]*u.x+data[1][1]*u.y+data[1][2]*u.z,
-                data[2][0]*u.x+data[2][1]*u.y+data[2][2]*u.z};
-    }
-};
+using Matrix = math::Matrix3<Real>;
 
 /// Affine velocity value/normal derivative for mechanical walls; includes component coupling.
 template<class Real>
@@ -67,7 +60,7 @@ struct VectorCorrection {
     KOKKOS_INLINE_FUNCTION Vector<Real> operator()(const FaceContext<Real>& c) const
     { return {static_cast<Real>(x(c)),static_cast<Real>(y(c)),static_cast<Real>(z(c))}; }
 };
-template<class P = boundary::NoCorrection,class U = ZeroVelocityIncrement,class T = boundary::NoCorrection>
+template<class P = numerics::gradient::NoCorrection,class U = ZeroVelocityIncrement,class T = numerics::gradient::NoCorrection>
 struct Corrections { P pressure; U velocity; T temperature; };
 
 /// Adiabatic defaults to isotropic conduction; an explicit law overrides this shortcut.

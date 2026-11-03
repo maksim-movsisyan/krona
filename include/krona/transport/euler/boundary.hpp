@@ -1,8 +1,24 @@
 #pragma once
 #include <krona/boundary/physical/evaluate.hpp>
+#include <Kokkos_NumericTraits.hpp>
 
 namespace krona::transport::euler {
 namespace detail {
+// Preserve Euler's status-based invalid-exterior path when reusing checked physical closures.
+struct ExteriorErrors {
+    bool* invalid;
+    KOKKOS_INLINE_FUNCTION void fail(boundary::physical::Error,const char*) const { *invalid=true; }
+    KOKKOS_INLINE_FUNCTION bool failed() const { return *invalid; }
+};
+template<class C,class R,class Model,class Law,class Correction>
+KOKKOS_INLINE_FUNCTION auto evaluated_exterior(const C& condition,const boundary::FaceContext<R>& context,
+    boundary::physical::Primitive<R,true> inside,const Model& model,const Law& law,const Correction& correction)
+{
+    bool invalid=false;
+    const auto result=boundary::physical::evaluate(condition,context,inside,model,law,correction,ExteriorErrors{&invalid});
+    if (invalid) { inside.pressure=Kokkos::quiet_NaN_v<R>; return inside; }
+    return result.exterior;
+}
 template<class C>inline constexpr bool wall=false;
 template<class R>inline constexpr bool wall<boundary::physical::SlipWall<R>> =true;
 template<class R>inline constexpr bool wall<boundary::physical::AdiabaticWall<R>> =true;
@@ -23,13 +39,14 @@ struct PreparedExterior {
         boundary::physical::Primitive<R,true> inside,boundary::physical::Primitive<R,true> face,const Model& model)const
     {
         namespace physical=boundary::physical;
-        if constexpr(detail::prepared_trace<C>)return face;
-        else if constexpr(detail::wall<C>){
-            const auto u=condition.velocity;
+        using Numeric=physical::condition_type_t<C>;
+        if constexpr(detail::prepared_trace<Numeric>)return face;
+        else if constexpr(detail::wall<Numeric>){
+            const auto u=physical::sample_wall_velocity(condition,context);
             // The existing mechanical mirror is independent of wall thermal data or a flux-to-gradient law.
-            return physical::evaluate(physical::SlipWall<R>{{static_cast<R>(u.x),static_cast<R>(u.y),static_cast<R>(u.z)}},
-                context,inside,model).exterior;
-        }else return physical::evaluate(condition,context,inside,model).exterior;
+            return detail::evaluated_exterior(physical::SlipWall<R>{{static_cast<R>(u.x),static_cast<R>(u.y),static_cast<R>(u.z)}},
+                context,inside,model,boundary::scalar::NoFluxLaw{},physical::Corrections<>{});
+        }else return detail::evaluated_exterior(condition,context,inside,model,boundary::scalar::NoFluxLaw{},physical::Corrections<>{});
     }
 };
 /// @brief Re-evaluate the existing boundary law from the reconstructed interior trace.
@@ -42,9 +59,10 @@ struct EvaluatedExterior {
     KOKKOS_INLINE_FUNCTION auto operator()(const boundary::FaceContext<R>& context,const C& condition,
         boundary::physical::Primitive<R,true> inside,boundary::physical::Primitive<R,true> face,const Model& model)const
     {
-        if constexpr(detail::wall<C>||std::is_same_v<C,boundary::physical::Symmetry>)
+        using Numeric=boundary::physical::condition_type_t<C>;
+        if constexpr(detail::wall<Numeric>||std::is_same_v<Numeric,boundary::physical::Symmetry>)
             return PreparedExterior{}(context,condition,inside,face,model);
-        else return boundary::physical::evaluate(condition,context,inside,model,law,correction).exterior;
+        else return detail::evaluated_exterior(condition,context,inside,model,law,correction);
     }
 };
 template<class L>EvaluatedExterior(L)->EvaluatedExterior<L>;

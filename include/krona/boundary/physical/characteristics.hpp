@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/boundary/physical/conditions.hpp>
+#include <krona/boundary/physical/status.hpp>
 #include <krona/thermodynamics/ideal_gas.hpp>
 
 namespace krona::boundary::physical {
@@ -13,9 +14,9 @@ struct PerfectGasCharacteristics {
     template<class Real>
     void validate(const thermodynamics::IdealGas<Real>&) const {}
 
-    template<class EOS,class Real>
+    template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> outlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, Real pressure) const
+        const FaceContext<Real>& c, Primitive<Real,true> inside, Real pressure, const Errors& errors={}) const
     {
         const auto qi = eos.from_pT(inside.pressure,inside.temperature);
         const Real gm = static_cast<Real>(eos.gamma) - Real{1};
@@ -23,6 +24,10 @@ struct PerfectGasCharacteristics {
         const Real un = inside.velocity.dot(n);
         const Real invariant = un + Real{2}*qi.sound_speed/gm;
         auto qb = eos.from_ps(pressure,qi.entropy);
+        if (!(gm>Real{0}) || !(qi.sound_speed>Real{0}) || !(qb.sound_speed>Real{0}) ||
+            !Kokkos::isfinite(invariant) || !Kokkos::isfinite(qb.sound_speed)) {
+            errors.fail(Error::Characteristics,"Physical boundary: invalid characteristic thermodynamic state"); return inside;
+        }
         Real ub = invariant - Real{2}*qb.sound_speed/gm;
         if (ub > qb.sound_speed) {
             // A subsonic interior cannot communicate an arbitrarily low back pressure.
@@ -36,29 +41,32 @@ struct PerfectGasCharacteristics {
         return {qb.pressure, inside.velocity + n*(ub-un), qb.temperature};
     }
 
-    template<class EOS,class Real>
+    template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> inlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, TotalConditionsInlet<Real> specified) const
+        const FaceContext<Real>& c, Primitive<Real,true> inside, TotalConditionsInlet<Real> specified, const Errors& errors={}) const
     {
         const auto n = normal(c);
         const Real mu = specified.direction.dot(n);
-        if (!(mu < Real{0})) Kokkos::abort("Physical boundary: inlet direction must point into the domain");
+        if (!(mu < Real{0})) { errors.fail(Error::Characteristics,"Physical boundary: inlet direction must point into the domain"); return inside; }
         const auto qi = eos.from_pT(inside.pressure,inside.temperature);
         const Real un = inside.velocity.dot(n);
-        if (!(un > -qi.sound_speed))
-            Kokkos::abort("Physical boundary: total conditions do not specify a supersonic inflow state");
+        if (!(un > -qi.sound_speed)) {
+            errors.fail(Error::Characteristics,"Physical boundary: total conditions do not specify a supersonic inflow state"); return inside;
+        }
         const auto stagnation = eos.from_pT(specified.total_pressure,specified.total_temperature);
         const Real gm = static_cast<Real>(eos.gamma) - Real{1};
         const Real invariant = un + Real{2}*qi.sound_speed/gm;
         const Real resting_invariant = Real{2}*stagnation.sound_speed/gm;
-        if (resting_invariant < invariant)
-            Kokkos::abort("Physical boundary: total inlet data admit no inward characteristic solution");
+        if (resting_invariant < invariant) {
+            errors.fail(Error::Characteristics,"Physical boundary: total inlet data admit no inward characteristic solution"); return inside;
+        }
         const Real sonic_speed = Kokkos::sqrt(stagnation.sound_speed*stagnation.sound_speed/(mu*mu+gm/Real{2}));
         const Real sonic_sound = -mu*sonic_speed;
         Real speed = 0;
         if (mu*sonic_speed+Real{2}*sonic_sound/gm > invariant) {
-            if (!specified.allow_choking)
-                Kokkos::abort("Physical boundary: total inlet choked; explicitly allow_choking or supply a supersonic state");
+            if (!specified.allow_choking) {
+                errors.fail(Error::Characteristics,"Physical boundary: total inlet choked; explicitly allow_choking or supply a supersonic state"); return inside;
+            }
             speed = sonic_speed;
         } else {
             const Real a = mu*mu + Real{2}/gm;
@@ -69,7 +77,11 @@ struct PerfectGasCharacteristics {
             speed = b > Real{0} ? -Real{2}*d/(b+root) : (-b+root)/(Real{2}*a);
             speed = Kokkos::fmin(sonic_speed,Kokkos::fmax(Real{0},speed));
         }
-        const auto qb = eos.from_hs(stagnation.enthalpy-speed*speed/Real{2},stagnation.entropy);
+        const Real enthalpy=stagnation.enthalpy-speed*speed/Real{2};
+        if (!(enthalpy>Real{0}) || !Kokkos::isfinite(enthalpy)) {
+            errors.fail(Error::Characteristics,"Physical boundary: invalid inlet static enthalpy"); return inside;
+        }
+        const auto qb = eos.from_hs(enthalpy,stagnation.entropy);
         return {qb.pressure,specified.direction*speed,qb.temperature};
     }
 };

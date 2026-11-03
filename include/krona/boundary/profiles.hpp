@@ -4,12 +4,13 @@
 #include <krona/fields/component.hpp>
 #include <krona/math/vector3.hpp>
 
-#include <cmath>
 #include <type_traits>
 
 namespace krona::boundary::profile {
 
 namespace detail {
+template<class T> inline constexpr bool is_vector = false;
+template<class R> inline constexpr bool is_vector<math::Vector3<R>> = true;
 template<class T>
 bool finite(const T& value)
 {
@@ -69,7 +70,7 @@ template<class View>
 template<class Provider, class Context>
 KOKKOS_INLINE_FUNCTION decltype(auto) sample(const Provider& provider, const Context& context)
 {
-    if constexpr (std::is_arithmetic_v<Provider>) return provider;
+    if constexpr (std::is_arithmetic_v<Provider> || detail::is_vector<Provider>) return provider;
     else return provider(context);
 }
 
@@ -79,6 +80,8 @@ void validate(const Provider& provider, PatchRange range)
 {
     if constexpr (std::is_arithmetic_v<Provider>)
         mpi::require(std::isfinite(provider), "Boundary profile: parameter must be finite");
+    else if constexpr (detail::is_vector<Provider>)
+        mpi::require(math::isfinite(provider), "Boundary profile: vector must be finite");
     else if constexpr (requires { provider.template validate<Exec>(range); })
         provider.template validate<Exec>(range);
 }

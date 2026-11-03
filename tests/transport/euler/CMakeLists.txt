@@ -1,9 +1,9 @@
 add_executable(krona_test_euler test_euler.cpp)
-target_link_libraries(krona_test_euler PRIVATE krona_test_support krona::execution krona::mpi)
+target_link_libraries(krona_test_euler PRIVATE krona_test_support krona::execution krona::mpi krona::boundary_physical)
 if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Euler tests require an MPI launcher")
 endif()
-foreach(case IN ITEMS uniform split_additive affine reconstruction_fallback walls layouts partition_algebra custom_time empty prepared_profile unlabelled eos_domain geometry)
+foreach(case IN ITEMS profiled_walls profiled_inlet uniform split_additive affine reconstruction_fallback walls layouts partition_algebra custom_time empty prepared_profile unlabelled eos_domain geometry)
     add_test(NAME "transport.euler.${case}" COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1
         ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_euler>" ${MPIEXEC_POSTFLAGS} "${case}")
     set_tests_properties("transport.euler.${case}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS "transport;euler"
@@ -17,7 +17,7 @@ foreach(ranks IN ITEMS 2 3)
 endforeach()
 set(cases alias state boundary)
 set(messages "input/output alias is unsupported" "invalid cell thermodynamic state" "invalid exterior boundary state")
-foreach(i RANGE 0 2)
+foreach(i RANGE 0 2) 
     list(GET cases ${i} case)
     list(GET messages ${i} expected)
     add_test(NAME "transport.euler.reject_${case}" COMMAND "${CMAKE_COMMAND}"
