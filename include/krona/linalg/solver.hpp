@@ -21,6 +21,9 @@ struct SolverOptions {
     // Unset chooses 1e-5 for float or 1e-10 for double, using the actual Solver scalar.
     std::optional<double> relative_tolerance;
     double absolute_tolerance = 0;
+    // Recompute b-Ax after Belos; when enabled its norm determines converged.
+    // Initial residual computation/scaling is required in both modes.
+    bool verify_residual = false;
     int maximum_iterations = 500;
     int restart_length = 50;
     PreconditioningSide side = PreconditioningSide::Automatic;
@@ -29,19 +32,22 @@ struct SolverOptions {
 };
 
 struct SolveResult {
-    // Authoritative test: independently recomputed ||b-Ax||_2 <= residual_threshold.
+    // Belos status after iteration, unless verify_residual requests the true-residual test.
+    // Early exits use the already-computed initial residual.
     bool converged = false;
+    bool residual_checked = false;
     bool krylov_converged = false;
     bool iterations_started = false;
     int iterations = 0;
-    double residual_norm = 0;
+    // Final true-residual metrics are unavailable (NaN) unless residual_checked.
+    double residual_norm = std::numeric_limits<double>::quiet_NaN();
     double initial_residual_norm = 0;
     double rhs_norm = 0;
-    double relative_residual = 0;
+    double relative_residual = std::numeric_limits<double>::quiet_NaN();
     double residual_threshold = 0;
 };
 
-/// @brief Configurable Belos solve with independent true-residual verification.
+/// @brief Configurable Belos solve with optional independent final true-residual verification.
 /// Collective and blocking; matrix must outlive the solver. Not reentrant.
 template<class Matrix, class PrecScalar = PreconditionerReal>
 class Solver {
@@ -98,12 +104,14 @@ public:
     /// @brief Optional explicit warm-up; solve also prepares after coefficient revisions.
     void prepare()
     {
-        // Let a rebuild release the old hierarchy before allocating a new one.
-        problem_->setLeftPrec(Teuchos::null);
-        problem_->setRightPrec(Teuchos::null);
-        preconditioner_.prepare();
-        if (side_ == PreconditioningSide::Left) problem_->setLeftPrec(preconditioner_.native());
-        else problem_->setRightPrec(preconditioner_.native());
+        mpi::guarded([&] {
+            // Let a rebuild release the old hierarchy before allocating a new one.
+            problem_->setLeftPrec(Teuchos::null);
+            problem_->setRightPrec(Teuchos::null);
+            preconditioner_.prepare();
+            if (side_ == PreconditioningSide::Left) problem_->setLeftPrec(preconditioner_.native());
+            else problem_->setRightPrec(preconditioner_.native());
+        });
     }
 
     [[nodiscard]] preconditioner_type& preconditioner() noexcept { return preconditioner_; }
@@ -124,6 +132,9 @@ public:
             mpi::require(std::isfinite(result.rhs_norm), "Linalg: nonfinite RHS norm");
             if (matrix_.distribution().global_size() == 0) {
                 result.converged = true;
+                result.residual_checked = true;
+                result.residual_norm = result.relative_residual = 0;
+                result.residual_threshold = options_.absolute_tolerance;
                 return result;
             }
             if (residual_.is_null())
@@ -139,13 +150,16 @@ public:
             result.residual_threshold = std::max(options_.absolute_tolerance, relative_tolerance_*reference);
             mpi::require(std::isfinite(result.residual_threshold), "Linalg: stopping threshold overflow");
             const auto record_residual = [&](double norm) {
+                result.residual_checked = true;
                 result.residual_norm = norm;
                 result.relative_residual = reference > 0 ? norm/reference :
                     (norm == 0 ? 0 : std::numeric_limits<double>::infinity());
                 result.converged = std::isfinite(norm) && norm <= result.residual_threshold;
             };
-            record_residual(result.initial_residual_norm);
-            if (result.converged || options_.maximum_iterations == 0) return result;
+            if (result.initial_residual_norm <= result.residual_threshold || options_.maximum_iterations == 0) {
+                record_residual(result.initial_residual_norm);
+                return result;
+            }
 
             prepare();
             problem_->setLHS(solution.native());
@@ -180,7 +194,8 @@ public:
             result.iterations_started = true;
             result.krylov_converged = manager_->solve() == Belos::Converged;
             result.iterations = manager_->getNumIters();
-            record_residual(residual_norm());
+            if (options_.verify_residual) record_residual(residual_norm());
+            else result.converged = result.krylov_converged;
             Kokkos::fence("Linalg: solve complete");
             return result;
         });

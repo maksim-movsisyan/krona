@@ -12,12 +12,12 @@
 | `CsrMatrix<Scalar, Exec>` | Owns scalar coefficients on a shared immutable pattern. |
 | `BsrPattern<Exec>` / `BsrMatrix<Scalar, Exec>` | Fixed-size dense blocks on a block-row graph, with an expanded scalar-DOF distribution. |
 | `Vector<Scalar, Exec>` | Owns values for locally owned unknowns only. |
-| `Solver<Matrix, PrecScalar>` | Configures Belos, prepares preconditioning when needed, solves, and verifies the true residual. |
+| `Solver<Matrix, PrecScalar>` | Configures Belos, prepares preconditioning when needed, solves, and optionally verifies the final true residual. |
 | `Preconditioner<Matrix, PrecScalar>` | Manages Ifpack2, MueLu, or a custom factory; refreshes after coefficient changes. |
 | `mesh_adapter.hpp` / `FaceAssemblyPlan` | Optional host-mesh numbering, face-neighbour sparsity, and face-to-coefficient positions. |
 | `field_transfer.hpp` | Optional copying between KRONA field components and owned algebraic DOFs. |
 
-The core uses MPI, Kokkos, and Trilinos. The project requests Trilinos 17.2.1 with Tpetra, Belos, Ifpack2, and MueLu. Use a compatible MPI/compiler/Kokkos build with Tpetra explicit instantiations for the selected execution space and scalar precisions. Native ordinals are always `LocalOrdinal = int` and `GlobalOrdinal = long long`, independently of mesh index widths. Algebraic scalar types are `float` or `double`.
+The core uses MPI, Kokkos, Trilinos and the backend-independent field-transfer helpers. The project requests Trilinos 17.2.1 with Tpetra, Belos, Ifpack2, and MueLu. Use a compatible MPI/compiler/Kokkos build with Tpetra explicit instantiations for the selected execution space and scalar precisions. Native ordinals are always `LocalOrdinal = int` and `GlobalOrdinal = long long`, independently of mesh index widths. Algebraic scalar types are `float` or `double`.
 
 Native coefficient/vector memory follows the selected Tpetra node configuration. Use the returned view types; shared/unified native memory need not be the same type as `Exec::memory_space`.
 
@@ -37,12 +37,12 @@ Owning `Teuchos::RCP` handles and managed Kokkos views retain shared allocations
 | `Vector` construction | Shares the distribution map and allocates zero-initialized native values; it does not borrow a field allocation. |
 | `FaceAssemblyPlan` | Owns/shared-owns its pattern and three managed entry-map arrays. Uses temporary host numbering/CSR arrays during construction. Does not retain the mesh. Copies share its prepared allocations. |
 | Matrix/vector access views | Alias existing native values; they are not snapshots. Native views may retain allocations, but still obey the owner's access/commit contract. BSR block adapters are explicitly unmanaged. |
-| Field bindings / `FieldPack` | Copy descriptors only. Transfer calls submit actual value-copy/conversion kernels into separately allocated destination storage. |
+| Field bindings / `fields::ComponentPack` | Copy descriptors only. Transfer calls submit actual value-copy/conversion kernels into separately allocated destination storage. |
 | `Solver` / `Preconditioner` | Borrow the KRONA matrix object by `const Matrix&`; the matrix must outlive them. Own backend objects and cached work allocations through `RCP`. Copy options/parameter lists. |
 
 Original distribution/pattern wrapper objects need not outlive matrices or vectors constructed from them: those objects retain shared handles. This differs from the borrowed matrix wrapper used by solvers and preconditioners.
 
-Solver residual storage is allocated lazily on the first nonempty solve and reused. Belos allocates its Krylov workspace. Its linear problem can retain native RHS/solution `RCP`s; solving does not copy those vectors into replacement solution/RHS arrays.
+Solver residual storage is allocated lazily on the first nonempty solve and reused. It is needed for the initial residual even when final verification is disabled; that initial residual is also supplied to Belos to avoid a duplicate initial SpMV. Enabling final verification reuses the same buffer. Belos allocates its Krylov workspace. Its linear problem can retain native RHS/solution `RCP`s; solving does not copy those vectors into replacement solution/RHS arrays.
 
 With equal matrix/preconditioner scalar types, preconditioning uses the original native matrix. With different types, it allocates a second coefficient array on the same logical graph and converts coefficients when refreshed. The precision bridge also caches input/output multivectors and converts values on each preconditioner application; an additional solver-precision buffer is needed for the nonzero-`beta` path. This is not zero-copy mixed precision.
 
@@ -137,6 +137,7 @@ int run(krona::mpi::CommView comm)
         x.fill(Scalar{0}, exec); // Blocking initial-guess fill.
 
         la::SolverOptions options;
+        options.verify_residual = true; // This example prints the final true residual.
         options.method = "GMRES";
         options.maximum_iterations = 200;
         options.restart_length = 30;
@@ -272,27 +273,32 @@ External boundary faces have no off-diagonal map entry; their discretization usu
 
 ## Copy fields to and from vectors
 
-These helpers submit copy/conversion kernels; fields and algebraic vectors remain separate allocations. They respect component strides and write only owned prefixes, leaving field ghost/boundary tails unchanged.
+Include `<krona/linalg/field_transfer.hpp>`. Transfers copy/convert values between separate allocations; they do not bind vectors to fields. Component strides are respected and field ghost/boundary tails are preserved.
 
-| API | Mapping |
+| Asynchronous API | Mapping |
 | --- | --- |
-| `vector.copy_from_component(view, exec)` / `copy_to_component(view, exec)` | One rank-one component, indexed in vector-local row order. |
-| `copy_from_field(vector, field, exec)` / `copy_to_field(vector, field, exec)` | Entire `FieldView`: local DOF `cell*N + component`. |
-| `copy_from_fields(vector, field_pack(...), exec)` / `copy_to_fields(...)` | Concatenates supplied fields/components within each owned cell. Accepts `FieldView`s and individual rank-one component views. |
+| `vector.copy_from_component_async(view, exec)` / `copy_to_component_async(view, exec)` | One rank-one component in vector-local row order. |
+| `copy_from_field_async(vector, field, exec)` / `copy_to_field_async(...)` | One field: DOF `cell*N + component`. |
+| `copy_from_fields_async(vector, fields::pack(...), exec)` / `copy_to_fields_async(...)` | Supplied fields/components concatenated within each owned cell. |
 
-Include `<krona/linalg/field_transfer.hpp>`. For density, three momentum components, and energy, a five-DOF vector must use `[rho, mx, my, mz, E]` within each cell:
+For density, three momentum components and energy, a five-DOF vector uses `[rho, mx, my, mz, E]` within each cell:
 
 ```cpp
-// rho, momentum and energy are FieldViews; vector uses a five-DOF-per-cell distribution.
-auto pack = la::field_pack(rho, momentum, energy);
-la::copy_from_fields(vector, pack, exec);
+const auto packed = krona::fields::pack(rho, momentum, energy);
+la::copy_from_fields_async(vector, packed.as_const(), exec);
 vector.commit();
 // ... matrix operations / solve ...
-la::copy_to_fields(vector, pack, exec);
+la::copy_to_fields_async(vector, packed, exec);
 vector.commit(); // Completes the read batch and destination-field writes.
 ```
 
-The alternative call form is `copy_from_fields(vector, exec, rho, momentum, energy)`. Total component width and actual cell order must match the intended algebraic DOFs; divisibility checks cannot establish that semantic agreement. Fields must be long enough, accessible, and writable when unpacking. Conversions use the destination scalar type. Sources/destinations must not alias the native vector; unpack destinations must not overlap each other. Complete other producers before transfer, and keep field buffers valid until commit.
+The alternative form is `copy_from_fields_async(vector, exec, rho, momentum, energy)`. Methods/functions without `_async` are genuine blocking counterparts: they submit the same transfer and call `vector.commit()` before returning. Existing names therefore remain usable, but now wait. Use `_async` to group dependent work without an intermediate fence.
+
+The former `linalg::FieldPack` and `linalg::field_pack()` are removed; use `fields::pack()`. Mixed scalar types and const inputs are supported; packed components share one memory space, as required by `fields::pack()`. Unpacking writes each component through its exact typed accessor, including mixed writable packs; it does not convert through the pack's common scalar type.
+
+Total component width and actual cell order must match the intended algebraic DOFs; extent/divisibility checks cannot establish semantic agreement. Fields must be long enough, accessible and writable when unpacking. Conversion uses the destination scalar type and ordinary cast semantics; representability is a caller precondition. Sources/destinations must not alias native vector values, and unpack destinations must not overlap each other. Queue producers on the same execution instance or synchronize them first. Keep buffers alive through commit/completion.
+
+The copying kernels live in `<krona/fields/transfer.hpp>`, independent of Tpetra. `fields::copy_to_dofs_async(exec, input, dofs)` and `copy_from_dofs_async(exec, dofs, output)` work with rank-one Kokkos DOF views and fields/packs. DOF extent divided by pack width selects the cell prefix. Their blocking counterparts fence `exec`, but cannot clear a vector owner's pending-access flag: callers using native vector views must still commit that vector. The linalg adapters handle access tracking for you.
 
 ## Solver and preconditioner controls
 
@@ -301,6 +307,7 @@ The alternative call form is `copy_from_fields(vector, exec, rho, momentum, ener
 | `method` | `"GMRES"`; native Belos method name, normalized to uppercase. `"FGMRES"` aliases `"FLEXIBLE GMRES"`. |
 | `relative_tolerance` | Unset: `1e-5` for float, `1e-10` for double, using the actual matrix/solver scalar. |
 | `absolute_tolerance` | `0`. At least one tolerance must be positive; relative tolerance must be below one. |
+| `verify_residual` | `false`; independently recompute the final `b-Ax` and use its norm to determine convergence when enabled. |
 | `maximum_iterations` | `500`; zero checks the initial residual without starting iteration. |
 | `restart_length` | `50`; supplies `Num Blocks` for applicable managers unless explicitly provided. |
 | `side` | `Automatic`: left for CG-family names ending in `CG` and for `MINRES`, right otherwise. Enabled BICGSTAB/flexible GMRES preconditioning requires right side. |
@@ -311,14 +318,31 @@ The application must choose an algorithm/preconditioner appropriate to the matri
 
 `solve(b, x)` uses the current `x` as its initial guess. Both vectors and the matrix must be committed, use the matrix's native map object, and have distinct native RHS/solution allocations. The call is collective and blocking.
 
-Convergence is determined by an independently recomputed true residual:
+The initial true residual is always computed to accept an already-converged guess and configure the stopping threshold:
 
 $$
-\|b-Ax\|_2\le\max(\mathrm{absolute\_tolerance},
-                         \mathrm{relative\_tolerance}\,R),
+\tau=\max(\mathrm{absolute\_tolerance},\mathrm{relative\_tolerance}\,R),
 $$
 
-where `R = ||b||_2` for nonzero RHS and `R = ||b-A*x_initial||_2` otherwise. `relative_residual` uses that same reference. `SolveResult::converged` is the authoritative result; `krylov_converged` reports Belos's own status. The result also contains iteration count, whether iteration started, RHS norm, initial/final residual norms, and threshold. Nonconvergence is returned for the caller to handle, not automatically fatal. An accepted initial guess or globally empty system skips iteration; the preconditioner may remain unprepared.
+where `R = ||b||_2` for a nonzero RHS and `R = ||b-A*x_initial||_2` otherwise. This scaling and the Belos stopping controls do not depend on final verification.
+
+By default (`verify_residual = false`), an iterative solve sets `converged` from Belos's returned status. KRONA does not perform an extra final SpMV/update/norm reduction. Belos retains any residual computations required by its own algorithm. `residual_checked` is false and `residual_norm` / `relative_residual` are NaN, not estimates or zeros.
+
+With `verify_residual = true`, KRONA recomputes `r = b-Ax` after iteration. `residual_checked` is true; `residual_norm` is `||r||_2`, `relative_residual` is `||r||_2/R`, and `converged` is the independent test `||r||_2 <= tau`. `krylov_converged` always reports Belos's own status when iteration started, so the two flags may differ in verified mode.
+
+An accepted initial guess, a zero iteration budget or a globally empty system needs no final recomputation: the unchanged solution's residual is already known and reported with `residual_checked = true`, regardless of the option. Such exits do not start Belos; the preconditioner may remain unprepared. Initial/RHS norms, threshold, iteration count and `iterations_started` remain available in both modes. Nonconvergence is returned for the caller to handle. Solver options, including `verify_residual`, must agree across participating ranks.
+
+To request final metrics:
+
+```cpp
+la::SolverOptions options;
+options.verify_residual = true;
+la::Solver solver(A, options);
+const auto result = solver.solve(b, x);
+if (result.residual_checked) {
+    // result.residual_norm and result.relative_residual are available.
+}
+```
 
 `solver.prepare()` optionally warms up preconditioning. `solve()` also prepares when iteration is needed. Any-rank coefficient revision changes trigger refresh on all ranks. Ifpack2 initializes its structure once and recomputes numerical data after updates; `RELAXATION` defaults to Jacobi. MueLu defaults to rebuilding (`reuse: type = "none"`); supply a supported reuse policy to reuse a hierarchy. `preconditioner().invalidate()` requests another refresh; `generation()` counts completed enabled refreshes.
 
@@ -334,12 +358,12 @@ A custom preconditioner factory receives `(RCP<const native_matrix_in_PrecScalar
 | CSR/BSR matrix construction | Native setup/allocation and a process-wide Kokkos fence before return. |
 | Vector construction | Native allocation and zero initialization; no explicit KRONA fence or caller-selected `Exec` parameter. |
 | Host `set_values()` | Completes host assembly before return. Native device storage may synchronize later when accessed. Requires no pending access. |
-| Access acquisition, `set_values_async()`, `fill_async()`, field/component transfer helpers | Open/join an access batch. Custom copies/kernels have no final fence. Commit the accessed matrix/vector. Some helper names have no `_async` suffix. |
+| Access acquisition, `set_values_async()`, `fill_async()`, field/component transfer helpers ending in `_async` | Open/join an access batch. Custom copies/kernels have no final fence. Commit the accessed matrix/vector. |
 | Matrix/vector `commit()` | Local fence on the pending execution instance and state reset; no MPI barrier. Destructors also commit pending accesses. |
-| Vector `fill()` | Calls `fill_async()` followed by `commit()`. |
+| Vector `fill()` and field/component transfers without `_async` | Submit their asynchronous counterpart, then commit the vector before returning. |
 | Matrix `apply()` | Collective, blocking native multiplication/imports and a process-wide Kokkos fence. Requires all operands committed; in-place `x == y` is rejected. |
 | `Preconditioner::prepare()` / `Solver::prepare()` | Treat as collective blocking preparation; enabled refreshes fence before return. Clean/disabled paths can return without new device work. |
-| `Solver::solve()` | Collective blocking solve with host-visible residuals. Iterative path ends with a process-wide Kokkos fence; early exits rely on completed native norm/residual operations. |
+| `Solver::solve()` | Collective blocking solve with host-visible status and initial metrics; final true-residual metrics are optional. Iterative path ends with a process-wide Kokkos fence; early exits rely on completed native norm/residual operations. |
 
 Process-wide Kokkos fences can wait beyond one stream; instance `commit()` waits only for its recorded instance. A fence does not synchronize other MPI ranks. Queue dependent custom work on the same instance, or explicitly synchronize producers on other instances. Native access through `native()` does not open a tracked batch: the caller must enforce completion and coefficient revision tracking. Explicitly commit before releasing external transfer buffers; a later matrix/vector destructor cannot protect a buffer already destroyed.
 

@@ -629,7 +629,7 @@ if(KRONA_ENABLE_TRILINOS)
     add_library(krona::linalg ALIAS krona_linalg)
     krona_public_headers(krona_linalg PUBLIC)
     target_link_libraries(krona_linalg
-        PUBLIC krona::execution krona::mpi krona::linear_algebra
+        PUBLIC krona::execution krona::mpi krona::fields krona::linear_algebra
         PRIVATE krona::warnings)
 endif()
 

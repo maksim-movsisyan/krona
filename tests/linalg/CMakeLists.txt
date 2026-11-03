@@ -22,7 +22,7 @@ function(krona_add_linalg_test name ranks)
 endfunction()
 
 # A small first case isolates MPI/Kokkos/Tpetra startup from numerical work.
-set(cases initialization mapping stopping empty minres_indefinite fields_left fields_right
+set(cases initialization mapping stopping verification bsr_verification blocking_transfers empty minres_indefinite fields_left fields_right
     mesh_adapter precision_bridge gmres fgmres bicgstab cg minres ifpack amg amg_reuse
     mixed_precision float_solver bsr_mapping bsr_solvers bsr_ifpack bsr_amg bsr_amg_reuse
     bsr_mixed_precision bsr_empty bsr_factory multiple_fields_left multiple_fields_right)

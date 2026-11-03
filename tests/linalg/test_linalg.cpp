@@ -169,7 +169,7 @@ void solve_case(const std::string& method, const std::string& preconditioner, bo
     exact_values(exact);
     matrix.apply(exact, rhs);
     solution.fill(S(0.25));
-    SolverOptions options;
+    SolverOptions options; options.verify_residual = true;
     options.method = method;
     options.preconditioner.type = preconditioner;
     options.relative_tolerance = std::is_same_v<S, float> ? 3e-5 : 1e-10;
@@ -240,7 +240,7 @@ void symmetric_indefinite()
     Vector<double, Exec> exact(distribution), rhs(distribution), solution(distribution);
     exact_values(exact);
     matrix.apply(exact, rhs);
-    SolverOptions options;
+    SolverOptions options; options.verify_residual = true;
     options.method = "MINRES";
     options.preconditioner.type = "NONE";
     Solver<decltype(matrix), double> solver(matrix, options);
@@ -258,7 +258,7 @@ void stopping_cases()
     matrix.set_values(coefficients<double>(distribution, input, true));
     Vector<double, Exec> rhs(distribution), solution(distribution), exact(distribution);
     exact_values(exact);
-    SolverOptions options;
+    SolverOptions options; options.verify_residual = true;
     options.preconditioner.type = "NONE";
     options.relative_tolerance = 1e-9;
     Solver<decltype(matrix), double> solver(matrix, options);
@@ -291,7 +291,7 @@ void stopping_cases()
 
 void empty_cases()
 {
-    for (const bool all_empty : {false, true}) {
+    for (const bool all_empty : {false, true}) for (const bool verify : {false, true}) {
         std::vector<GlobalOrdinal> gids;
         if (!all_empty && rank == 0) gids = {0};
         Distribution<Exec> distribution(gids, mpi::CommView::world());
@@ -303,13 +303,18 @@ void empty_cases()
         matrix.set_values(std::vector<double>(gids.size(), 2.0));
         Vector<double, Exec> rhs(distribution), solution(distribution);
         rhs.fill(2.0);
-        SolverOptions options;
+        SolverOptions options; options.verify_residual = verify;
         options.method = "CG";
         options.preconditioner.type = "NONE";
         Solver<decltype(matrix), double> solver(matrix, options);
         const auto result = solver.solve(rhs, solution);
         check(result.converged, "test: solve with empty local/global distribution failed");
-        if (all_empty) check(result.iterations == 0, "test: empty system performed iterations");
+        if (!all_empty) {
+            check(result.residual_checked == verify, "test: optional final check differs on empty local ranks");
+            check(error(solution) < 1e-12, "test: solve with empty local ranks has wrong solution");
+        }
+        if (all_empty) check(result.iterations == 0 && result.residual_checked && result.residual_norm == 0,
+                             "test: empty system performed iterations or lost its zero residual");
     }
 }
 
@@ -328,10 +333,10 @@ void field_transfers()
     using Field = fields::FieldView<float, 3, Space, Layout>;
     Field from(typename Field::view_type(source.data(), 5));
     Field to(typename Field::view_type(target.data(), 5));
-    copy_from_field(vector, from, exec);
+    copy_from_field_async(vector, from, exec);
     vector.commit();
-    copy_to_field(vector, to, exec);
-    vector.copy_to_component(Kokkos::subview(strided, Kokkos::ALL(), 1), exec);
+    copy_to_field_async(vector, to, exec);
+    vector.copy_to_component_async(Kokkos::subview(strided, Kokkos::ALL(), 1), exec);
     vector.fill_async(99.0, exec); // Same-instance overwrite follows the queued reads.
     vector.commit();
     const auto h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, target);
@@ -340,7 +345,7 @@ void field_transfers()
         check(h(cell, c) == (cell < 2 ? float(10*cell+c) : -7.0f), "test: field transfer or extended tail corruption");
     for (int i = 0; i < 9; ++i) for (int c = 0; c < 3; ++c)
         check(s(i, c) == (c == 1 && i < 6 ? float(10*(i/3)+i%3) : -9.0f), "test: strided component or tail corruption");
-    vector.copy_from_component(Kokkos::subview(strided, Kokkos::ALL(), 1), exec);
+    vector.copy_from_component_async(Kokkos::subview(strided, Kokkos::ALL(), 1), exec);
     vector.commit();
     const auto local = std::as_const(*vector.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
     for (int i = 0; i < 6; ++i) check(local(i, 0) == double(10*(i/3)+i%3), "test: strided component import failed");
@@ -503,8 +508,8 @@ void rejected_case(const std::string& mode)
         }
         if (mode.starts_with("pack_")) {
             Kokkos::View<double*, Space> values("short", mode == "pack_short" ? 0 : 1);
-            if (mode == "pack_short") copy_from_fields(block_rhs, Exec{}, values, values, values);
-            else copy_from_fields(block_rhs, Exec{}, values, values);
+            if (mode == "pack_short") copy_from_fields_async(block_rhs, Exec{}, values, values, values);
+            else copy_from_fields_async(block_rhs, Exec{}, values, values);
         }
         check(false, "test: new rejection case unexpectedly succeeded");
     }
@@ -514,7 +519,7 @@ void rejected_case(const std::string& mode)
     if (mode == "pending_read") { const auto view = rhs.read(); (void)view; matrix.apply(rhs, solution); }
     if (mode == "pending_write") { const auto view = solution.edit(); (void)view; matrix.apply(rhs, solution); }
     if (mode == "pending_matrix_read") { const auto view = matrix.read_values(); (void)view; matrix.apply(rhs, solution); }
-    SolverOptions options; options.preconditioner.type = "RELAXATION";
+    SolverOptions options; options.verify_residual = true; options.preconditioner.type = "RELAXATION";
     if (mode == "bicgstab_left") { options.method = "BICGSTAB"; options.side = PreconditioningSide::Left; }
     if (mode == "bad_method") options.method = "NO_SUCH_METHOD";
     if (mode == "precision_overflow") matrix.set_values(std::vector<double>{std::numeric_limits<double>::max()});
@@ -704,7 +709,7 @@ void bsr_solve_case(const std::string& method, const std::string& type, bool sym
     matrix.set_values(values);
     Vector<S, Exec> exact(matrix.distribution()), rhs(matrix.distribution()), solution(matrix.distribution());
     exact_values(exact); matrix.apply(exact, rhs); solution.fill(S(0.25));
-    SolverOptions options; options.method = method; options.preconditioner.type = type;
+    SolverOptions options; options.verify_residual = true; options.method = method; options.preconditioner.type = type;
     options.relative_tolerance = std::is_same_v<S, float> ? 2e-5 : 1e-10;
     options.maximum_iterations = 300; options.restart_length = 15;
     if (type == "SCHWARZ") {
@@ -780,7 +785,7 @@ void bsr_mixed_precision()
 
 void bsr_empty()
 {
-    for (const bool all_empty : {false, true}) {
+    for (const bool all_empty : {false, true}) for (const bool verify : {false, true}) {
         std::vector<GlobalOrdinal> gids;
         if (!all_empty && rank == 0) gids = {0};
         Distribution<Exec> blocks(gids, mpi::CommView::world());
@@ -790,9 +795,11 @@ void bsr_empty()
         matrix.set_values(block_coefficients<double>(blocks, input, 3, true));
         Vector<double, Exec> exact(matrix.distribution()), rhs(matrix.distribution()), solution(matrix.distribution());
         exact_values(exact); matrix.apply(exact, rhs);
-        SolverOptions options; options.method = "CG"; options.preconditioner.type = "RELAXATION";
+        SolverOptions options; options.verify_residual = verify; options.method = "CG"; options.preconditioner.type = "RELAXATION";
         Solver solver(matrix, options);
-        check(solver.solve(rhs, solution).converged, "test: BSR solve failed on an empty local/global map");
+        const auto result = solver.solve(rhs, solution);
+        check(result.converged && result.residual_checked == (all_empty || verify),
+              "test: BSR solve/final verification failed on an empty local/global map");
     }
 }
 
@@ -866,16 +873,16 @@ void multiple_fields()
     Rho rho_out(typename Rho::view_type(density_out.data(), extended));
     Mom mom(typename Mom::view_type(momentum.data(), extended));
     Mom mom_out(typename Mom::view_type(momentum_out.data(), extended));
-    const auto sources = field_pack(rho.as_const(), mom.as_const(), Kokkos::subview(energy, Kokkos::ALL(), 1));
+    const auto sources = fields::pack(rho.as_const(), mom.as_const(), Kokkos::subview(energy, Kokkos::ALL(), 1));
     static_assert(decltype(sources)::components == 5);
-    copy_from_fields(vector, sources, exec); vector.commit();
+    copy_from_fields_async(vector, sources, exec); vector.commit();
     {
         const auto h = std::as_const(*vector.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
         for (std::size_t cell = 0; cell < owned_cells; ++cell) for (int c = 0; c < 5; ++c)
             check(h(cell*5+static_cast<std::size_t>(c), 0) == double(100*cell)+c,
                   "test: multiple-field packing has wrong AoS/component order");
     }
-    copy_to_fields(vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
+    copy_to_fields_async(vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
     vector.fill_async(99, exec); vector.commit(); // The read must finish before the overwrite.
     const auto hr = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, density_out);
     const auto hm = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, momentum_out);
@@ -888,7 +895,7 @@ void multiple_fields()
               "test: strided energy unpack changed another component or extended tail");
     }
     // Five separate scalar components exercise the Navier-Stokes residual form.
-    copy_from_fields(vector, exec, rho, mom.component(0), mom.component(1), mom.component(2),
+    copy_from_fields_async(vector, exec, rho, mom.component(0), mom.component(1), mom.component(2),
                      Kokkos::subview(energy, Kokkos::ALL(), 1));
     vector.commit();
     const auto h = std::as_const(*vector.native()).getLocalViewHost(Tpetra::Access::ReadOnly);
@@ -897,13 +904,108 @@ void multiple_fields()
     Distribution<Exec> empty(std::span<const GlobalOrdinal>{}, mpi::CommView::world());
     const auto empty_dofs = empty.expanded(5);
     Vector<double, Exec> empty_vector(empty_dofs);
-    copy_from_fields(empty_vector, sources, exec);
-    copy_to_fields(empty_vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
+    copy_from_fields_async(empty_vector, sources, exec);
+    copy_to_fields_async(empty_vector, exec, rho_out, mom_out, Kokkos::subview(energy_out, Kokkos::ALL(), 1));
     empty_vector.commit();
     const auto unchanged = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, density_out);
     for (std::size_t cell = 0; cell < extended; ++cell)
         check(unchanged(cell) == (cell < owned_cells ? static_cast<float>(100*cell) : -7.0f),
               "test: empty field pack changed destination data");
+}
+
+template<class Matrix>
+void verification_modes(const Matrix& matrix)
+{
+    using S = typename Matrix::scalar_type;
+    Vector<S, Exec> exact(matrix.distribution()), rhs(matrix.distribution()), solution(matrix.distribution());
+    exact_values(exact); matrix.apply(exact, rhs);
+    SolverOptions options;
+    check(!options.verify_residual, "test: final true-residual verification must default to disabled");
+    options.preconditioner.type = "NONE";
+    options.relative_tolerance = 1e-10;
+    options.maximum_iterations = 200;
+    Solver<Matrix, S> unchecked(matrix, options);
+    const auto result = unchecked.solve(rhs, solution);
+    check(result.iterations_started && result.converged && result.krylov_converged,
+          "test: unchecked solve did not converge through Belos");
+    check(!result.residual_checked && std::isnan(result.residual_norm) && std::isnan(result.relative_residual),
+          "test: unchecked solve exposes fabricated final residual metrics");
+    check(error(solution) < 1e-8, "test: disabling verification changed the solution");
+    const auto generation = unchecked.preconditioner().generation();
+    const auto accepted = unchecked.solve(rhs, exact);
+    check(accepted.converged && accepted.residual_checked && !accepted.iterations_started &&
+          accepted.residual_norm <= accepted.residual_threshold,
+          "test: exact initial guess must expose the already-known final residual");
+    check(unchecked.preconditioner().generation() == generation, "test: early exit refreshed preconditioning");
+
+    options.verify_residual = true;
+    Solver<Matrix, S> checked(matrix, options);
+    solution.fill(S{0});
+    const auto verified = checked.solve(rhs, solution);
+    check(verified.converged && verified.residual_checked &&
+          std::isfinite(verified.residual_norm) && verified.residual_norm <= verified.residual_threshold,
+          "test: requested final true-residual check was not recorded");
+    check(verified.iterations == result.iterations && verified.residual_threshold == result.residual_threshold,
+          "test: verification mode changed the Krylov stopping controls");
+    Vector<S, Exec> residual(matrix.distribution());
+    matrix.apply(solution, residual);
+    residual.native()->update(S{1}, *rhs.native(), S{-1});
+    check(std::abs(verified.residual_norm-static_cast<double>(residual.native()->norm2())) < 1e-12,
+          "test: reported final residual differs from an independent b-Ax calculation");
+
+    options.verify_residual = false; options.maximum_iterations = 1;
+    Solver<Matrix, S> limited(matrix, options);
+    solution.fill(S{0});
+    const auto exhausted = limited.solve(rhs, solution);
+    check(!exhausted.converged && !exhausted.krylov_converged && exhausted.iterations_started &&
+          !exhausted.residual_checked && std::isnan(exhausted.residual_norm),
+          "test: unchecked iteration exhaustion must retain Belos failure without fabricated metrics");
+
+    options.maximum_iterations = 0;
+    Solver<Matrix, S> stopped(matrix, options);
+    solution.fill(S{0});
+    const auto no_iterations = stopped.solve(rhs, solution);
+    check(!no_iterations.converged && no_iterations.residual_checked && !no_iterations.iterations_started &&
+          no_iterations.residual_norm == no_iterations.initial_residual_norm,
+          "test: zero-budget solve must report its unchanged initial residual");
+}
+
+void verification()
+{
+    Distribution<Exec> distribution(owned(), mpi::CommView::world());
+    const auto input = input_for(distribution);
+    CsrPattern<Exec> pattern(distribution, input);
+    CsrMatrix<double, Exec> matrix(pattern);
+    matrix.set_values(coefficients<double>(distribution, input, true));
+    verification_modes(matrix);
+}
+
+void bsr_verification()
+{
+    Distribution<Exec> distribution(owned(), mpi::CommView::world());
+    const auto input = input_for(distribution);
+    CsrPattern<Exec> graph(distribution, input);
+    BsrPattern<Exec> pattern(graph, 2);
+    BsrMatrix<double, Exec> matrix(pattern);
+    matrix.set_values(block_coefficients<double>(distribution, input, 2, true));
+    verification_modes(matrix);
+}
+
+void blocking_transfers()
+{
+    Distribution<Exec> distribution(owned(3), mpi::CommView::world());
+    Vector<double, Exec> vector(distribution);
+    Kokkos::View<float*, Space> source("source", 5), target("target", 5);
+    Kokkos::deep_copy(source, 7.0f); Kokkos::deep_copy(target, -1.0f);
+    const auto exec = Kokkos::Experimental::partition_space(Exec{}, 1)[0];
+    vector.copy_from_component(source, exec); vector.require_committed();
+    vector.copy_to_component(target, exec); vector.require_committed();
+    auto h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, target);
+    for (std::size_t i=0; i<5; ++i) check(h(i)==(i<3 ? 7.0f : -1.0f), "test: blocking component transfer/tail");
+    copy_from_fields(vector, fields::pack(source), exec); vector.require_committed();
+    copy_to_fields(vector, exec, target); vector.require_committed();
+    copy_from_field(vector, source, exec); vector.require_committed();
+    copy_to_field(vector, target, exec); vector.require_committed();
 }
 
 // test::run owns MPI (FUNNELED) and Kokkos, just as in the halo tests.
@@ -951,6 +1053,9 @@ int main(int argc, char** argv)
         krona::test::Case{"initialization", with_tpetra<initialization>},
         krona::test::Case{"mapping", with_tpetra<mapping_and_assembly>},
         krona::test::Case{"stopping", with_tpetra<stopping_cases>},
+        krona::test::Case{"verification", with_tpetra<verification>},
+        krona::test::Case{"bsr_verification", with_tpetra<bsr_verification>},
+        krona::test::Case{"blocking_transfers", with_tpetra<blocking_transfers>},
         krona::test::Case{"empty", with_tpetra<empty_cases>},
         krona::test::Case{"minres_indefinite", with_tpetra<symmetric_indefinite>},
         krona::test::Case{"fields_left", with_tpetra<field_transfers<Kokkos::LayoutLeft>>},
