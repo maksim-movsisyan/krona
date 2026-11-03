@@ -7,6 +7,7 @@
 | `krona/fields/fields_manager.hpp` — `FieldsManager<Exec>` | Owns a registry of named fields and uses one execution-space instance for initialization, fills and transfers. |
 | `krona/fields/field_storage.hpp` — `FieldStorage<T, Components, Exec, Layout>` | Owns one allocation in `Exec::memory_space`. Can also be used without a manager. |
 | `krona/fields/fields_view.hpp` — `FieldView<T, Components, Space, Layout>` | Non-owning descriptor passed by value into kernels. `Space` is a memory space. |
+| `krona/fields/transfer.hpp` — `copy_to_dofs[_async]()`, `copy_from_dofs[_async]()` | Copies fields/packs to and from flat cell-major DOFs without a linear-algebra dependency. |
 | `krona/fields/pack.hpp` — `pack(...)`, `field_pack(...)` | Combines fields/components into one non-owning component pack. Preserves strides and supports mixed numeric types. |
 
 The module does not depend on a mesh object. It does not perform MPI communication, halo exchanges, boundary-condition updates or automatic resizing after mesh changes.
@@ -232,6 +233,26 @@ Runtime reads use ordinary numeric conversion, which may lose precision for some
 - Complete producers before consuming values, or enqueue dependent work on the same execution-space instance. Packing itself does not wait for initialization or uploads.
 - Keep all original allocations alive and at stable addresses until every user finishes. Passing an owning Kokkos view into `pack` does not transfer or retain ownership. Packed components may alias; the caller must avoid conflicting writes.
 
+## Transfer fields to and from flat DOFs
+
+Include `<krona/fields/transfer.hpp>`. These helpers work with rank-one Kokkos views; no linear-algebra backend is required.
+
+```cpp
+const auto packed = krona::fields::pack(density, velocity);
+// dofs.extent(0) == owned_cells * decltype(packed)::components
+krona::fields::copy_to_dofs_async(exec, packed.as_const(), dofs);
+krona::fields::copy_from_dofs_async(exec, dofs, packed);
+exec.fence("field/DOF transfers complete");
+```
+
+DOF order is `cell*components + component`, with components in pack order. The DOF view's extent selects the cell prefix and must be divisible by pack width. Every component must be at least that long. Field tails are preserved; field/component and DOF strides are respected.
+
+A single field or rank-one component view can replace `packed`. Mixed numeric types are supported, and each assignment converts directly to the exact destination scalar type. Read-only inputs are allowed; every unpacked component must be writable. Conversion representability, actual entity/DOF order and non-overlapping source/destination storage are caller contracts. Unpack destinations must not overlap each other.
+
+Each asynchronous operation submits one kernel and performs no buffer allocation or final fence. All buffers must be accessible to `exec` and remain alive through completion. Queue dependent producers and consumers on that instance or synchronize explicitly. `copy_to_dofs()` / `copy_from_dofs()` are blocking counterparts that fence only `exec`.
+
+If the DOF view comes from an object with its own access-batch protocol, a fields-level fence does not reset that object's state. Follow its commit contract; the linalg transfer adapters do this for their blocking forms.
+
 ## Host buffers and transfers
 
 `create_host_buffer<T, N, Layout>(name)` allocates an independent host Kokkos buffer with the matching shape and layout. Values are uninitialized; no field values are copied. The buffer is independent even when the field itself resides in `HostSpace`.
@@ -258,11 +279,13 @@ The manager's optional `Exec exec = {}` selects the instance used for queued wor
 | `FieldStorage(...)` | Allocates uninitialized storage; no initialization kernel or completion fence is requested by KRONA. |
 | `add_field_async(..., Zero)` | Allocates/registers storage and queues the `T{}` fill. Treat initialization as pending until completion. |
 | `add_field_async(..., Uninitialized)` | Allocates/registers storage; no fill is submitted. Values remain undefined until written. |
-| `fill_field(...)` / `FieldStorage::fill(exec, value)` | Queue a fill of every entity and component. No KRONA completion wait. |
+| `fill_field_async(...)` / `FieldStorage::fill_async(exec, value)` | Queue a fill of every entity and component. No KRONA completion wait. |
 | `copy_to_host_async(...)` | Allocates a host buffer and queues a download. Returned values may still be pending. |
 | `copy_from_host_async(...)` | Queues an upload. The source must remain alive and unchanged until completion. |
 | `create_host_buffer(...)` | Host allocation only; does not copy values or wait for field results. |
 | Lookup, metadata, `.view()`, `.as_const()`, `.component()` | Host/descriptor operations only; no field-data transfer or completion wait. |
+| `copy_to_dofs_async()` / `copy_from_dofs_async()` | Submit one copy/conversion kernel on the supplied instance; no final fence. |
+| `copy_to_dofs()` / `copy_from_dofs()` | Submit the transfer and fence the supplied instance. |
 | `pack(...)` / `field_pack(...)` | Host descriptor construction only; no allocation, field-data copy, submitted work or completion wait. |
 | `FieldsManager::fence()` | **Blocking:** waits for work on the manager's execution-space instance. |
 | Destruction | Releases owned allocations; the module does not provide an automatic wait-for-users contract. Complete all users first. |
