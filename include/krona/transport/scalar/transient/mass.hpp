@@ -20,17 +20,21 @@ struct CellMass {
 };
 
 /// @brief Avoids an intermediate mass array. Density is a scalar or rank-one view.
+/// Converts both factors before multiplication. Direct calls use ComputeReal;
+/// TransientOperator selects its own computation Real for current and history masses.
 template<class Volumes, class Density>
 struct DensityVolumeMass {
     Volumes volumes;
     Density density;
-    KOKKOS_INLINE_FUNCTION auto operator()(std::size_t i) const
+    template<class Real = ComputeReal>
+    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t i) const
     {
-        const auto rho = density_at(i);
-        const auto volume = volumes(i);
-        using Result = decltype(rho*volume);
-        if (!Kokkos::isfinite(rho) || !(rho > 0) || !Kokkos::isfinite(volume) || !(volume > 0))
-            return Kokkos::quiet_NaN_v<Result>;
+        static_assert(std::is_floating_point_v<Real>);
+        const Real rho = static_cast<Real>(density_at(i));
+        const Real volume = static_cast<Real>(volumes(i));
+        if (!Kokkos::isfinite(rho) || !(rho > Real{0}) ||
+            !Kokkos::isfinite(volume) || !(volume > Real{0}))
+            return Kokkos::quiet_NaN_v<Real>;
         return rho*volume;
     }
 private:

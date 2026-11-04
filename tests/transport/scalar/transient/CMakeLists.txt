@@ -1,15 +1,11 @@
-if(NOT KRONA_ENABLE_TRILINOS)
-    return()
-endif()
-
-add_executable(krona_test_scalar_transient test_transient.cpp)
-target_link_libraries(krona_test_scalar_transient PRIVATE krona_test_support krona::transport_scalar)
+add_executable(krona_test_scalar_transient test_transient.cpp test_helpers.hpp)
+target_link_libraries(krona_test_scalar_transient PRIVATE krona_test_support krona::transport_scalar_transient)
 
 if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Scalar transient tests require an MPI launcher")
 endif()
 
-foreach(case IN ITEMS coefficients additive conservation strided order empty native)
+foreach(case IN ITEMS coefficients additive conservation strided order empty mass_precision precision_selection custom_mass empty_rank)
     add_test(NAME "transport.scalar.transient.${case}"
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS}
             "$<TARGET_FILE:krona_test_scalar_transient>" ${MPIEXEC_POSTFLAGS} "${case}")
@@ -25,12 +21,12 @@ foreach(ranks IN ITEMS 2 3)
 endforeach()
  
 set(cases bad_mass bad_state bad_entry overflow not_started
-    zero_step negative_previous_step coefficient_overflow)
+    zero_step negative_previous_step coefficient_overflow invalid_product)
 set(diagnostics "cell mass must be finite and positive" "time-layer values must be finite"
     "nonfinite or unrepresentable" "nonfinite or unrepresentable" "call begin_async"
     "Time derivative: time step must be finite and positive"
     "Time derivative: time step must be finite and positive"
-    "Time derivative: unrepresentable coefficient")
+    "Time derivative: unrepresentable coefficient" "cell mass must be finite and positive")
 list(LENGTH cases count)
 math(EXPR last "${count}-1")
 foreach(i RANGE "${last}")
@@ -44,3 +40,20 @@ foreach(i RANGE "${last}")
             -P "${CMAKE_CURRENT_SOURCE_DIR}/../expect_failure.cmake")
     set_tests_properties("transport.scalar.transient.reject_${case}" PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 endforeach()
+
+# Native integration is optional; the core suite above has no Trilinos dependency.
+if(KRONA_ENABLE_TRILINOS)
+    add_executable(krona_test_scalar_transient_native test_native.cpp test_helpers.hpp)
+    target_link_libraries(krona_test_scalar_transient_native PRIVATE krona_test_support krona::transport_scalar_transient krona::linalg)
+    foreach(ranks IN ITEMS 1 2 3)
+        if(ranks EQUAL 1)
+            set(test_name "transport.scalar.transient.native")
+        else()
+            set(test_name "transport.scalar.transient.native.mpi${ranks}")
+        endif()
+        add_test(NAME "${test_name}"
+            COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}" ${MPIEXEC_PREFLAGS}
+                "$<TARGET_FILE:krona_test_scalar_transient_native>" ${MPIEXEC_POSTFLAGS} native)
+        set_tests_properties("${test_name}" PROPERTIES TIMEOUT 120 PROCESSORS "${ranks}" RUN_SERIAL TRUE)
+    endforeach()
+endif()

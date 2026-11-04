@@ -2,6 +2,8 @@
 
 `krona::transport::scalar::transient` adds an implicit time derivative to a scalar equation or evaluates its residual. It works on owned cells and takes the time coefficients, current mass and accepted history from the application. It owns no mesh, matrix, field or history storage and does not advance time or solve a system itself.
 
+The `krona::transport_scalar_transient` target depends only on execution/Kokkos and MPI support. Native linear algebra is optional and enters through the separate assembly adapter.
+
 ## Discretized quantity and signs
 
 The operator discretizes the **integrated conservative quantity**
@@ -42,6 +44,10 @@ Every provider returns a finite, strictly positive **integrated cell mass** for 
 | `CellMass{view}` | Reads an existing rank-one mass array; at least `owned` entries. `CellMass{cell_volumes}` also represents unit density. |
 | `DensityVolumeMass{volumes, density}` | Evaluates `rho * V` without an intermediate mass array. Density is an arithmetic scalar or a rank-one view; all arrays cover at least `owned` cells. |
 | Custom callable | Device-copyable `mass(cell)` returning the integrated coefficient. Custom storage extents/accessibility and parameter validation are caller contracts. |
+
+`DensityVolumeMass` converts **both density and volume to the transient operator's `Real` before multiplying**, for current and historical masses. Float inputs can therefore be used with a double operator without first overflowing, underflowing or rounding their product in float. Each factor and the resulting mass must be finite and strictly positive in that computation type. A standalone `mass(cell)` call uses `ComputeReal`; `mass.template operator()<R>(cell)` explicitly selects another floating-point type. Construction and ordinary application call signatures are unchanged.
+
+`UniformMass` and `CellMass` values are converted to the operator's `Real` when read. Custom `mass(cell)` providers keep their existing interface and control the precision of their internal calculations.
 
 For an equation with a different positive storage coefficient, a custom provider can supply its cell integral; spatial/source units must agree. For example, define at namespace scope:
 
@@ -141,11 +147,9 @@ for (int step = 0; step < 10; ++step) {
     rhs.commit();
 
     x.copy_from_component(q_new, exec);
-    x.commit();
     const auto result = linear.solve(rhs, x);
     if (!result.converged) break; // No field publication or history rotation.
     x.copy_to_component(q_new, exec);
-    x.commit();
 
     // Accept the completed step. Copy older history before overwriting q_n.
     Kokkos::deep_copy(exec, q_nm1, q_n);
@@ -223,7 +227,7 @@ Coefficients are calculated in computation `Real`, then converted to the output 
 | Matrix/vector `commit()` | Completes pending native access and closes its batch; no MPI collective. |
 | History copies with `deep_copy(exec, ...)` | May remain queued; order on the same instance or fence before other consumers. |
 
-Use one `begin_async()` → contributions → `check(comm)` batch on the same execution instance. All ranks, including empty ranks, call collective checks/solves in the same order. A valid later contribution does not erase earlier errors. Host validation rejects incompatible views/coefficient conversion; kernel flags report invalid masses, nonfinite time-layer values, invalid diagonal positions and nonfinite/unrepresentable additions. A failed batch is not rolled back. A pending status destructor fences its instance but does not perform the collective error check.
+Use one `begin_async()` → contributions → `check(comm)` batch on the same execution instance. All ranks, including empty ranks, call collective checks/solves in the same order. A valid later contribution does not erase earlier errors. Host validation and kernel submission are enclosed in `mpi::guarded`, following the distributed fatal-error policy. Validation rejects incompatible views/coefficient conversion; kernel flags report invalid masses, nonfinite time-layer values, invalid diagonal positions and nonfinite/unrepresentable additions. A failed batch is not rolled back. A pending status destructor fences its instance but does not perform the collective error check.
 
 `AssemblyStatus` owns a small device flag array and host mirror. The transient operator owns only two values: count and execution instance. History/mass providers retain their supplied members by value; managed views retain allocations, unmanaged views borrow. Neither form preserves old data against overwriting. `DensityVolumeMass` creates no mass array. Application code owns the field/history allocations and performs all snapshots, rotations and algebra transfers.
 

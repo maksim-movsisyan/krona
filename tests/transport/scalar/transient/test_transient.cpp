@@ -1,13 +1,10 @@
 #include "common/test_support.hpp"
 
 #include <krona/transport/scalar/transient/operator.hpp>
-#include <krona/linalg/bsr_matrix.hpp>
-#include <krona/linalg/csr_matrix.hpp>
+#include "test_helpers.hpp"
 
 #include <array>
-#include <initializer_list>
 #include <limits>
-#include <vector>
 
 namespace {
 using namespace krona;
@@ -16,23 +13,9 @@ namespace ts = transport::scalar;
 namespace nt = numerics::time;
 using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
-template<class T> using View = Kokkos::View<T*, Space>;
 using test::check;
  
-template<class T>
-View<T> input(const Exec& exec, std::initializer_list<T> values)
-{ 
-    View<T> result(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "test/input"), values.size());
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, result);
-    std::size_t i = 0;
-    for (const auto value : values) host(i++) = value;
-    Kokkos::deep_copy(exec, result, host);
-    exec.fence("Test input ready");
-    return result;
-}
-template<class V> auto host_copy(V v)
-{ return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, v); }
-struct Entries { View<std::size_t> diagonal; };
+using namespace krona::test::scalar_transient;
 
 void coefficients(const Exec&)
 {
@@ -197,54 +180,136 @@ void empty(const Exec& exec)
     static_cast<void>(status.check(mpi::CommView::world()));
 }
 
-void native(const Exec& exec)
+
+
+// Both input arrays are float. Their product must be formed in the operator's
+// double precision, including historical layers, before any storage conversion.
+void mass_precision(const Exec& exec)
 {
-    Tpetra::ScopeGuard tpetra(nullptr, nullptr);
-    const auto comm = mpi::CommView::world();
-    const std::vector<linalg::GlobalOrdinal> gids{2*comm.rank(), 2*comm.rank()+1};
-    const linalg::Distribution<Exec> distribution(gids, comm);
-    const linalg::CsrInput graph{{0, 1, 2}, gids};
-    const linalg::CsrPattern<Exec> pattern(distribution, graph, exec);
+    const auto volumes = input<float>(exec, {1.e20f, 1.e-30f, 1.00000011920928955078125f});
+    const auto density = input<float>(exec, {1.e20f, 1.e-20f, 1.00000011920928955078125f});
+    const auto old = input<double>(exec, {3, 3, 3});
+    const auto current = input<double>(exec, {2, 2, 2});
+    auto values = input<double>(exec, {0, 0, 0});
+    auto rhs = input<double>(exec, {0, 0, 0});
+    auto residual = input<double>(exec, {0, 0, 0});
+    const Entries entries{input<std::size_t>(exec, {0, 1, 2})};
+    const auto mass = tt::DensityVolumeMass{volumes, density};
+    const auto derivative = nt::BackwardEuler{}.coefficients(0.5);
+    const auto history = tt::time_history(tt::TimeLevel{mass, old});
+    tt::TransientOperator<Exec, double> op(3, exec);
+    ts::AssemblyStatus<Exec> status(exec);
+    status.begin_async();
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status, derivative, mass, history);
+    op.add_residual_async(current, residual, status, derivative, mass, history);
+    static_cast<void>(status.check(mpi::CommView::world()));
+    const auto hv = host_copy(volumes);
+    const auto hd = host_copy(density);
+    const auto a = host_copy(values);
+    const auto b = host_copy(rhs);
+    const auto r = host_copy(residual);
+    for (std::size_t i = 0; i < 3; ++i) {
+        const double expected = static_cast<double>(hv(i))*static_cast<double>(hd(i));
+        test::near(a(i)/(2*expected), 1.0, 2.e-15, "Current mass product uses computation precision");
+        test::near(b(i)/(6*expected), 1.0, 2.e-15, "History mass product uses computation precision");
+        test::near(r(i)/(2*expected), 1.0, 2.e-15, "Residual mass product uses computation precision");
+    }
+    // Exercise the scalar-density branch as well, without a temporary mass array.
+    Kokkos::deep_copy(exec, values, 0.0);
+    Kokkos::deep_copy(exec, rhs, 0.0);
+    const auto scalar_mass = tt::DensityVolumeMass{volumes, 1.e20f};
+    const auto scalar_history = tt::time_history(tt::TimeLevel{scalar_mass, old});
+    status.begin_async();
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status, derivative, scalar_mass, scalar_history);
+    static_cast<void>(status.check(mpi::CommView::world()));
+    const auto scalar_a = host_copy(values);
+    for (std::size_t i = 0; i < 3; ++i) {
+        const double expected = static_cast<double>(hv(i))*static_cast<double>(1.e20f);
+        test::near(scalar_a(i)/(2*expected), 1.0, 2.e-15, "Scalar density uses computation precision");
+    }
+}
+
+// An explicit float operator must override a potentially double ComputeReal.
+// These inputs distinguish casting each factor from casting their double product.
+void precision_selection(const Exec& exec)
+{
+    const auto volumes = input<double>(exec, {1024.00004});
+    const auto density = input<double>(exec, {1024.00004});
+    const auto old = input<float>(exec, {0});
+    auto values = input<float>(exec, {0});
+    auto rhs = input<float>(exec, {0});
+    const Entries entries{input<std::size_t>(exec, {0})};
+    tt::TransientOperator<Exec, float> op(1, exec);
+    ts::AssemblyStatus<Exec> status(exec);
+    const auto history = tt::time_history(tt::TimeLevel{tt::UniformMass{1.f}, old});
+    status.begin_async();
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status,
+        nt::BackwardEuler{}.coefficients(1.f), tt::DensityVolumeMass{volumes, density}, history);
+    static_cast<void>(status.check(mpi::CommView::world()));
+    const auto a = host_copy(values);
+    test::equal(a(0), 1048576.f, "Operator Real selects mass multiplication precision");
+}
+
+struct CustomMass {
+    // Index deduction must remain size_t: this is the existing mass(cell) contract.
+    template<class Index>
+    KOKKOS_INLINE_FUNCTION double operator()(Index i) const
+    {
+        static_assert(std::is_same_v<Index, std::size_t>);
+        return 2.0+static_cast<double>(i);
+    }
+};
+void custom_mass(const Exec& exec)
+{
+    auto values = input<double>(exec, {0, 0});
+    auto rhs = input<double>(exec, {0, 0});
+    const auto old = input<double>(exec, {3, 4});
     const Entries entries{input<std::size_t>(exec, {0, 1})};
-    const auto old = input<double>(exec, {2, 4});
-    const auto history = tt::time_history(tt::TimeLevel{tt::UniformMass{3.0}, old});
     tt::TransientOperator<Exec, double> op(2, exec);
     ts::AssemblyStatus<Exec> status(exec);
-    using NativeScalar = SolverReal;
-    linalg::CsrMatrix<NativeScalar, Exec> csr(pattern);
-    linalg::Vector<NativeScalar, Exec> csr_rhs(distribution);
-    const auto cv = csr.edit_values(exec);
-    const auto cr = Kokkos::subview(csr_rhs.edit(exec), Kokkos::ALL(), 0);
-    Kokkos::deep_copy(exec, cv, 0.0); Kokkos::deep_copy(exec, cr, 0.0);
     status.begin_async();
-    op.add_system_async(ts::SystemView{cv, cr, entries}, status, nt::BackwardEuler{}.coefficients(0.5), tt::UniformMass{2.0}, history);
-    static_cast<void>(status.check(comm)); csr.commit(); csr_rhs.commit();
-    const auto ca = host_copy(cv);
-    const auto cb = host_copy(cr);
-    for (std::size_t i = 0; i < 2; ++i) {
-        test::equal(ca(i), 4.0, "Native CSR temporal diagonal");
-        test::equal(cb(i), 12.0*static_cast<double>(i+1), "Native CSR temporal RHS");
-    }
-    linalg::BsrMatrix<NativeScalar, Exec> bsr(pattern, 3);
-    linalg::Vector<NativeScalar, Exec> bsr_rhs(bsr.distribution());
-    const auto blocks = bsr.edit_blocks(exec);
-    const auto br = bsr_rhs.edit(exec);
-    Kokkos::deep_copy(exec, blocks, 7.0); Kokkos::deep_copy(exec, br, 11.0);
-    const auto bs = Kokkos::subview(blocks, Kokkos::ALL(), 1, 1);
-    using Rhs = Kokkos::View<NativeScalar*, Kokkos::LayoutStride, typename decltype(br)::memory_space,
-                             Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
-    const Rhs rb(br.data()+br.stride(0), Kokkos::LayoutStride(2, 3*br.stride(0)));
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status,
+        nt::BackwardEuler{}.coefficients(1.0), CustomMass{},
+        tt::time_history(tt::TimeLevel{CustomMass{}, old}));
+    static_cast<void>(status.check(mpi::CommView::world()));
+    const auto a = host_copy(values);
+    const auto b = host_copy(rhs);
+    test::equal(a(0), 2.0, "Custom mass current layer");
+    test::equal(a(1), 3.0, "Custom mass current layer index");
+    test::equal(b(0), 6.0, "Custom mass history layer");
+    test::equal(b(1), 12.0, "Custom mass history layer index");
+}
+
+void empty_rank(const Exec& exec)
+{
+    const auto comm = mpi::CommView::world();
+    const std::size_t owned = comm.size() > 1 && comm.rank()+1 == comm.size() ? 0 : 1;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto old = input<double>(exec, {3, nan});
+    const auto current = input<double>(exec, {2, nan});
+    const auto volumes = input<double>(exec, {4, nan});
+    auto values = input<double>(exec, {0});
+    auto backing = input<double>(exec, {0, 7});
+    auto residual = input<double>(exec, {0, 7});
+    const auto map = input<std::size_t>(exec, {0});
+    const Entries entries{Kokkos::subview(map, std::pair<std::size_t, std::size_t>{0, owned})};
+    const auto rhs = Kokkos::subview(backing, std::pair<std::size_t, std::size_t>{0, owned});
+    const auto mass = tt::DensityVolumeMass{volumes, 2.0};
+    const auto history = tt::time_history(tt::TimeLevel{mass, old});
+    tt::TransientOperator<Exec, double> op(owned, exec);
+    ts::AssemblyStatus<Exec> status(exec);
     status.begin_async();
-    op.add_system_async(ts::SystemView{bs, rb, entries}, status, nt::BackwardEuler{}.coefficients(0.5), tt::UniformMass{2.0}, history);
-    static_cast<void>(status.check(comm)); bsr.commit(); bsr_rhs.commit();
-    const auto ba = host_copy(blocks);
-    const auto bb = host_copy(br);
-    for (std::size_t i = 0; i < 2; ++i) {
-        test::equal(ba(i, 1, 1), 11.0, "Native BSR selected diagonal");
-        test::equal(ba(i, 0, 1), 7.0, "Native BSR cross component preserved");
-        test::equal(bb(3*i+1, 0), 11.0+12.0*static_cast<double>(i+1), "Native BSR AoS RHS");
-        test::equal(bb(3*i, 0), 11.0, "Native BSR other RHS preserved");
-    }
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status,
+        nt::BackwardEuler{}.coefficients(1.0), mass, history);
+    op.add_residual_async(current, residual, status,
+        nt::BackwardEuler{}.coefficients(1.0), mass, history);
+    static_cast<void>(status.check(comm));
+    const auto b = host_copy(backing);
+    const auto r = host_copy(residual);
+    test::equal(b(1), 7.0, "RHS tail untouched");
+    test::equal(r(1), 7.0, "Residual tail untouched");
+    test::equal(b(0), owned == 0 ? 0.0 : 24.0, "Local empty/owned RHS");
+    test::equal(r(0), owned == 0 ? 0.0 : 8.0, "Local empty/owned residual");
 }
 
 void rejection(const Exec& exec, std::string_view name)
@@ -268,6 +333,25 @@ void bad_entry(const Exec& e) { rejection(e, "bad_entry"); }
 void overflow(const Exec& e) { rejection(e, "overflow"); }
 void not_started(const Exec& e) { rejection(e, "not_started"); }
 
+
+void invalid_product(const Exec& exec)
+{
+    auto values = input<double>(exec, {0});
+    auto rhs = input<double>(exec, {0});
+    const auto volumes = input<float>(exec, {-2.f});
+    const auto old = input<double>(exec, {1});
+    const Entries entries{input<std::size_t>(exec, {0})};
+    const auto mass = tt::DensityVolumeMass{volumes, -3.f};
+    tt::TransientOperator<Exec, double> op(1, exec);
+    ts::AssemblyStatus<Exec> status(exec);
+    status.begin_async();
+    op.add_system_async(ts::SystemView{values, rhs, entries}, status,
+        nt::BackwardEuler{}.coefficients(1.0), mass,
+        tt::time_history(tt::TimeLevel{tt::UniformMass{1.0}, old}));
+    static_cast<void>(status.check(mpi::CommView::world()));
+    check(false, "Negative mass factors must fail even if their product is positive");
+}
+
 void zero_step(const Exec&)
 {
     static_cast<void>(nt::BackwardEuler{}.coefficients(0.0));
@@ -290,13 +374,15 @@ int main(int argc, char** argv)
     const std::array cases{
         test::Case{"coefficients", coefficients}, test::Case{"additive", additive},
         test::Case{"conservation", conservation}, test::Case{"strided", strided},
-        test::Case{"order", order}, test::Case{"empty", empty}, test::Case{"native", native},
+        test::Case{"order", order}, test::Case{"empty", empty},
+        test::Case{"mass_precision", mass_precision}, test::Case{"precision_selection", precision_selection},
+        test::Case{"custom_mass", custom_mass}, test::Case{"empty_rank", empty_rank},
         test::Case{"bad_mass", bad_mass}, test::Case{"bad_state", bad_state},
         test::Case{"bad_entry", bad_entry}, test::Case{"overflow", overflow}, test::Case{"not_started", not_started},
         test::Case{"zero_step", zero_step}, test::Case{"negative_previous_step", negative_previous_step},
-        test::Case{"coefficient_overflow", coefficient_overflow}
+        test::Case{"coefficient_overflow", coefficient_overflow}, test::Case{"invalid_product", invalid_product}
     };
     // Failure cases are selected explicitly and run in separate processes.
     return test::run(argc, argv, "transport.scalar.transient",
-        argc == 1 ? std::span<const test::Case>{cases.data(), 7} : std::span<const test::Case>{cases});
+        argc == 1 ? std::span<const test::Case>{cases.data(), 10} : std::span<const test::Case>{cases});
 }

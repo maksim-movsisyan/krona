@@ -1,5 +1,6 @@
 add_subdirectory(diffusion)
 add_subdirectory(convection/core)
+add_subdirectory(transient)
 
 if(NOT KRONA_ENABLE_TRILINOS)
     return()
@@ -41,4 +42,3 @@ foreach(i RANGE "${last}")
 endforeach()
  
 add_subdirectory(convection)
-add_subdirectory(transient)

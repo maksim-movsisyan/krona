@@ -14,10 +14,20 @@ using scalar::detail::BadSystem;
 using scalar::detail::BadTemporalMass;
 using scalar::detail::BadTemporalState;
 
+// Generic providers keep their mass(cell) interface. The built-in product
+// receives the operator's Real before either factor is multiplied.
+template<class Real, class Mass>
+KOKKOS_INLINE_FUNCTION Real mass_value(const Mass& mass, std::size_t i)
+{ return static_cast<Real>(mass(i)); }
+
+template<class Real, class Volumes, class Density>
+KOKKOS_INLINE_FUNCTION Real mass_value(const DensityVolumeMass<Volumes, Density>& mass, std::size_t i)
+{ return mass.template operator()<Real>(i); }
+
 template<class Real, class Mass, class Flags>
 KOKKOS_INLINE_FUNCTION Real read_mass(Mass mass, std::size_t i, Flags flags)
 {
-    const Real value = static_cast<Real>(mass(i));
+    const Real value = mass_value<Real>(mass, i);
     if (!Kokkos::isfinite(value) || !(value > Real{0})) {
         flag(flags, BadTemporalMass); return Real{0};
     }
@@ -86,16 +96,18 @@ public:
     void add_system_async(Target target, AssemblyStatus<Exec>& status,
         numerics::time::Derivative<C, N> derivative, Mass mass, History history) const
     {
-        const auto weights = validate(derivative, mass, history);
-        scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-        scalar::detail::validate_output<Exec>(target.rhs, owned_);
-        scalar::detail::validate_view<Exec>(target.entries.diagonal, owned_);
-        mpi::require(target.rhs.extent(0) == owned_ && target.entries.diagonal.extent(0) == owned_,
-                     "Scalar transient: incompatible system slice/entry map");
-        const auto flags = status.device_flags(exec_);
-        Kokkos::parallel_for("transient/add_system", Policy(exec_, 0, owned_),
-            detail::AddSystem<Real, Target, decltype(weights), Mass, History, decltype(flags)>{
-                target, weights, mass, history, flags});
+        mpi::guarded([&] {
+            const auto weights = validate(derivative, mass, history);
+            scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
+            scalar::detail::validate_output<Exec>(target.rhs, owned_);
+            scalar::detail::validate_view<Exec>(target.entries.diagonal, owned_);
+            mpi::require(target.rhs.extent(0) == owned_ && target.entries.diagonal.extent(0) == owned_,
+                         "Scalar transient: incompatible system slice/entry map");
+            const auto flags = status.device_flags(exec_);
+            Kokkos::parallel_for("transient/add_system", Policy(exec_, 0, owned_),
+                detail::AddSystem<Real, Target, decltype(weights), Mass, History, decltype(flags)>{
+                    target, weights, mass, history, flags});
+        });
     }
 
     /// @brief Adds the negative integrated time derivative to r=b-A*phi; no volume normalization.
@@ -104,15 +116,17 @@ public:
     void add_residual_async(Field field, Output output, AssemblyStatus<Exec>& status,
         numerics::time::Derivative<C, N> derivative, Mass mass, History history) const
     {
-        const auto weights = validate(derivative, mass, history);
-        scalar::detail::validate_view<Exec>(field, owned_);
-        scalar::detail::validate_output<Exec>(output, owned_);
-        mpi::require(owned_ == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
-                     "Scalar transient: in-place residual is unsupported");
-        const auto flags = status.device_flags(exec_);
-        Kokkos::parallel_for("transient/add_residual", Policy(exec_, 0, owned_),
-            detail::AddResidual<Real, Field, Output, decltype(weights), Mass, History, decltype(flags)>{
-                field, output, weights, mass, history, flags});
+        mpi::guarded([&] {
+            const auto weights = validate(derivative, mass, history);
+            scalar::detail::validate_view<Exec>(field, owned_);
+            scalar::detail::validate_output<Exec>(output, owned_);
+            mpi::require(owned_ == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
+                         "Scalar transient: in-place residual is unsupported");
+            const auto flags = status.device_flags(exec_);
+            Kokkos::parallel_for("transient/add_residual", Policy(exec_, 0, owned_),
+                detail::AddResidual<Real, Field, Output, decltype(weights), Mass, History, decltype(flags)>{
+                    field, output, weights, mass, history, flags});
+        });
     }
 
     [[nodiscard]] std::size_t local_size() const noexcept { return owned_; }
