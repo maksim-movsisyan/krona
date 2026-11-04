@@ -9,7 +9,9 @@
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 #include <krona/linalg/face_assembly.hpp>
-#include <krona/transport/scalar/solvers/steady_diffusion.hpp>
+#include <krona/transport/scalar/diffusion/operator.hpp>
+#include <krona/transport/scalar/assembly.hpp>
+#include <krona/linalg/solver.hpp>
 
 #include <Tpetra_Core.hpp>
 
@@ -97,7 +99,7 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
         krona::mesh::AuxGeomType::FaceNormalDistance | krona::mesh::AuxGeomType::FaceAreaOverNormalDistance);
     const krona::mesh::device::AuxConnectivityStorage<Exec> connectivity{host_connectivity, exec};
     const krona::mesh::device::AuxGeometryStorage<Exec> geometry{host_geometry, exec};
-    const td::DiffusionPlan<Exec, Real> plan{host_mesh, mesh.view(), connectivity.view(), geometry.view(), comm, exec};
+    const td::DiffusionPlan<Exec, Real> plan{mesh.view(), connectivity.view(), geometry.view(), comm, exec};
     // The mesh-only diffusion plan and the reusable algebra graph/map have separate lifetimes.
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};
     const auto config = load_boundary(paths[1], comm);
@@ -110,11 +112,17 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
         "temperature", boundary.required_field_size(), krona::fields::FieldLocation::Custom, exec};
     temperature.fill_async(exec, static_cast<krona::StorageReal>(initial_temperature));
 
-    ts::SteadyDiffusionOptions options;
-    options.linear.relative_tolerance = std::is_same_v<krona::SolverReal, float> ? 2.0e-6 : 1.0e-8;
-    options.linear.maximum_iterations = 2000;
-    options.linear.restart_length = 100;
-    ts::SteadyDiffusion<> solver{plan, assembly, temperature.view().component(0), options};
+    krona::linalg::SolverOptions options;
+    options.relative_tolerance = std::is_same_v<krona::SolverReal, float> ? 2.0e-6 : 1.0e-8;
+    options.maximum_iterations = 2000;
+    options.restart_length = 100;
+    const td::DiffusionOperator<Exec, Real> operation{plan};
+    const ts::SourceOperator<Exec, Real> sources{mesh.view(), exec};
+    ts::AssemblyStatus<Exec> assembly_status{exec};
+    using Matrix = krona::linalg::CsrMatrix<krona::SolverReal, Exec>;
+    Matrix matrix{assembly.pattern()};
+    krona::linalg::Vector<krona::SolverReal, Exec> rhs{matrix.distribution()}, solution{matrix.distribution()};
+    krona::linalg::Solver<Matrix, krona::PreconditionerReal> linear{matrix, options};
     // Register additional scalar fields here to publish them with the same grouped exchange.
     krona::halo::Exchange<krona::StorageReal, Exec> halo{mesh.view(),
         {host_mesh.nb_ranks, host_mesh.send_offsets, host_mesh.recv_offsets}, comm, 0, exec,
@@ -130,8 +138,31 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
     krona::mpi::check(MPI_Barrier(comm.native()), "MPI_Barrier(before solve)");
 
     const double start = MPI_Wtime();
-    const auto result = solver.solve_owned(boundary, diffusion, source);
+    const auto coefficients = matrix.overwrite_values(exec);
+    const auto right = rhs.overwrite(exec);
+    const ts::SystemView equation{coefficients, Kokkos::subview(right, Kokkos::ALL(), 0), assembly.entry_map()};
+    Kokkos::deep_copy(exec, equation.values, krona::SolverReal{0});
+    Kokkos::deep_copy(exec, equation.rhs, krona::SolverReal{0});
+    assembly_status.begin_async();
+    operation.add_system_async(equation, boundary, assembly_status, diffusion);
+    sources.add_async(equation.rhs, assembly_status, source);
+    // This application solves pure steady diffusion and requires positive diagonals.
+    const auto flags = assembly_status.device_flags(exec);
+    using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
+    Kokkos::parallel_for("scalar_diffusion/check_equation", Policy(exec, 0, std::max(equation.values.extent(0), equation.rhs.extent(0))),
+        KOKKOS_LAMBDA(std::size_t i) {
+            if (i < equation.values.extent(0) && !Kokkos::isfinite(equation.values(i))) ts::detail::flag(flags, ts::detail::BadSystem);
+            if (i < equation.rhs.extent(0) && (!Kokkos::isfinite(equation.rhs(i)) || !(equation.values(equation.entries.diagonal(i)) > krona::SolverReal{0})))
+                ts::detail::flag(flags, ts::detail::BadSystem);
+        });
+    const auto report = assembly_status.check(comm);
+    matrix.commit(); rhs.commit();
+    krona::mpi::require(matrix.distribution().global_size() == 0 || report.has_diffusion_anchor,
+        "Scalar diffusion app: pure Neumann problem needs an explicit reference or nullspace treatment");
+    solution.copy_from_component_async(temperature.view().component(0), exec); solution.commit();
+    const auto result = linear.solve(rhs, solution);
     if (result.converged) {
+        solution.copy_to_component_async(temperature.view().component(0), exec); solution.commit();
         halo.exchange();
         boundary_status.begin_async();
         boundary.apply_async(temperature.view(), boundary_status, diffusion);
@@ -147,14 +178,17 @@ void broadcast_text(std::string& text, krona::mpi::CommView comm)
                     MPI_DOUBLE, MPI_MAX, comm.native()),
         "MPI_Allreduce(solve duration)");
 
-    if (comm.rank() == 0)
+    if (comm.rank() == 0) {
         std::printf("execution=%s ranks=%d cells=%llu\n"
-                    "converged=%s iterations=%d relative_residual=%.6e\nsolve_seconds=%.6f seconds\n",
+                    "converged=%s iterations=%d\nsolve_seconds=%.6f seconds\n",
             Exec::name(), comm.size(), static_cast<unsigned long long>(host_mesh.n_cells_g),
-            result.converged ? "yes" : "no", result.iterations, result.relative_residual, solve_seconds);
+            result.converged ? "yes" : "no", result.iterations, solve_seconds);
+        if (result.residual_checked) std::printf("relative_residual=%.6e\n", result.relative_residual);
+        else std::printf("final true residual not checked\n");
+    }
     if (!result.converged) return EXIT_FAILURE;
 
-    const auto balance = solver.balance(boundary, diffusion, source);
+    const auto balance = operation.balance(temperature.view().component(0), boundary, diffusion, source);
 
     // The writer is host-only. Allocate a snapshot even on CPU; no device pointer reaches VTU.
     auto values = temperature.create_host_buffer();

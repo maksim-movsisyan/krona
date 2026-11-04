@@ -15,7 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
-
+ 
 namespace {
 using namespace krona;
 namespace ts = transport::scalar;
@@ -626,7 +626,7 @@ void frozen_system(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
     Boundary boundary(boundary_layout);conditions(boundary,0,static_cast<Real>(f.total));
     mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
-    df::DiffusionPlan<Exec> diffusion_plan(f.host,a.mesh.view(),a.connectivity.view(),geometry.view(),comm,exec);
+    df::DiffusionPlan<Exec> diffusion_plan(a.mesh.view(),a.connectivity.view(),geometry.view(),comm,exec);
     df::DiffusionOperator diffusion(diffusion_plan);cv::ConvectionOperator convection(a.plan);
     ts::SourceOperator source(a.mesh.view(),exec);ts::AssemblyStatus<Exec> status(exec);
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{Real{0.5}}};

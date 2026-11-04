@@ -361,7 +361,7 @@ int run(const std::array<std::string,3>& paths, Settings settings, krona::mpi::C
     const krona::mesh::device::AuxConnectivityStorage<Exec> connectivity{host_connectivity,exec};
     const krona::mesh::device::AuxGeometryStorage<Exec> geometry{host_geometry,exec};
     const df::DiffusionPlan<Exec,Real> diffusion_plan{
-        host_mesh,mesh.view(),connectivity.view(),geometry.view(),comm,exec};
+        mesh.view(),connectivity.view(),geometry.view(),comm,exec};
     const cv::ConvectionPlan<Exec,Real> convection_plan{host_mesh,mesh.view(),connectivity.view(),comm,exec};
     const df::DiffusionOperator<Exec,Real> diffusion{diffusion_plan};
     const cv::ConvectionOperator<Exec,Real> convection{convection_plan};

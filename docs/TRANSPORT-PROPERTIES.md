@@ -129,6 +129,8 @@ custom_model.validate(); // LinearHeatCapacity has no configurable parameters.
 
 ## Isotropic diffusion law
 
+CMake target: `krona::transport_diffusion`. This local law is independent of a mesh, boundary manager and algebra backend.
+
 `IsotropicDiffusion<Coefficient>` uses a callable `coefficient(context)` to implement
 
 $$

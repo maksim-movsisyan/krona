@@ -196,16 +196,6 @@ struct CorrectionBoundary {
     }
 };
 
-template<class Values, class Rhs, class Diagonal, class Flags>
-struct ValidateSystem {
-    Values values; Rhs rhs; Diagonal diagonal; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const
-    {
-        if (i < values.extent(0) && !Kokkos::isfinite(values(i))) flag(flags, BadSystem);
-        if (i < rhs.extent(0) && (!Kokkos::isfinite(rhs(i)) || !(values(diagonal(i)) > 0))) flag(flags, BadSystem);
-    }
-};
-
 template<class Space, class Source>
 struct IntegrateSource {
     mesh::device::MeshView<Space> mesh; Source source;

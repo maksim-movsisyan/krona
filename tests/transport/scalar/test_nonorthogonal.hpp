@@ -3,108 +3,6 @@
 // Included by test_diffusion.cpp inside its anonymous namespace; uses the shared test fixture types.
 // A stretched grid has column-dependent shear and skew parallelepipeds. Metrics are independent
 // analytical geometry, so an affine solution has zero integrated divergence in every owned cell.
-Fixture skew_grid(mpi::CommView comm, bool skew = true)
-{
-    Fixture f; 
-    auto& m = f.host;
-    constexpr int local_x = 2, ny = 2, nz = 2;
-    const int first = local_x*comm.rank(), nx = local_x*comm.size();
-    const double sy = skew ? 0.27 : 0.0, sz = skew ? 0.13 : 0.0, yz = skew ? 0.19 : 0.0;
-    const double curvature = skew ? 0.09 : 0.0;
-    const auto edge = [](int x) { return double(x)+0.08*double(x*x); };
-    const auto shift = [&](int x) { return curvature*double(x*x); };
-    const auto point = [&](double x, double y, double z) { return std::array{x+sy*y+sz*z,y+yz*z,z}; };
-    const auto local = [](int x, int y, int z) { return LocalIndex((x*ny+y)*nz+z); };
-    m.rank=comm.rank();m.nprocs=comm.size();m.n_own=local_x*ny*nz;m.faces_grouped=true;
-    m.n_cells_g=static_cast<std::uint64_t>(nx*ny*nz);
-    m.patches.resize(6);
-    for(int p=0;p<6;++p)m.patches[static_cast<std::size_t>(p)].name="side"+std::to_string(p);
-    struct Cell {int x,y,z;};
-    std::vector<Cell> cells;
-    for(int x=first;x<first+local_x;++x)for(int y=0;y<ny;++y)for(int z=0;z<nz;++z)cells.push_back({x,y,z});
-    for(int peer : {comm.rank()-1,comm.rank()+1}) {
-        if(peer<0||peer>=comm.size())continue;
-        m.nb_ranks.push_back(peer);
-        for(int y=0;y<ny;++y)for(int z=0;z<nz;++z) {
-            m.send_owned_local.push_back(local(peer<comm.rank()?0:local_x-1,y,z));
-            m.recv_ghost_local.push_back(static_cast<LocalIndex>(cells.size()));
-            cells.push_back({peer<comm.rank()?first-1:first+local_x,y,z});
-        }
-        m.send_offsets.push_back(m.send_owned_local.size());m.recv_offsets.push_back(m.recv_ghost_local.size());
-    }
-    m.n_cells=static_cast<LocalIndex>(cells.size());
-    for(const auto c:cells) {
-        const auto x=point(0.5*(edge(c.x)+edge(c.x+1)),c.y+0.5+0.5*(shift(c.x)+shift(c.x+1)),c.z+0.5);
-        m.cell_centroid_x.push_back(static_cast<GeometryReal>(x[0]));
-        m.cell_centroid_y.push_back(static_cast<GeometryReal>(x[1]));
-        m.cell_centroid_z.push_back(static_cast<GeometryReal>(x[2]));
-        m.cell_volume.push_back(static_cast<GeometryReal>(edge(c.x+1)-edge(c.x)));
-    }
-    struct Face {LocalIndex owner,neighbour;std::array<double,3> x,s;int patch;};
-    std::array<std::vector<Face>,3> groups;
-    for(LocalIndex i=0;i<m.n_own;++i) {
-        const auto cell=cells[static_cast<std::size_t>(i)];
-        for(int axis=0;axis<3;++axis)for(int side : {-1,1}) {
-            Cell other=cell;
-            (axis==0?other.x:axis==1?other.y:other.z)+=side;
-            const bool exterior=other.x<0||other.x>=nx||other.y<0||other.y>=ny||other.z<0||other.z>=nz;
-            LocalIndex j=-1;
-            if(!exterior) {
-                for(std::size_t k=0;k<cells.size();++k)
-                    if(cells[k].x==other.x&&cells[k].y==other.y&&cells[k].z==other.z){j=static_cast<LocalIndex>(k);break;}
-                check(j>=0,"skew fixture is missing a real ghost");
-                if(j<m.n_own&&i>j)continue;
-            }
-            const double dx=edge(cell.x+1)-edge(cell.x);
-            const double dy=shift(cell.x+1)-shift(cell.x);
-            const double face_shift=axis==0?shift(cell.x+(side>0)):0.5*(shift(cell.x)+shift(cell.x+1));
-            auto x=point(axis==0?edge(cell.x+(side>0)):0.5*(edge(cell.x)+edge(cell.x+1)),
-                         cell.y+(axis==1?(side>0?1.0:0.0):0.5)+face_shift,
-                         cell.z+(axis==2?(side>0?1.0:0.0):0.5));
-            const std::array<double,3> area=axis==0?std::array{1.0,-sy,sy*yz-sz}:
-                axis==1?std::array{-dy,dx+sy*dy,sz*dy-yz*(dx+sy*dy)}:std::array{0.0,0.0,dx};
-            auto s=area;for(auto& value:s)value*=side;
-            groups[exterior?2:j<m.n_own?0:1].push_back({i,j,x,s,exterior?2*axis+(side>0):-1});
-        }
-    }
-    std::sort(groups[2].begin(),groups[2].end(),[](const auto& a,const auto& b){return a.patch<b.patch;});
-    m.n_internal_faces=static_cast<LocalIndex>(groups[0].size());
-    m.n_inner_faces=m.n_internal_faces+static_cast<LocalIndex>(groups[1].size());
-    for(const auto& group:groups)for(const auto& face:group) {
-        const double area=std::sqrt(face.s[0]*face.s[0]+face.s[1]*face.s[1]+face.s[2]*face.s[2]);
-        const std::array n{face.s[0]/area,face.s[1]/area,face.s[2]/area};
-        const auto i=static_cast<std::size_t>(face.owner),j=static_cast<std::size_t>(face.neighbour<0?0:face.neighbour);
-        const std::array p{double(m.cell_centroid_x[i]),double(m.cell_centroid_y[i]),double(m.cell_centroid_z[i])};
-        const std::array q=face.neighbour<0?face.x:std::array{double(m.cell_centroid_x[j]),double(m.cell_centroid_y[j]),double(m.cell_centroid_z[j])};
-        const std::array d{q[0]-p[0],q[1]-p[1],q[2]-p[2]};
-        const double h=d[0]*n[0]+d[1]*n[1]+d[2]*n[2];
-        const double left=(face.x[0]-p[0])*n[0]+(face.x[1]-p[1])*n[1]+(face.x[2]-p[2])*n[2];
-        m.face_owner.push_back(face.owner);m.face_neigh.push_back(face.neighbour);m.face_patch.push_back(face.patch);
-        m.face_centroid_x.push_back(static_cast<GeometryReal>(face.x[0]));m.face_centroid_y.push_back(static_cast<GeometryReal>(face.x[1]));m.face_centroid_z.push_back(static_cast<GeometryReal>(face.x[2]));
-        m.face_normal_x.push_back(static_cast<GeometryReal>(n[0]));m.face_normal_y.push_back(static_cast<GeometryReal>(n[1]));m.face_normal_z.push_back(static_cast<GeometryReal>(n[2]));
-        m.face_area.push_back(static_cast<GeometryReal>(area));
-        f.geometry.face_normal_dist.push_back(static_cast<GeometryReal>(h));
-        f.geometry.face_area_over_normal_dist.push_back(static_cast<GeometryReal>(area/h));
-        f.geometry.face_interp_weight.push_back(static_cast<GeometryReal>(face.neighbour<0?0:(h-left)/h));
-        f.geometry.face_non_ortho_x.push_back(static_cast<GeometryReal>(area*(n[0]-d[0]/h)));
-        f.geometry.face_non_ortho_y.push_back(static_cast<GeometryReal>(area*(n[1]-d[1]/h)));
-        f.geometry.face_non_ortho_z.push_back(static_cast<GeometryReal>(area*(n[2]-d[2]/h)));
-    }
-    m.n_faces=static_cast<LocalIndex>(m.face_owner.size());
-    m.n_bfaces_g=static_cast<std::uint64_t>(2*(ny*nz+nx*nz+nx*ny));m.n_labeled_bfaces_g=m.n_bfaces_g;
-    f.connectivity.active_mask=mesh::AuxConnType::CellFaces;f.connectivity.n_faces=m.n_faces;f.connectivity.n_cells_own=m.n_own;
-    f.connectivity.cell_faces_offsets={0};
-    for(LocalIndex i=0;i<m.n_own;++i) {
-        for(LocalIndex face=0;face<m.n_faces;++face)
-            if(m.face_owner[static_cast<std::size_t>(face)]==i||m.face_neigh[static_cast<std::size_t>(face)]==i)
-                f.connectivity.cell_faces.push_back(face);
-        f.connectivity.cell_faces_offsets.push_back(f.connectivity.cell_faces.size());
-    }
-    f.geometry.n_faces=m.n_faces;
-    f.geometry.active_mask=mesh::AuxGeomType::FaceNormalDistance|mesh::AuxGeomType::FaceAreaOverNormalDistance|
-        mesh::AuxGeomType::FaceInterpolationWeights|mesh::AuxGeomType::FaceNonOrthogonalityVector;
-    return f;
-}
 
 KOKKOS_INLINE_FUNCTION Real affine_value(Real x,Real y,Real z)
 {return Real{2}+Real(0.7)*x-Real(1.1)*y+Real(0.6)*z;}
@@ -118,7 +16,7 @@ struct AffineValue {
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c,Real increment=0)const
     {return bc::FixedValue<Real>{affine_value(c.x,c.y,c.z)}(c,increment);}
 };
-struct AffineRobin {
+struct AffineRobin { 
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c,Real increment=0)const
     {
         const Real normal=Real(0.7)*c.nx-Real(1.1)*c.ny+Real(0.6)*c.nz;
@@ -170,7 +68,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     boundary.finalize();
     krona::boundary::scalar::Status<Exec> boundary_status_0(exec);
     boundary_status_0.begin_async();
-    boundary.apply_component_async(phi, boundary_status_0,law,td::NonOrthogonalCorrection{ExactGradient{}});
+    boundary.apply_component_async(phi, boundary_status_0,law,numerics::gradient::GradientCorrection{ExactGradient{}});
     boundary_status_0.check();
     numerics::gradient::GradientOperator<Exec> gradient(m,a.connectivity.view(),a.geometry.view(),{},exec);
     gradient.apply_component_async(phi,gradients.view().component(0),gradients.view().component(1),gradients.view().component(2));
@@ -183,8 +81,8 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
         test::near(static_cast<double>(g(i,1)),-1.1,tolerance,"affine gradient y including ghosts");
         test::near(static_cast<double>(g(i,2)),0.6,tolerance,"affine gradient z including ghosts");
     }
-    const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
-        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};
+    const auto correction=numerics::gradient::GradientCorrection{numerics::gradient::cell_gradients(
+        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2))};
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<Real*,Space> residual("corrected residual",boundary.required_field_size()),uncorrected("uncorrected",f.host.n_own);
     Kokkos::deep_copy(exec,residual,Real{7});Kokkos::deep_copy(exec,uncorrected,Real{0});
@@ -209,7 +107,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     matrix.commit();rhs.commit();base.commit();base_rhs.commit();
     const auto av=copy_view(matrix.read_values(exec),exec),bv=copy_view(base.read_values(exec),exec);matrix.commit();base.commit();
     for(std::size_t k=0;k<av.extent(0);++k)test::near(av(k),bv(k),0.0,"explicit correction modified matrix coefficients");
-    x.copy_from_component(phi,exec);x.commit();matrix.apply(x,y);
+    x.copy_from_component_async(phi,exec);x.commit();matrix.apply(x,y);
     const auto ax=copy_view(y.read(exec),exec),b=copy_view(rhs.read(exec),exec);y.commit();rhs.commit();
     for(LocalIndex i=0;i<f.host.n_own;++i)test::near(b(i,0)-ax(i,0),hr(i)-7.0,tolerance,"assembled and matrix-free corrected residual disagree");
     const auto revision=base.revision();
@@ -246,8 +144,8 @@ void corrected_weights(const Exec& exec)
         g(i,0)=x*x+y;g(i,1)=Real{2}*x+Real{3}*y;g(i,2)=-z;
     }
     Kokkos::deep_copy(exec,gradients.view().kokkos_view(),g);
-    const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
-        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};
+    const auto correction=numerics::gradient::GradientCorrection{numerics::gradient::cell_gradients(
+        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2))};
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<Real*,Space> output("weighted correction",f.host.n_own);Kokkos::deep_copy(exec,output,Real{0});
@@ -299,8 +197,8 @@ void corrected_empty(const Exec& exec)
         fields::FieldStorage<Real,1,Exec> field("empty field",boundary.required_field_size(),fields::FieldLocation::Custom,exec);
         fields::FieldStorage<Real,3,Exec> gradients("empty gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
         field.fill_async(exec,Real{0});gradients.fill_async(exec,Real{0});
-        const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
-            gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};
+        const auto correction=numerics::gradient::GradientCorrection{numerics::gradient::cell_gradients(
+            gradients.view().component(0),gradients.view().component(1),gradients.view().component(2))};
         const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}};
         Kokkos::View<Real*,Space> output("empty residual with tail",static_cast<std::size_t>(f.host.n_own)+1);
         Kokkos::deep_copy(exec,output,Real{5});
@@ -309,8 +207,7 @@ void corrected_empty(const Exec& exec)
         diffusion.add_residual_async(field.view().component(0),output,boundary,status,law,correction);
         diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
         const auto h=copy_view(output,exec);for(std::size_t i=0;i<h.extent(0);++i)test::near(h(i),Real{5},Real{0},"empty/zero correction modified a target");
-        ts::SteadyDiffusion<> solver(a.plan,a.assembly,field.view().component(0),settings());
-        check(solver.solve_owned(boundary,law,ts::UniformSource<Real>{0},correction).converged,"corrected empty solve failed");
+        check(solve_field(a,field.view().component(0),boundary,settings(),law,ts::UniformSource<Real>{0},correction).converged,"corrected empty solve failed");
     }
 }
 
@@ -326,8 +223,8 @@ void corrected_iterations(const Exec& exec)
     fields::FieldStorage<Real,3,Exec> gradients("iterate gradients",f.host.n_cells,fields::FieldLocation::Custom,exec);
     field.fill_async(exec,Real{0});gradients.fill_async(exec,Real{0});const auto phi=field.view().component(0);
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
-    const auto correction=td::NonOrthogonalCorrection{td::CellGradients{
-        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2)}};
+    const auto correction=numerics::gradient::GradientCorrection{numerics::gradient::cell_gradients(
+        gradients.view().component(0),gradients.view().component(1),gradients.view().component(2))};
     halo::Exchange<Real,Exec> field_halo(a.mesh.view(),a.mesh.halo_plan(),comm,35,exec),gradient_halo(a.mesh.view(),a.mesh.halo_plan(),comm,36,exec);
     field_halo.add_field(field.view());field_halo.prepare();gradient_halo.add_field(gradients.view());gradient_halo.prepare();
     numerics::gradient::GradientOperator<Exec> gradient(a.mesh.view(),a.connectivity.view(),a.geometry.view(),{},exec);
@@ -340,7 +237,7 @@ void corrected_iterations(const Exec& exec)
     const auto revision=matrix.revision();
     Kokkos::View<double*,Space> base_rhs("frozen RHS",f.host.n_own);
     Kokkos::deep_copy(exec,base_rhs,Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0));rhs.commit();
-    linalg::Solver<decltype(matrix)> linear(matrix,settings().linear);
+    linalg::Solver<decltype(matrix)> linear(matrix,settings());
     double error=1;int iterations=0;
     for(;iterations<60&&error>2e-9;++iterations) {
         krona::boundary::scalar::Status<Exec> boundary_status_2(exec);
@@ -351,8 +248,8 @@ void corrected_iterations(const Exec& exec)
         const auto b=Kokkos::subview(rhs.overwrite(exec),Kokkos::ALL(),0);
         Kokkos::deep_copy(exec,b,base_rhs);status.begin_async();
         diffusion.add_correction_async(b,boundary,status,law,correction);(void)status.check(comm);rhs.commit();
-        x.copy_from_component(phi,exec);x.commit();check(linear.solve(rhs,x).converged,"nonorthogonal outer linear solve failed");
-        x.copy_to_component(phi,exec);x.commit();
+        x.copy_from_component_async(phi,exec);x.commit();check(linear.solve(rhs,x).converged,"nonorthogonal outer linear solve failed");
+        x.copy_to_component_async(phi,exec);x.commit();
         const auto h=field.create_host_buffer();Kokkos::deep_copy(exec,h,field.view().kokkos_view());exec.fence("outer error ready");
         double local=0;
         for(LocalIndex i=0;i<f.host.n_own;++i)local=std::max(local,std::abs(double(h(i))-double(affine_value(
@@ -367,9 +264,8 @@ void corrected_iterations(const Exec& exec)
     field_halo.exchange();boundary.apply_async(field.view(), boundary_status_3,law,correction);
     boundary_status_3.check();
     gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
-    ts::SteadyDiffusion<> steady(a.plan,a.assembly,phi,settings());
-    check(steady.solve_owned(boundary,law,ts::UniformSource<Real>{0},correction).converged,"corrected convenience solve failed");
-    test::near(steady.balance(boundary,law,ts::UniformSource<Real>{0},correction).defect,0.0,1e-7,"corrected convenience balance");
+    check(solve_field(a,phi,boundary,settings(),law,ts::UniformSource<Real>{0},correction).converged,"corrected rebuilt solve failed");
+    test::near(diffusion.balance(phi,boundary,law,ts::UniformSource<Real>{0},correction).defect,0.0,1e-7,"corrected rebuilt balance");
 }
 
 template<int Which>
@@ -387,7 +283,7 @@ void rejected_correction(const Exec& exec)
     Kokkos::View<Real*,Space> gx("gx",count),gy("gy",count),gz("gz",count),output("output",f.host.n_own);
     Kokkos::deep_copy(exec,gx,Real{1});Kokkos::deep_copy(exec,gy,Real{2});Kokkos::deep_copy(exec,gz,Real{3});Kokkos::deep_copy(exec,output,Real{0});
     if constexpr(Which==2)Kokkos::deep_copy(exec,gx,std::numeric_limits<Real>::quiet_NaN());
-    const auto correction=td::NonOrthogonalCorrection{td::CellGradients{gx,gy,gz}};
+    const auto correction=numerics::gradient::GradientCorrection{numerics::gradient::cell_gradients(gx,gy,gz)};
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}};
     boundary.finalize();

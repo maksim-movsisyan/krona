@@ -3,10 +3,9 @@
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/communicator.hpp>
 #include <krona/mesh/device/validation.hpp>
-#include <krona/mesh/host/mesh_part.hpp>
 #include <krona/transport/scalar/diffusion/types.hpp>
 
-#include <KokkosKernels_ArithTraits.hpp>
+#include <Kokkos_NumericTraits.hpp>
 
 #include <cmath>
 
@@ -32,8 +31,8 @@ struct ValidateMetric {
         const Real h = dx*nx + dy*ny + dz*nz;
         const Real cached = static_cast<Real>(geometry.face_normal_dist(f));
         const Real area_over_distance = static_cast<Real>(geometry.face_area_over_normal_dist(f));
-        const Real tolerance = Real{128}*(static_cast<Real>(KokkosKernels::ArithTraits<GeometryReal>::epsilon()) +
-                                                        KokkosKernels::ArithTraits<Real>::epsilon());
+        const Real tolerance = Real{128}*(static_cast<Real>(Kokkos::epsilon_v<GeometryReal>) +
+                                                        Kokkos::epsilon_v<Real>);
         bool valid = Kokkos::isfinite(h) && h > Real{0} && Kokkos::isfinite(cached) &&
             Kokkos::abs(cached-h) <= tolerance*h && Kokkos::isfinite(area_over_distance) && area_over_distance > Real{0} &&
             Kokkos::abs(area_over_distance*h-static_cast<Real>(g.face_area(f))) <= tolerance*static_cast<Real>(g.face_area(f));
@@ -67,8 +66,7 @@ struct ValidateMetric {
 };
 
 template<class Exec, class Real>
-void validate_plan(const mesh::host::MeshPart& host,
-    mesh::device::MeshView<typename Exec::memory_space> mesh_view,
+void validate_plan(mesh::device::MeshView<typename Exec::memory_space> mesh_view,
     mesh::device::AuxConnectivityView<typename Exec::memory_space> connectivity,
     mesh::device::AuxGeometryView<typename Exec::memory_space> geometry,
     mpi::CommView comm, const Exec& exec, DiffusionOptions options)
@@ -76,11 +74,7 @@ void validate_plan(const mesh::host::MeshPart& host,
     mpi::guarded([&] {
         execution::require_kokkos();
         const auto& s = mesh_view.sizes;
-        mpi::require(host.rank == comm.rank() && host.nprocs == comm.size(),
-                     "Scalar diffusion: mesh/communicator mismatch");
-        mpi::require(host.faces_grouped && s.faces_grouped && host.n_own == s.n_own && host.n_cells == s.n_cells &&
-            host.n_faces == s.n_faces && host.n_internal_faces == s.n_internal_faces && host.n_inner_faces == s.n_inner_faces,
-            "Scalar diffusion: grouped host/view mesh mismatch");
+        mpi::require(comm.native() != MPI_COMM_NULL, "Scalar diffusion: null communicator");
         mpi::require(std::isfinite(options.orthogonality_tolerance) && options.orthogonality_tolerance >= 0 &&
                      options.orthogonality_tolerance < 1, "Scalar diffusion: invalid orthogonality tolerance");
         using mesh::device::MeshData;

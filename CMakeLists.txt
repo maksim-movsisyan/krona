@@ -542,8 +542,8 @@ if(KRONA_ENABLE_CGNS)
     add_library(krona::mesh_generation ALIAS krona_mesh_generation)
     krona_public_headers(krona_mesh_generation PUBLIC)
     target_link_libraries(krona_mesh_generation
-        PUBLIC krona::build_config krona::mpi krona::cgns
-        PRIVATE krona::warnings krona::tomlplusplus)
+        PUBLIC krona::build_config krona::mpi
+        PRIVATE krona::warnings krona::tomlplusplus krona::cgns)
 endif()
 
 
@@ -641,6 +641,7 @@ krona_interface(thermodynamics krona::execution krona::mpi)
  
 # Molecular transport properties; independent of EOS, mesh and transport operators.
 krona_interface(transport_properties krona::execution krona::mpi)
+krona_interface(transport_diffusion krona::execution)
 
     #==================================
     #=== SCALAR BOUNDARY CONDITIONS ===
@@ -664,13 +665,13 @@ krona_public_headers(krona_boundary_physical PUBLIC)
 target_link_libraries(krona_boundary_physical
     PUBLIC krona::boundary_scalar krona::gradient krona::math
     PRIVATE krona::warnings krona::tomlplusplus)
-
+ 
 
     #========================
     #=== SCALAR TRANSPORT ===
     #========================
-krona_interface(transport_scalar krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
-
+krona_interface(transport_scalar_diffusion krona::transport_diffusion krona::mesh_device krona::boundary_scalar krona::gradient krona::mpi)
+krona_interface(transport_scalar krona::transport_scalar_diffusion krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
 
     #===============
     #=== CGNS IO ===

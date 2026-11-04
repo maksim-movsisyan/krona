@@ -1,31 +1,31 @@
 # Scalar diffusion
 
-`krona::transport::scalar::diffusion` implements finite-volume isotropic diffusion for one scalar on a static 3-D mesh. It provides additive matrix assembly, a matrix-free residual and an explicit nonorthogonal correction. `transport::scalar` supplies the shared system slice, source operator and assembly diagnostics. An optional `SteadyDiffusion` wrapper assembles and solves a CSR system.
+`krona::transport::scalar::diffusion` implements finite-volume isotropic diffusion for one scalar on a static 3-D mesh. It provides additive matrix assembly, a matrix-free residual and an explicit nonorthogonal correction. `transport::scalar` supplies the shared system slice, source operator and assembly diagnostics. The application owns the matrix/vectors, configures a linear solver and controls result publication.
 
 ## Equation and signs
 
 The steady equation is
 
-$$
+\[
 -\nabla\cdot(\Gamma\nabla\phi)=s,
 \qquad q_n=-\Gamma\nabla\phi\cdot\mathbf n.
-$$
+\]
 
 Here `s` is a source **per unit volume**, and `q_n` is an outward flux **per unit face area**. The operator uses integrated cell equations:
 
-$$
+\[
 A\phi=b,\qquad r=b-A\phi=s_iV_i-\sum_f Q_{i,f}^{\mathrm{out}}.
-$$
+\]
 
 Face areas and source volumes are included once. **Neither assembly nor the residual divides by cell volume.** If an explicit update needs a rate per unit volume, divide the resulting integrated residual by `V_i` in the application.
 
 For an uncorrected inner face, with owner `O`, neighbour `N` and unit normal from `O` to `N`:
 
-$$
+\[
 h=(\mathbf x_N-\mathbf x_O)\cdot\mathbf n>0,
 \quad a_f=\Gamma_f A_f/h,
 \quad Q_{O\to N}=a_f(\phi_O-\phi_N).
-$$
+\]
 
 Each owned row receives `+a_f` on its diagonal and `-a_f` in the neighbour column. Its residual receives minus its outward flux. A ghost neighbour contributes a column/input value; its row is assembled on its owning rank.
 
@@ -39,9 +39,10 @@ Each owned row receives `+a_f` on its diagonal and `-a_f` in the neighbour colum
 | `scalar::SystemView` | Describes writable rank-one coefficient/RHS slices and their matching entry map. |
 | `scalar::SourceOperator<Exec, Real>` | Adds `source(cell) * volume(cell)` to an owned output prefix. |
 | `scalar::AssemblyStatus<Exec>` | Collects device errors for one additive batch; checks them collectively. |
-| `scalar::SteadyDiffusion<Storage, Scalar, Exec, Real, PrecScalar>` | Owns a CSR matrix, RHS, solution and linear solver; borrows one application field component. |
 
-`Real` controls diffusion arithmetic; destination views control coefficient/output storage. The convenience solver separately selects field `Storage`, algebra `Scalar` and preconditioner `PrecScalar`. Native KRONA CSR/BSR matrices support `float` and `double`, subject to Trilinos instantiation support.
+`Real` controls diffusion arithmetic; destination views control coefficient/output storage. Field storage, algebra `Scalar` and preconditioner `PrecScalar` are selected separately by the application. Native KRONA CSR/BSR matrices support `float` and `double`, subject to Trilinos instantiation support.
+
+CMake targets: `krona::transport_diffusion` provides the constitutive law/coefficient providers. `krona::transport_scalar_diffusion` adds the mesh operator, scalar boundary conditions and gradient correction, without Trilinos. Native algebra assembly helpers and linear solves additionally require `krona::linalg`; the existing `krona::transport_scalar` target includes that integration.
 
 ## Prepare the mesh and boundary conditions
 
@@ -60,6 +61,7 @@ using namespace krona;
 namespace ts = transport::scalar;
 namespace td = transport::scalar::diffusion;
 namespace bc = boundary::scalar;
+namespace grad = numerics::gradient;
 using Exec = execution::ExecutionSpace;
 using Real = ComputeReal;
 using Space = typename Exec::memory_space;
@@ -79,65 +81,32 @@ mesh::device::AuxConnectivityStorage<Exec> conn(host_conn, exec);
 mesh::device::AuxGeometryStorage<Exec> geom(host_geom, exec);
 
 td::DiffusionPlan<Exec, Real> plan(
-    host, m, conn.view(), geom.view(), comm, exec);
+    m, conn.view(), geom.view(), comm, exec);
 td::DiffusionOperator<Exec, Real> diffusion(plan);
 ts::SourceOperator<Exec, Real> sources(m, exec);
 ts::AssemblyStatus<Exec> status(exec);
 
-bc::Manager<Exec, Real> boundary(host, m, exec);
+boundary::BoundaryLayout<Exec, Real> boundary_layout(host, m, exec);
+bc::Manager<Exec, Real> boundary(boundary_layout);
 for (std::size_t p = 0; p < host.patches.size(); ++p)
     boundary.set(static_cast<mesh::PatchId>(p), bc::FixedValue<Real>{300});
 boundary.set_unlabelled(bc::NormalGradient<Real>{0});
+boundary.finalize();
 
 const auto law = transport::IsotropicDiffusion{
     transport::UniformCoefficient<Real>{2}};
 const ts::UniformSource<Real> source{0};
 ```
 
-This example assigns `phi = 300` on labelled patches and zero normal gradient on unlabelled faces. Assign each patch its intended condition in a real case. Every labelled patch must be assigned, including patches with no faces on this rank; unlabelled faces also need a condition when present. A configured scalar boundary manager can be supplied instead.
+This example assigns `phi = 300` on labelled patches and zero normal gradient on unlabelled faces. Assign each patch its intended condition in a real case. Every labelled patch must be assigned, including patches with no faces on this rank; unlabelled faces also need a condition when present. A configured scalar boundary manager can be supplied instead. Call `finalize()` after setting/configuring conditions and again after any assignment changes; the shared layout must outlive the manager.
 
-The boundary manager must reference the same mesh arrays as the diffusion plan; matching counts alone are insufficient. Diffusion contributions, `balance()` and `solve_owned()` accept a final `time` argument, defaulting to `0`, for time-dependent providers/conditions. This argument does not advance a time integrator.
+The boundary manager must reference the same mesh arrays as the diffusion plan; matching counts alone are insufficient. Diffusion contributions and `balance()` accept a final `time` argument, defaulting to `0`, for time-dependent providers/conditions. This argument does not advance a time integrator.
 
-The plan requires matching host/device counts, grouped face intervals, `FaceCells`, `FaceGeometry`, `CellGeometry`, complete owned `CellFaces`, `FaceNormalDistance` and `FaceAreaOverNormalDistance`. Cell centres include real MPI ghosts; owned volumes must be finite and positive. Cached distances/area ratios must match the attached geometry.
+The plan accepts only device mesh/auxiliary views, a non-null communicator, an execution instance and options. It borrows these descriptors and has no host-mesh argument. Their partition/local numbering must match the communicator; device descriptors do not contain rank metadata, so that agreement is a caller contract. The plan requires grouped face intervals, `FaceCells`, `FaceGeometry`, `CellGeometry`, complete owned `CellFaces`, `FaceNormalDistance` and `FaceAreaOverNormalDistance`. Cell centres include real MPI ghosts; owned volumes must be finite and positive. Cached distances/area ratios must match the attached geometry.
 
 `DiffusionOptions` defaults to `{require_orthogonal = true, orthogonality_tolerance = 1e-6}`. Orthogonality is checked for centre-to-centre inner segments and centre-to-face boundary segments: tangential length must not exceed `tolerance * normal_distance`. Tolerance must be finite and in `[0, 1)`. Setting `require_orthogonal = false` permits skew geometry; **it does not enable a correction**. Attached interpolation weights/nonorthogonality vectors are also checked for consistency. Rebuild/revalidate after changing mesh geometry or numbering.
 
 ## Choose the execution path
-
-### Convenience steady solve
-
-```cpp
-#include <krona/transport/scalar/solvers/steady_diffusion.hpp>
-
-linalg::FaceAssemblyPlan<Exec> assembly(host, comm, exec);
-fields::FieldStorage<StorageReal, 1, Exec> phi(
-    "phi", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
-phi.fill_async(exec, StorageReal{300});
-
-ts::SteadyDiffusionOptions options;
-options.linear.relative_tolerance = 1e-6;
-options.linear.maximum_iterations = 500;
-ts::SteadyDiffusion<> solver(plan, assembly, phi.view().component(0), options);
-
-const auto result = solver.solve_owned(boundary, law, source);
-if (result.converged) {
-    halo::Exchange<StorageReal, Exec> exchange(
-        m, device_mesh.halo_plan(), comm, 41, exec);
-    exchange.add_field(phi.view());
-    exchange.prepare();
-    exchange.exchange();
-    boundary.apply_async(phi.view(), law);
-    exec.fence("phi published");
-}
-```
-
-`solve_owned()` clears/rebuilds its system, adds diffusion and the volume source, checks diagnostics, commits algebra access, copies current owned field values as the initial guess and calls the linear solver. On convergence it copies the solution back to **owned cells only**. On nonconvergence application field storage is preserved. Ghost/boundary slots and other field components are never published by this call.
-
-The borrowed component may be strided. Owned-only storage is enough for this wrapper; the example allocates extended storage for later halo/boundary publication. Reuse a registered exchanger between solves when needed.
-
-The wrapper requires a positive assembled diagonal in every owned row and at least one global diffusion anchor for a nonempty system. A fixed value or a suitable Robin condition supplies an anchor; gradient/flux-only conditions do not. Pure Neumann problems are rejected by this wrapper: it does not add a reference or handle a nullspace. One global anchor does not establish solvability of disconnected components; each component needs appropriate constraints.
-
-`matrix()`, `rhs()`, `solution()`, `assembly_plan()`, `operation()` and `component()` expose the associated objects. `linear_solver()` gives mutable access to the linear solver. Each `solve_owned()` performs a full rebuild; use the lower-level path to retain a fixed matrix across correction iterations.
 
 ### Assemble into your own CSR or BSR matrix
 
@@ -154,7 +123,11 @@ The wrapper requires a positive assembled diagonal in every owned row and at lea
 #include <krona/transport/scalar/assembly.hpp>
 #include <krona/linalg/solver.hpp>
 
-// Reuse assembly from above, or construct it once for this mesh.
+// Allocate once; the application owns the assembled system and its publication policy.
+fields::FieldStorage<StorageReal, 1, Exec> phi(
+    "phi", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
+phi.fill_async(exec, StorageReal{300});
+linalg::FaceAssemblyPlan<Exec> assembly(host, comm, exec);
 linalg::CsrMatrix<SolverReal, Exec> matrix(assembly.pattern());
 linalg::Vector<SolverReal, Exec> rhs(matrix.distribution());
 const auto target = ts::make_system_view(matrix, rhs, assembly, exec);
@@ -169,17 +142,22 @@ matrix.commit();
 rhs.commit();
 
 linalg::Vector<SolverReal, Exec> x(matrix.distribution());
-x.copy_from_component(phi.view().component(0), exec);
+x.copy_from_component_async(phi.view().component(0), exec);
 x.commit();
-linalg::Solver<decltype(matrix)> linear(matrix, options.linear);
+linalg::SolverOptions options;
+options.relative_tolerance = 1e-6;
+options.maximum_iterations = 500;
+linalg::Solver<decltype(matrix)> linear(matrix, options);
 const auto solved = linear.solve(rhs, x);
 if (solved.converged) {
-    x.copy_to_component(phi.view().component(0), exec);
+    x.copy_to_component_async(phi.view().component(0), exec);
     x.commit();
 }
 ```
 
-All contributions are **additive**. Initialize once for a fresh equation, then add all required terms before `check()` and commit. `make_system_view()` opens native ReadWrite access; it neither clears nor commits. `check()` completes diagnostics but does not close algebra access. `report.has_diffusion_anchor` reports whether this batch encountered an anchoring boundary contribution; it is not a whole-system solvability test. The low-level path does not impose the convenience solver's anchor/diagonal checks.
+All contributions are **additive**. Initialize once for a fresh equation, then add all required terms before `check()` and commit. `make_system_view()` opens native ReadWrite access; it neither clears nor commits. `check()` completes diagnostics but does not close algebra access. `report.has_diffusion_anchor` reports whether this batch encountered an anchoring boundary contribution; it is not a whole-system solvability test. The operators do not impose a whole-system anchor/diagonal policy. For pure steady diffusion, a gradient/flux-only (Neumann) problem needs a reference or nullspace treatment; this example assumes suitable Dirichlet/Robin constraints. A global anchor does not prove that every disconnected component is constrained. Temporal, reaction or coupled terms may change the system's solvability conditions.
+
+The example copies the result into the application's owned prefix only on convergence. On nonconvergence it leaves the field unchanged. Ghost and boundary slots are separate: publish them through the halo/boundary pipeline when later consumers need them. Assembling diffusion uses the condition objects directly; the initial field does not need prefilled boundary slots. Reuse the graph, matrix and vectors across solves, and choose explicitly when coefficients/RHS need rebuilding.
 
 For a block system:
 
@@ -257,9 +235,25 @@ Providers are sampled during each operation, not cached in the plan. Assembly fr
 
 `UniformSource<Real>{s}` supplies a constant volume-source density; `CellSource{view}` reads a rank-one array with at least `n_own` entries. A custom device-callable `source(cell)` can evaluate it on demand. Sources must be finite and their integrated contributions representable. Positive sources add to the RHS/residual; no source diagonal or nonlinear derivative is assembled.
 
-Boundary handling uses the scalar manager's affine normal-gradient relation. `FixedValue`, `NormalGradient`, `FixedFlux` and custom scalar conditions are supported. `FixedFlux` specifies outward **flux density**, so positive flux removes the scalar from the domain; the assembler multiplies by area. It uses the same face coefficient for flux conversion and assembly. Every relation must yield finite affine flux coefficients with a nonnegative owner slope. Fixed-value boundaries anchor the solution; prescribed gradients/fluxes contribute only to the RHS.
+Boundary handling uses the scalar manager's affine normal-gradient relation. `FixedValue`, `NormalGradient`, `FixedFlux`, their context-dependent profile providers and custom scalar conditions are supported. Profiles are sampled at the current boundary face/time inside the diffusion kernel; no separate boundary-field fill is needed to assemble their contribution. Register each profile condition type in the manager's `CustomConditions` template list, as described in `BOUNDARY-SCALAR.md`. `FixedFlux` specifies outward **flux density**, so positive flux removes the scalar from the domain; the assembler multiplies by area. It uses the same face coefficient for flux conversion and assembly. Every relation must yield finite affine flux coefficients with a nonnegative owner slope. Fixed-value boundaries anchor the solution; prescribed gradients/fluxes contribute only to the RHS.
 
 A custom condition is a device-copyable callable `(boundary::FaceContext<Real>, Real increment) -> bc::Relation<Real>`; add its type to `bc::Manager<Exec, Real, Custom...>`. The gradient portion determines diffusion assembly. It may use `c.time`, supplied through the operation's finite `time` argument. See `BOUNDARY-SCALAR.md` for relation fields and custom-condition examples.
+
+For example, a space/time-dependent Dirichlet condition uses the ordinary scalar profile interface:
+
+```cpp
+struct WallValue {
+    KOKKOS_INLINE_FUNCTION Real operator()(const krona::boundary::FaceContext<Real>& c) const
+    { return Real{300}+Real{2}*c.y+c.time; }
+};
+const auto wall = bc::fixed_value<Real>(WallValue{});
+bc::Manager<Exec, Real, decltype(wall)> profiled(boundary_layout);
+for (std::size_t p = 0; p < host.patches.size(); ++p)
+    profiled.set(static_cast<mesh::PatchId>(p), wall);
+profiled.set_unlabelled(bc::NormalGradient<Real>{0});
+profiled.finalize();
+// Pass profiled instead of boundary to add_system_async/add_residual_async.
+```
 
 ## Nonorthogonal correction
 
@@ -271,8 +265,8 @@ To enable corrected diffusion:
 
 ```cpp
 // gx, gy, gz are ready rank-one cell-gradient views, each with n_cells entries.
-const auto correction = td::NonOrthogonalCorrection{
-    td::CellGradients{gx, gy, gz}};
+const auto correction = grad::GradientCorrection{
+    grad::cell_gradients(gx, gy, gz)};
 
 status.begin_async();
 diffusion.add_system_async(target, boundary, status, law, correction);
@@ -284,13 +278,13 @@ rhs.commit();
 
 This example **adds** a corrected contribution; use it instead of an uncorrected assembly, or clear the target before rebuilding. It does not replace an earlier contribution.
 
-`NonOrthogonalCorrection` interpolates inner gradients using the actual owner weight, not an assumed midpoint. With `d = x_N - x_O`, `h = d · n`:
+`numerics::gradient::GradientCorrection` interpolates inner gradients using the actual owner weight, not an assumed midpoint. With `d = x_N - x_O`, `h = d · n`:
 
-$$
+\[
 \mathbf T_f=A_f(\mathbf n-\mathbf d/h),\qquad
 \mathbf g_f=w\mathbf g_O+(1-w)\mathbf g_N,
 \qquad Q_{O\to N}=a_f(\phi_O-\phi_N)-\Gamma_f\mathbf T_f\cdot\mathbf g_f.
-$$
+\]
 
 The gradient contribution is explicit: built-in boundary conditions and the inner stencil retain the uncorrected matrix, while the RHS changes. At boundaries, the same provider returns the reconstruction increment `(x_face - x_owner - h*n) · gradient_owner` used by scalar boundary relations. These boundary increments and the integrated inner correction have different geometric factors.
 
@@ -310,11 +304,15 @@ rhs.commit();
 
 `add_correction_async()` adds **corrected RHS minus zero-correction RHS**. It never edits the matrix or re-adds prescribed base fluxes/sources. Do not accumulate corrections from previous iterations. Coefficients, conditions and evaluation time must match the frozen base system. Custom boundary matrix slopes must not depend on the correction increment; this is checked when using the correction-only path. If matrix coefficients change, rebuild the base system instead.
 
-`CellGradients{x,y,z}` accepts strided component views without copying. A custom gradient provider can return three indexable components from `gradients(cell)`; its extents/accessibility are not automatically checked. A custom correction must expose `.gradients`, an `interior(context, tx, ty, tz)` method and a boundary-context call operator. The same auxiliary-vector/weight requirements still apply.
+`grad::cell_gradients(gx, gy, gz)` borrows rank-one component views, including strided and mixed-precision views. Their common extent must cover all local real cells, including ghosts. For a `3*N` gradient FieldView, use `grad::cell_gradients(field, component)`; it selects `3*component + {0,1,2}`. The same correction object can be passed to the scalar boundary manager.
+
+A custom gradient provider returns three indexable values from `gradients(cell)`. If it exposes `validate<Exec>(count)`, diffusion calls that host validator; otherwise it checks declared `memory_space` and `size()` metadata when available. Providers without metadata retain those caller contracts.
+
+A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-context call operator. It need not store a member named `gradients`. If that member exists, its metadata is validated; otherwise an optional `correction.validate<Exec>(count)` is called. Nonzero correction types still require the auxiliary nonorthogonality vectors and, when inner faces exist, interpolation weights. Use `grad::NoCorrection{}` to select the zero-correction path without those requirements.
 
 ## Diagnostics, ownership and asynchrony
 
-`AssemblyStatus` owns a small device flag array and a host mirror. Use **one `begin_async()` → contributions → `check(comm)` batch** on the same execution instance. Flags persist across contributions: a later valid contribution cannot erase an earlier error. Host precondition failures use `mpi::require`; detected kernel errors terminate collectively during `check()`. Checks cover bad coefficients, sources, boundary relations, corrections and nonfinite/unrepresentable additions. A failed batch is not rolled back.
+`AssemblyStatus` owns a small device flag array and a host mirror. Use **one `begin_async()` → contributions → `check(comm)` batch** on the same execution instance. Flags persist across contributions: a later valid contribution cannot erase an earlier error. Host precondition failures use `mpi::require`; diffusion validation/submission is protected by `mpi::guarded`. Detected kernel errors terminate collectively during `check()`. Checks cover bad coefficients, sources, boundary relations, corrections and nonfinite/unrepresentable additions. A failed batch is not rolled back.
 
 `balance(field, boundary, law, source[, correction], time)` is an optional blocking collective diagnostic. It returns global `source_integral`, `outward_boundary_flux` and `defect = outward_boundary_flux - source_integral`. It integrates owned sources and physical boundary fluxes; inner fluxes are not summed. Only owned field values are needed, plus any correction/coefficient inputs. It is a global conservation check, not a residual norm or a proof of local convergence. Pass the same law/source/correction/time as the equation being checked.
 
@@ -327,11 +325,11 @@ rhs.commit();
 | `add_system_async()`, `add_residual_async()`, `add_correction_async()`, `SourceOperator::add_async()` | Queue local kernels; no fence, halo exchange or MPI collective. |
 | `AssemblyStatus::check(comm)` | Copies flags to host, fences the execution instance and performs an MPI all-reduce. Does not commit algebra wrappers. |
 | Matrix/vector `commit()` | Completes pending native access on its recorded instance and closes the access batch; no MPI collective. |
-| `SteadyDiffusion::solve_owned()` | Blocking, collective assembly/check/linear solve/publication of owned values. |
+| `linalg::Solver::solve(rhs, x)` | Blocking collective linear solve; operates on committed algebra objects. Does not publish application fields. |
 | `balance()` | Blocking reductions followed by an MPI all-reduce. |
 
 All ranks participate in collective calls in the same order, including empty ranks. Order producers and consumers on the plan's execution instance; synchronize work on other instances before consuming its data. Avoid concurrent writes by separate assembly batches. Keep buffers live until queued work completes. Destroying a pending `AssemblyStatus` fences its instance but does **not** perform the collective error check.
 
-Plans/operators store mesh/auxiliary descriptors and a non-owning communicator; they do not allocate field, face-work, matrix or vector arrays. Keep the underlying mesh/auxiliary owners and communicator alive and stable. Host storage must also remain alive when device storage borrows it on CPU. The host mesh argument is used during plan validation, not retained as a separate host-mesh object.
+Plans/operators store mesh/auxiliary descriptors and a non-owning communicator; they do not allocate field, face-work, matrix or vector arrays. Keep the underlying mesh/auxiliary owners and communicator alive and stable. Host storage must also remain alive when device storage borrows it on CPU. The plan does not require host metadata. Boundary layouts and algebra plans have their own setup requirements; do not replace those with a diffusion plan.
 
-`FaceAssemblyPlan` copies share graph/entry-map allocations. `SystemView` copies descriptors and owns no independent equation buffers: retain the matrix/RHS or custom storage owners. Managed views in coefficient/gradient/source providers retain their allocations; unmanaged views borrow them. `SteadyDiffusion` additionally allocates its matrix coefficients, algebra vectors, status storage and solver workspace, and copies owned field values into/out of its algebra solution vector. It shares the supplied assembly plan and borrows the application component.
+`FaceAssemblyPlan` copies share graph/entry-map allocations. `SystemView` copies descriptors and owns no independent equation buffers: retain the matrix/RHS or custom storage owners. Managed views in coefficient/source providers retain their allocations; unmanaged views borrow them. The common `grad::cell_gradients()` adapter borrows raw component storage. The application owns matrix coefficients and algebra vectors; the linear solver manages its workspace. Field/vector transfers copy the owned values and convert scalar types as needed.

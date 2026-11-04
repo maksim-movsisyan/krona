@@ -5,9 +5,11 @@
 namespace krona::transport::scalar::diffusion {
 
 /// @brief Validated borrowed static-mesh geometry/connectivity; no algebra graph, matrix or vector allocation.
+/// The communicator and descriptors must describe the same partition; no rank metadata is inferred.
 /// Construction validates locally and is blocking. Mesh/auxiliary owners and communicator outlive all users.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class DiffusionPlan {
+    static_assert(std::is_floating_point_v<Real>);
 public:
     using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
@@ -16,10 +18,10 @@ public:
     using Connectivity = mesh::device::AuxConnectivityView<memory_space>;
     using Geometry = mesh::device::AuxGeometryView<memory_space>;
 
-    DiffusionPlan(const mesh::host::MeshPart& host, Mesh mesh_view, Connectivity connectivity,
+    DiffusionPlan(Mesh mesh_view, Connectivity connectivity,
                   Geometry geometry, mpi::CommView comm, Exec exec = {}, DiffusionOptions options = {})
         : exec_(exec), mesh_(mesh_view), connectivity_(connectivity), geometry_(geometry), comm_(comm)
-    { detail::validate_plan<Exec, Real>(host, mesh_, connectivity_, geometry_, comm_, exec_, options); }
+    { detail::validate_plan<Exec, Real>(mesh_, connectivity_, geometry_, comm_, exec_, options); }
 
     [[nodiscard]] const Exec& execution_space_instance() const noexcept { return exec_; }
     [[nodiscard]] mpi::CommView communicator() const noexcept { return comm_; }

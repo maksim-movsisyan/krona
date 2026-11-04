@@ -3,7 +3,7 @@
 #include <krona/transport/diffusion/isotropic.hpp>
 #include <krona/transport/scalar/source.hpp>
 #include <krona/transport/scalar/diffusion/plan.hpp>
-#include <krona/transport/scalar/diffusion/correction.hpp>
+#include <krona/transport/scalar/diffusion/detail/correction.hpp>
 
 namespace krona::transport::scalar::diffusion::detail {
 
@@ -54,7 +54,11 @@ void validate_correction(const DiffusionPlan<Exec, Real>& plan, const Correction
             "Scalar diffusion: correction requires attached FaceNonOrthogonalityVector");
         mpi::require(mesh.sizes.n_inner_faces == 0 || geometry.has_face_interp_weights(),
             "Scalar diffusion: correction requires attached FaceInterpolationWeights");
-        validate_gradients<Exec>(correction.gradients, static_cast<std::size_t>(mesh.sizes.n_cells));
+        const auto cells = static_cast<std::size_t>(mesh.sizes.n_cells);
+        if constexpr (requires { correction.gradients; })
+            validate_gradients<Exec>(correction.gradients, cells);
+        else if constexpr (requires { correction.template validate<Exec>(cells); })
+            mpi::guarded([&] { correction.template validate<Exec>(cells); });
     }
 }
 
