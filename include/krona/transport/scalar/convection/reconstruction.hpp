@@ -2,6 +2,7 @@
 
 #include <krona/transport/scalar/convection/plan.hpp>
 #include <krona/transport/scalar/convection/types.hpp>
+#include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/mesh_stencil.hpp>
 
 namespace krona::transport::scalar::convection {

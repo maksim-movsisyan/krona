@@ -89,8 +89,8 @@ public:
     void update_async(Field scalar)
     {
         gradient_.apply_async(scalar, gradients_.view());
-        const auto input = rec::data(rec::field_pack(scalar), rec::gradient_pack(gradients_.view()));
-        rec::compute_limiters_async<Real>(exec_, stencil_, input, rec::field_pack(factors_.view()),
+        const auto input = rec::data(krona::fields::pack(scalar), rec::gradient_pack(gradients_.view()));
+        rec::compute_limiters_async<Real>(exec_, stencil_, input, krona::fields::pack(factors_.view()),
             rec::BarthJespersen{}, rec::SecondOrderUpwind{});
         // Owned factors need owned gradients and current scalar samples, not remote gradients.
         // Exchange the three gradient components and the factor together only after both are produced.
@@ -102,8 +102,8 @@ public:
     [[nodiscard]] auto reconstruction(Field scalar, const cv::ConvectionPlan<Exec, Real>& plan) const
     {
         return cv::make_reconstruction(plan, rec::LimitedLinear{},
-            rec::data(rec::field_pack(scalar), rec::gradient_pack(gradients_.view()),
-                rec::field_pack(factors_.view())));
+            rec::data(krona::fields::pack(scalar), rec::gradient_pack(gradients_.view()),
+                krona::fields::pack(factors_.view())));
     }
 };
 

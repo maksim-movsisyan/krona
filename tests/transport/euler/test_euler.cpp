@@ -90,7 +90,7 @@ void affine(const Exec& exec)
     fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
     const auto first_order=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,1,Exec> factors("factors",2,krona::fields::FieldLocation::Custom,exec);factors.fill_async(exec,S{0});
-    const auto limited=eu::Reconstruction{rec::LimitedLinear{},rec::data(fields.primitive(),rec::gradient_pack(gradients.view()),rec::field_pack(factors.view())),
+    const auto limited=eu::Reconstruction{rec::LimitedLinear{},rec::data(fields.primitive(),rec::gradient_pack(gradients.view()),krona::fields::pack(factors.view())),
         rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
     status.begin_async();op.add_inner_residual_async(limited,fields.output(),status);(void)status.check(comm);
     const auto result_limited=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)

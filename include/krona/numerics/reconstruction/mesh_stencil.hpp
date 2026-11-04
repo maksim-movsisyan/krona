@@ -1,7 +1,8 @@
 #pragma once
 
-#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/schemes.hpp>
 #include <krona/mesh/device/aux_view.hpp>
+#include <krona/mpi/error.hpp>
 
 namespace krona::numerics::reconstruction {
 
@@ -61,10 +62,13 @@ public:
             nz_.extent(0) >= faces,
             "Reconstruction: missing mesh stencil arrays");
     }
+
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return static_cast<std::size_t>(owned_); }
     KOKKOS_INLINE_FUNCTION std::size_t required_input_size() const
     { return static_cast<std::size_t>(cells_)+static_cast<std::size_t>(face_count_-inner_); }
+
     KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t cell) const { return offsets_(cell+1)-offsets_(cell); }
+
     KOKKOS_INLINE_FUNCTION auto operator()(std::size_t cell, std::size_t k) const
     {
         const auto f = static_cast<std::size_t>(faces_(offsets_(cell)+k));
@@ -76,6 +80,7 @@ public:
         const Real fraction = dot(offset, n)/dot(span, n);
         return StencilEntry<Real>{sample, {cell, sample, offset, span, fraction}};
     }
+
     /// @brief Inner faces only. FirstOrder specialization reads endpoints without loading geometry.
     template<class Scheme = SecondOrderUpwind>
     KOKKOS_INLINE_FUNCTION auto face(std::size_t f) const
@@ -90,6 +95,7 @@ public:
             return face_geometry(p, n, left, right, fraction);
         }
     }
+    
     /// @brief Reconstruct only the interior trace; the application supplies the physical boundary closure.
     KOKKOS_INLINE_FUNCTION auto boundary_side(std::size_t f) const
     {

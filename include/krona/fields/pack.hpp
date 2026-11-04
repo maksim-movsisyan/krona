@@ -178,6 +178,13 @@ template<class First, class... Rest>
     return detail::make_component_pack(extent, std::make_index_sequence<width>{}, first, rest...);
 }
 
+/// @brief An existing valid pack already has the required representation.
+template<class... Components>
+[[nodiscard]] auto pack(ComponentPack<Components...> packed)
+{
+    return packed;
+}
+
 /// @brief Adapts one field; equivalent to pack(field).
 template<class Field>
 [[nodiscard]] auto field_pack(Field field) { return pack(field); }

@@ -1,5 +1,6 @@
 #include "common/test_support.hpp"
 
+#include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/mesh_stencil.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -78,7 +79,7 @@ void affine_test(const Exec& exec)
     // Mix rank-one scalar components with different AoS strides in one batch.
     Kokkos::View<R*, Space> separate("separate scalar", 2);
     Kokkos::deep_copy(exec, separate, values.view().component(4));
-    const auto inputs = rec::data(rec::pack(q.component(0), q.component(1), q.component(2), q.component(3), separate),
+    const auto inputs = rec::data(fields::pack(q.component(0), q.component(1), q.component(2), q.component(3), separate),
                                   rec::gradient_pack(g));
     Kokkos::View<R**, Space> output("affine states", 4, 5);
     test::complete(exec, [&] {
@@ -180,10 +181,10 @@ void bounds(const Exec& exec)
     Kokkos::View<double*, Space> q("q", 3), gx("gx", 1), gy("gy", 1), gz("gz", 1), factor("factor", 1);
     auto h = Kokkos::create_mirror(q); h(0) = 0.5; h(1) = 0; h(2) = 1;
     Kokkos::deep_copy(exec, q, h); Kokkos::deep_copy(exec, gx, 4.0); Kokkos::deep_copy(exec, gy, 0.0); Kokkos::deep_copy(exec, gz, 0.0);
-    const auto inputs = rec::data(rec::pack(q), rec::gradients(rec::pack(gx), rec::pack(gy), rec::pack(gz)));
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::pack(factor));
+    const auto inputs = rec::data(fields::pack(q), rec::gradients(fields::pack(gx), fields::pack(gy), fields::pack(gz)));
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(factor));
     // Immediately consume on the same instance: there is deliberately no intermediate fence.
-    const auto limited = rec::data(inputs.values, inputs.gradients, rec::pack(factor));
+    const auto limited = rec::data(inputs.values, inputs.gradients, fields::pack(factor));
     Kokkos::View<double*, Space> out("limited faces", 2);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/bounds", IndexPolicy(exec, 0, 2), KOKKOS_LAMBDA(std::size_t i) {
@@ -195,15 +196,15 @@ void bounds(const Exec& exec)
     test::near(ho(0), 0.0, 0.0, "limited lower face"); test::near(ho(1), 1.0, 0.0, "limited upper face");
     // At a strict extremum all neighbours equal the owner: any nonzero slope is suppressed.
     Kokkos::deep_copy(exec, q, 0.5);
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::pack(factor));
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(factor));
     test::near(host_copy(factor, exec)(0), 0.0, 0.0, "extremum limiter");
     h(0) = 1e12; h(1) = 1e12-0.125; h(2) = 1e12+0.125;
     Kokkos::deep_copy(exec, q, h); Kokkos::deep_copy(exec, gx, 0.6);
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::pack(factor));
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(factor));
     test::near(host_copy(factor, exec)(0), 5.0/12, 1e-15, "large constant offset polluted limiter increments");
     h(0) = 0.5; h(1) = 0; h(2) = 1;
     Kokkos::deep_copy(exec, q, h); Kokkos::deep_copy(exec, gx, 0.5); Kokkos::deep_copy(exec, gy, 4.0);
-    rec::compute_limiters_async(exec, SkewStencil{}, inputs, rec::pack(factor), rec::BarthJespersen{}, rec::Tvd{});
+    rec::compute_limiters_async(exec, SkewStencil{}, inputs, fields::pack(factor), rec::BarthJespersen{}, rec::Tvd{});
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/bounded_skew_tvd", IndexPolicy(exec, 0, 2), KOKKOS_LAMBDA(std::size_t i) {
             out(i) = rec::evaluate_side(rec::Limited<rec::Tvd<>>{}, SkewStencil{}(0, i).side, limited)[0];
@@ -246,18 +247,18 @@ void coupling(const Exec& exec)
             gx(0, static_cast<int>(c)) = c == 0 ? 4.0 : c == 1 ? 2.0 : 0.0;
         });
     });
-    const auto inputs = rec::data(rec::field_pack(values), rec::gradients(rec::field_pack(gx), rec::field_pack(zero.view()), rec::field_pack(zero.view())));
+    const auto inputs = rec::data(fields::pack(values), rec::gradients(fields::pack(gx), fields::pack(zero.view()), fields::pack(zero.view())));
     Kokkos::View<double*, Space> one("one shared factor", 1);
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::field_pack(factors.view()));
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::field_pack(shared.view()), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
-    rec::compute_limiters_async(exec, LineStencil{}, inputs, rec::pack(one), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(factors.view()));
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(shared.view()), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
+    rec::compute_limiters_async(exec, LineStencil{}, inputs, fields::pack(one), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
     const auto h = host_copy(factors.view().kokkos_view(), exec), hs = host_copy(shared.view().kokkos_view(), exec);
     const std::array<double, 3> expected{0.25, 0.5, 1};
     for (std::size_t c = 0; c < 3; ++c) {
         test::near(h(0, c), expected[c], 0.0, "componentwise factors"); test::near(hs(0, c), 0.25, 0.0, "shared factor");
     }
     test::near(host_copy(one, exec)(0), 0.25, 0.0, "single shared factor storage");
-    const auto broadcast = rec::data(inputs.values, inputs.gradients, rec::pack(one));
+    const auto broadcast = rec::data(inputs.values, inputs.gradients, fields::pack(one));
     Kokkos::View<double*, Space> result("broadcast result", 2);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/shared_factor", IndexPolicy(exec, 0, 1), KOKKOS_LAMBDA(std::size_t) {
@@ -275,20 +276,20 @@ void ranges(const Exec& exec)
     fields::FieldStorage<float, 3, Exec, Kokkos::LayoutRight> value("q", 7, fields::FieldLocation::Custom, exec),
         gradient("g", 5, fields::FieldLocation::Custom, exec), output("theta", 8, fields::FieldLocation::Custom, exec);
     value.fill_async(exec, 2.0F); gradient.fill_async(exec, 0.0F); output.fill_async(exec, -7.0F);
-    const auto input = rec::data(rec::field_pack(value.view()), rec::gradients(rec::field_pack(gradient.view()), rec::field_pack(gradient.view()), rec::field_pack(gradient.view())));
-    rec::compute_limiters_async<float>(exec, LineStencil{5}, input, rec::field_pack(output.view()), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {1, 4});
+    const auto input = rec::data(fields::pack(value.view()), rec::gradients(fields::pack(gradient.view()), fields::pack(gradient.view()), fields::pack(gradient.view())));
+    rec::compute_limiters_async<float>(exec, LineStencil{5}, input, fields::pack(output.view()), rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {1, 4});
     const auto h = host_copy(output.view().kokkos_view(), exec);
     for (std::size_t i = 0; i < 8; ++i) for (std::size_t c = 0; c < 3; ++c)
         test::near(h(i, c), i >= 1 && i < 4 ? 1.0F : -7.0F, 0.0F, "owned range or strided output tail changed");
     Kokkos::View<double*, Space> none("empty", 0);
-    const auto empty = rec::data(rec::pack(none), rec::gradients(rec::pack(none), rec::pack(none), rec::pack(none)));
+    const auto empty = rec::data(fields::pack(none), rec::gradients(fields::pack(none), fields::pack(none), fields::pack(none)));
     struct Empty {
         KOKKOS_INLINE_FUNCTION std::size_t size() const { return 0; }
         KOKKOS_INLINE_FUNCTION std::size_t required_input_size() const { return 0; }
         KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t) const { return 0; }
         KOKKOS_INLINE_FUNCTION rec::StencilEntry<double> operator()(std::size_t, std::size_t) const { return {}; }
     };
-    rec::compute_limiters_async(exec, Empty{}, empty, rec::pack(none));
+    rec::compute_limiters_async(exec, Empty{}, empty, fields::pack(none));
     exec.fence("empty/range test complete");
 }
 
@@ -509,12 +510,12 @@ void mesh_case(const Exec& exec, bool distributed)
     });
     halo::Exchange<double, Exec> value_exchange(mesh.view(), mesh.halo_plan(), comm, 21, exec);
     value_exchange.add_field(q.view()); value_exchange.prepare(); value_exchange.exchange();
-    const auto raw = rec::data(rec::field_pack(q.view()), rec::gradient_pack(gradient.view()));
-    rec::compute_limiters_async(exec, stencil, raw, rec::field_pack(theta.view()));
+    const auto raw = rec::data(fields::pack(q.view()), rec::gradient_pack(gradient.view()));
+    rec::compute_limiters_async(exec, stencil, raw, fields::pack(theta.view()));
     halo::Exchange<double, Exec> derived_exchange(mesh.view(), mesh.halo_plan(), comm, 22, exec);
     derived_exchange.add_field(gradient.view()); derived_exchange.add_field(theta.view());
     derived_exchange.prepare(); derived_exchange.exchange();
-    const auto input = rec::data(raw.values, raw.gradients, rec::field_pack(theta.view()));
+    const auto input = rec::data(raw.values, raw.gradients, fields::pack(theta.view()));
     Kokkos::View<double***, Space> out("face states", static_cast<std::size_t>(f.mesh.n_faces), 2, 2);
     test::complete(exec, [&] {
         Kokkos::parallel_for("test/mesh_faces", IndexPolicy(exec, 0, static_cast<std::size_t>(f.mesh.n_faces)), KOKKOS_LAMBDA(std::size_t face) {
@@ -550,17 +551,17 @@ void rejection(const Exec& exec, std::string_view name)
     const bool short_output = name == "output";
     Kokkos::View<double*, Space> values("values", short_output ? 4 : 3),
         gradient("gradient", short_output ? 2 : 1), output("output", 1);
-    const auto input = rec::data(rec::pack(values), rec::gradients(rec::pack(gradient), rec::pack(gradient), rec::pack(gradient)));
+    const auto input = rec::data(fields::pack(values), rec::gradients(fields::pack(gradient), fields::pack(gradient), fields::pack(gradient)));
     if (name == "range")
-        rec::compute_limiters_async(exec, LineStencil{}, input, rec::pack(output),
+        rec::compute_limiters_async(exec, LineStencil{}, input, fields::pack(output),
             rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::Componentwise{}, {0, 2});
     else if (name == "output")
-        rec::compute_limiters_async(exec, LineStencil{2}, input, rec::pack(output));
+        rec::compute_limiters_async(exec, LineStencil{2}, input, fields::pack(output));
     else if (name == "gradient") {
         Kokkos::View<double*, Space> none("none", 0);
         rec::compute_limiters_async(exec, LineStencil{},
-            rec::data(rec::pack(values), rec::gradients(rec::pack(none), rec::pack(none), rec::pack(none))),
-            rec::pack(output));
+            rec::data(fields::pack(values), rec::gradients(fields::pack(none), fields::pack(none), fields::pack(none))),
+            fields::pack(output));
     }
     exec.fence("Unexpectedly accepted reconstruction input");
     check(false, "invalid host descriptor was accepted");

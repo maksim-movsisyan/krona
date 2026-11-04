@@ -1,4 +1,5 @@
 #pragma once
+#include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/mesh_stencil.hpp>
 #include <krona/transport/euler/bindings.hpp>
 #include <utility>

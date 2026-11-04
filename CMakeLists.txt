@@ -618,7 +618,8 @@ krona_interface(gradient krona::mesh_device krona::fields)
     #=======================
     #=== RECONSTRUCTIONs ===
     #=======================
-krona_interface(reconstruction krona::mesh_device krona::fields)
+krona_interface(reconstruction krona::math krona::fields)
+krona_interface(reconstruction_mesh krona::reconstruction krona::mesh_device)
 
 
     #======================

@@ -6,9 +6,12 @@
 #include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/mesh_stencil.hpp> // Optional mesh adapter.
 namespace rec = krona::numerics::reconstruction;
+namespace fld = krona::fields;
 ```
 
-The core needs Kokkos and KRONA execution/type definitions. It accepts small data providers and has no mesh, fields, MPI, boundary-condition, or flux dependency. `mesh_stencil.hpp` adds the device-mesh dependency. Field adapters accept `FieldView` structurally, without including the fields module.
+`evaluate.hpp` and `schemes.hpp` contain mesh-independent device calculations using shared `math` types. `gradient_pack.hpp` adapts `fields::pack`; `factors.hpp` launches limiter preparation and uses `mpi::require`/`mpi::guarded` for host failures. `reconstruction.hpp` includes these public headers. It does not include the mesh adapter.
+
+CMake targets: `krona::reconstruction` depends on `krona::math` and `krona::fields`; `krona::reconstruction_mesh` additionally depends on `krona::mesh_device`. Link the latter when using `MeshStencil`.
 
 ## Main objects
 
@@ -62,18 +65,23 @@ Values provide `components` and `operator()(cell, component)`. For limiter prepa
 
 | Adapter | Input / result |
 |---|---|
-| `pack(a, b, ...)` | Rank-one Kokkos views, including strided subviews. One component per view; same scalar type ignoring const and same memory space. `size()` is the shortest component length. If any input is const, the whole pack is read-only. |
-| `field_pack(field)` | All components of a KRONA `FieldView`, preserving component order. |
-| `gradient_pack(field)` | A `FieldView` with `3*N` components in the gradient module's order: `3*c + {0,1,2}`. Returns a vector for `(cell, c)`. |
-| `gradients(x, y, z)` | Three component packs, each with `N` components, giving the x/y/z derivatives. |
+| `fields::pack(a, b, ...)` | Flattens rank-one Kokkos views, `FieldView`s and existing packs in argument/component order. Components may use different arithmetic scalar types but must share a memory space. The shortest input determines `size()`. |
+| `gradient_pack(field_or_pack)` | Adapts `3*N` interleaved components in the order `3*c + {0,1,2}`. Returns a vector for `(cell, c)`. |
+| `gradients(x, y, z)` | Groups three scalar-component packs in the same variable order, one pack per derivative axis. |
 
 ```cpp
-auto values = rec::pack(rho, u, v, w, temperature); // Rank-one views.
+auto values = fld::pack(rho, u, v, w, temperature); // Rank-one views.
 auto input = rec::data(values, rec::gradient_pack(gradient_field));
 // gradient_field has 15 components in the same variable order.
+
+// Several gradient fields can be combined without copying their values:
+auto combined = rec::gradient_pack(fld::pack(grad_rho, grad_velocity, grad_T));
+// Widths: 3 + 9 + 3; result order: rho, velocity[0..2], T.
 ```
 
-Factors provide `components` and `(cell, component)`: either `N` components or one component broadcast to all variables. Omitted factors are `UnitFactors` (always one). Hessians provide `(cell, component)` and moments provide `(cell)`, returning objects with `xx, yy, zz, xy, xz, yz`; `SymmetricTensor<Real>` is the supplied tensor type.
+Packs borrow buffers and preserve component strides. A mixed-type pack reads through its common scalar type; typed `get<C>()` preserves the actual component type. Limiter preparation uses that typed access for output, so a pack of writable `float` and `double` factor components is supported. Output components must be floating-point and must not be const. Numeric field packing lives in `fields`, not in reconstruction.
+
+Factors provide `components` and `(cell, component)`: either `N` components or one component broadcast to all variables. Omitted factors are `UnitFactors` (always one). Hessians provide `(cell, component)` and moments provide `(cell)`, returning objects with `xx, yy, zz, xy, xz, yz`; `SymmetricTensor<Real>` is an alias of `math::SymmetricTensor3<Real>`. Likewise, `Vector<Real>` aliases `math::Vector3<Real>`.
 
 `CellSide` contains:
 
@@ -154,20 +162,20 @@ Kokkos::View<krona::ComputeReal***, Space> states(
     "reconstruction/states", m.sizes.n_inner_faces, 2, N);
 ```
 
-Once the application has filled the current owned and boundary values, perform an update. Here `gradient_operator` is a prepared gradient plan using the same `exec`; its `apply()` writes owned gradients asynchronously.
+Once the application has filled the current owned and boundary values, perform an update. Here `gradient_operator` is a prepared gradient plan using the same `exec`; its `apply_async()` writes owned gradients asynchronously.
 
 ```cpp
 exec.fence("q ready for halo exchange");
 values_halo.exchange();
 gradient_operator.apply_async(q, g);
 
-const auto raw = rec::data(rec::field_pack(q), rec::gradient_pack(g));
-rec::compute_limiters_async(exec, stencil, raw, rec::field_pack(theta));
+const auto raw = rec::data(fld::pack(q), rec::gradient_pack(g));
+rec::compute_limiters_async(exec, stencil, raw, fld::pack(theta));
 
 exec.fence("owned derivatives and factors ready for exchange");
 derived_halo.exchange();
 
-const auto input = rec::data(raw.values, raw.gradients, rec::field_pack(theta));
+const auto input = rec::data(raw.values, raw.gradients, fld::pack(theta));
 using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
 Kokkos::parallel_for("reconstruct/inner", Policy(exec, 0, m.sizes.n_inner_faces),
     KOKKOS_LAMBDA(std::size_t f) {
@@ -219,7 +227,7 @@ case Method::Tvd:           launch(rec::Tvd{rec::tvd::VanLeer{}}); break;
 }
 ```
 
-There is no per-face runtime scheme switch in this example. Each instantiated kernel reads only what its scheme uses. Preparation should follow the selected method too: first order needs neither gradients nor factors, and unlimited linear/MUSCL/TVD need no cell factors. If selecting `Limited<Tvd<...>>`, prepare factors using the same TVD object, not `SecondOrderUpwind`.
+There is no per-face runtime scheme switch in this example. Each instantiated kernel reads only what its scheme uses. Preparation should follow the selected method too: first order needs neither gradients nor factors, and unlimited linear/MUSCL/TVD need no cell factors. `Tvd` applies its line limiter directly and needs no preparation. `Limited<Tvd<...>>` additionally applies a cell factor to the entire TVD increment, including the transverse term; if using that combination, prepare factors with the same TVD object.
 
 ## Preparing cell factors
 
@@ -241,7 +249,7 @@ For each selected cell it:
 | `SharedMinimum{}` | One factor across all `N` variables. Output may have one component or `N` identical components. |
 | `CellRange{begin, end}` | Writes `[begin, end)` only; all other cells, including ghosts, remain unchanged. Default end means `stencil.size()`. |
 
-Output must be writable and cover `stencil.size()` even for a partial range. Values must cover `stencil.required_input_size()`. Required gradient/Hessian/moment providers must cover all owned rows, even for a partial range. Use an unlimited scheme: passing `Limited<...>` to this preparation is rejected at compile time.
+Output components must be writable floating-point values. Output must cover `stencil.size()` even for a partial range. Values must cover `stencil.required_input_size()`. Required gradient/Hessian/moment providers must cover all owned rows, even for a partial range. Gradient/Hessian component counts are checked when a provider declares `components`; they must equal the value width. Hessian and moment requirements are checked independently. Custom providers without `size()` or `components` remain responsible for those contracts. Use an unlimited scheme: passing `Limited<...>` to this preparation is rejected at compile time.
 
 A custom limiter is a device-callable `operator()(LimiterContext<Real>)` returning a finite factor in `[0,1]`. The context contains `cell`, `component`, `value`, `minimum`, `maximum`, and the unlimited `increment`. A custom stencil provides `size()`, `required_input_size()`, `size(cell)`, and `(cell,k) -> StencilEntry`; each entry supplies a bound-sample index and side geometry whose base cell is the row being limited. Include every evaluation point for which the factor's bound contract is needed.
 
@@ -255,7 +263,7 @@ M_i=\frac{1}{V_i}\int_{V_i}(x-x_i)(x-x_i)^T\,dV,
 q_f=\bar q_i+\nabla q_i\cdot r+\tfrac12 H_i:(rr^T-M_i).
 $$
 
-The centre `x_i` must be the volume centroid; values are cell averages. Off-diagonal Hessian/moment entries are stored once, and the evaluation includes their factor of two. The subtraction of `M_i` preserves the cell average, also when the whole increment is multiplied by one cell factor. The module does not compute Hessians or moments, and `MeshStencil` does not supply them.
+The centre `x_i` must be the volume centroid; values are cell averages. Off-diagonal Hessian/moment entries are stored once, with their original values (do not double them); the evaluation includes their factor of two. The subtraction of `M_i` preserves the cell average, also when the whole increment is multiplied by one cell factor. The module does not compute Hessians or moments, and `MeshStencil` does not supply them.
 
 ```cpp
 // Inside an inner-face kernel. hessians and moments are application providers.
@@ -308,7 +316,7 @@ Requirement flags are `Values` (zero), `Gradients`, `Factors`, `Hessians`, `Mome
 
 | Operation | Execution / ownership |
 |---|---|
-| `pack`, `field_pack`, `gradient_pack`, `gradients`, `data` | Descriptor construction; no data copy or allocation. Standard packs retain raw pointers/strides, not buffer ownership. |
+| `fields::pack`, `gradient_pack`, `gradients`, `data` | Descriptor construction; no data copy or allocation. Standard packs retain raw pointers/strides, not buffer ownership. |
 | `MeshStencil` construction | Local host descriptor checks; no allocation, kernel launch, fence or MPI. Borrows mesh/auxiliary arrays. |
 | `face_geometry`, QUICK stencil factories | Inline calculations in the calling host/device context; no queued work or allocations. |
 | `evaluate`, `evaluate_side` | Inline calculations in the caller's kernel; no independent launch, synchronization, allocation or MPI. Results are returned by value. |
@@ -317,3 +325,5 @@ Requirement flags are `Values` (zero), `Gradients`, `Factors`, `Hessians`, `Mome
 Keep all backing arrays alive and unchanged in layout/topology until submitted work finishes. Required buffers must be accessible from the chosen execution space. Factor outputs and saved face outputs must not overlap inputs that the kernels still read; the module does not detect aliasing. Recompute factors when their values, derivatives, scheme parameters, stencil or evaluation points change.
 
 Kernels submitted to the same execution-space instance can consume earlier results in order without an intermediate fence. Before host reads, independent execution instances, external MPI use, destruction or reallocation, establish completion of the relevant producers. The pipeline above uses explicit fences before blocking halo exchanges and after its final kernel. Reconstruction itself performs no MPI communication.
+
+Host descriptor/range failures call `mpi::require`; kernel submission is wrapped in `mpi::guarded`. They follow KRONA's fatal-error policy. Device preconditions use `KOKKOS_ASSERT`, which may be disabled. QUICK factories report invalid geometry through `valid == false` and NaN weights; there is no automatic fallback.

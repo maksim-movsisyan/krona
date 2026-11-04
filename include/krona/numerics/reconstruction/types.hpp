@@ -1,40 +1,20 @@
 #pragma once
 
 #include <krona/execution/types.hpp>
+#include <krona/math/vector3.hpp>
+#include <krona/math/symmetric_tensor3.hpp>
 
 #include <cstddef>
 #include <limits>
-#include <type_traits>
 
 namespace krona::numerics::reconstruction {
 
-template<class Real = ComputeReal>
-struct Vector {
-    Real x = 0, y = 0, z = 0;
-    KOKKOS_INLINE_FUNCTION Vector operator-() const { return {-x, -y, -z}; }
-    KOKKOS_INLINE_FUNCTION Vector operator-(Vector b) const { return {x-b.x, y-b.y, z-b.z}; }
-    KOKKOS_INLINE_FUNCTION Vector operator*(Real a) const { return {a*x, a*y, a*z}; }
-};
-template<class A, class B>
-KOKKOS_INLINE_FUNCTION auto dot(Vector<A> a, Vector<B> b)
-{
-    using R = std::common_type_t<A, B>;
-    return static_cast<R>(a.x)*static_cast<R>(b.x) + static_cast<R>(a.y)*static_cast<R>(b.y) +
-           static_cast<R>(a.z)*static_cast<R>(b.z);
-}
-template<class R, class A, class B>
-KOKKOS_INLINE_FUNCTION R dot_as(Vector<A> a, Vector<B> b)
-{
-    return static_cast<R>(a.x)*static_cast<R>(b.x) + static_cast<R>(a.y)*static_cast<R>(b.y) +
-           static_cast<R>(a.z)*static_cast<R>(b.z);
-}
+// Shared math types; no reconstruction-specific vector/tensor implementation.
+template<class Real = ComputeReal> using Vector = math::Vector3<Real>;
+template<class Real = ComputeReal> using SymmetricTensor = math::SymmetricTensor3<Real>;
+using math::dot;
+using math::dot_as;
 
-/// @brief Hessian or central cell moment tensor; off-diagonal entries are stored once.
-template<class Real = ComputeReal>
-struct SymmetricTensor { Real xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0; };
-
-/// @brief Explicit geometry for one side; span points from cell to other, offset to the face point.
-/// A negative fraction requests orthogonal projection onto span; an explicit fraction can use face-plane intersection.
 template<class Real = ComputeReal>
 struct CellSide {
     std::size_t cell = 0, other = 0;
