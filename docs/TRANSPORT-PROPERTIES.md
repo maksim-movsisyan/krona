@@ -11,6 +11,8 @@ namespace tr = krona::transport;
 
 ## Evaluate transport properties
 
+CMake target: `krona::transport_properties`. It depends on KRONA execution/types, Kokkos and MPI error handling; it does not depend on an EOS, mesh or transport operator.
+
 `TransportProperties<Viscosity, Conductivity>` stores two policies by value. It evaluates viscosity once, passes that value to the conductivity policy, and returns `Coefficients<Real>`:
 
 | Member | Meaning | SI units |
@@ -33,7 +35,7 @@ krona::mpi::require(coefficients.valid(), "Invalid transport properties");
 // Read coefficients.dynamic_viscosity and coefficients.thermal_conductivity.
 ```
 
-Call `validate()` on the host before using configured parameters. Aggregate construction does not validate them. Revalidate after parameter changes.
+Call `validate()` on the host before using configured parameters. Aggregate construction does not validate them. Revalidate after parameter changes. Supplied host validators are `noexcept`: invalid built-in parameters call `mpi::require`, and exceptions from optional user-policy validators are converted to `mpi::fatal` through `mpi::guarded`. User validators should still report contract violations through KRONA MPI helpers.
 
 `model.evaluate<Real>(state)` selects floating-point arithmetic/output type explicitly. `model(state)` always uses `ComputeReal`, regardless of state or parameter storage types. The built-in policies also support `evaluate<Real>()` directly. Their parameter type defaults to `ComputeReal`; constructor deduction can select another type from the arguments.
 
@@ -209,6 +211,6 @@ This evaluates the model at the face temperature. Interpolating precomputed cell
 
 Built-in property models own scalar parameters; `TransportProperties` owns its policies by value and `Coefficients` owns its two results. No EOS, field arrays or cached evaluations are created. View-based coefficient providers store view descriptors by value: managed views retain their allocation, while unmanaged views borrow storage. Custom policies define the ownership of any additional buffers.
 
-`validate()` performs local host checks through `mpi::require`, with no kernel launch or collective communication. Evaluation, `valid()`, interpolation and diffusion-law methods calculate inline in their caller's host/device context: no allocation, independent launch, fence, MPI exchange or implicit field update.
+Property `validate()` performs local host checks, with no kernel launch, fence or collective communication. Built-in failures use `mpi::require`; calls to custom policy validators use `mpi::guarded` so exceptions cannot escape through the supplied validators. Evaluation, `valid()`, interpolation and diffusion-law methods calculate inline in their caller's host/device context: no allocation, independent launch, fence, MPI exchange or implicit field update.
 
 To process fields, capture a validated model/provider in a Kokkos kernel, evaluate per cell or face, and write coefficients/fluxes to caller-owned outputs or consume them immediately. That enclosing launch may be asynchronous. Order dependent work on the same execution instance or establish completion before unrelated instances, host access, external MPI, or buffer destruction/reallocation. Keep all required ghost values current. The models do not synchronize or communicate on the caller's behalf.

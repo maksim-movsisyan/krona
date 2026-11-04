@@ -10,7 +10,7 @@ template<class Parameter = ComputeReal>
 struct ConstantViscosity {
     Parameter value = 0;
 
-    void validate() const
+    void validate() const noexcept
     {
         mpi::require(detail::nonnegative(value),
             "Transport properties: constant dynamic viscosity must be finite and nonnegative");
@@ -32,7 +32,7 @@ struct SutherlandViscosity {
     Parameter reference_temperature = 0;
     Parameter sutherland_temperature = 0;
 
-    void validate() const
+    void validate() const noexcept
     {
         mpi::require(detail::positive(reference_viscosity) &&
                      detail::positive(reference_temperature) &&

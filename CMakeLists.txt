@@ -638,6 +638,9 @@ endif()
     #=== SCALAR TRANSPORT ===
     #========================   
 krona_interface(thermodynamics krona::execution krona::mpi)
+ 
+# Molecular transport properties; independent of EOS, mesh and transport operators.
+krona_interface(transport_properties krona::execution krona::mpi)
 
     #==================================
     #=== SCALAR BOUNDARY CONDITIONS ===

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <limits>
+#include <stdexcept>
 #include <type_traits>
 
 namespace p = krona::transport::properties;
@@ -32,7 +33,7 @@ void constants(const Exec&)
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     check(model(Temperature<double>{nan}).valid(), "constants do not inspect unused temperature");
 }
-
+ 
 void sutherland(const Exec&)
 {
     const auto law = p::SutherlandViscosity{1.716e-5, 273.15, 110.4};
@@ -196,6 +197,29 @@ void reject_sutherland_mu(const Exec&) { p::SutherlandViscosity{0., 273.15, 110.
 void reject_sutherland_temperature(const Exec&) { p::SutherlandViscosity{1.716e-5, 0., 110.4}.validate(); }
 void reject_sutherland_shift(const Exec&) { p::SutherlandViscosity{1.716e-5, 273.15, -1.}.validate(); }
 
+// Simulate validation in an external/user policy which throws instead of using MPI helpers.
+struct ThrowingValidation {
+    const char* message;
+    void validate() const { throw std::runtime_error(message); }
+};
+
+void reject_custom_viscosity(const Exec&)
+{
+    const auto model = p::TransportProperties{
+        ThrowingValidation{"custom viscosity validation failed"}, p::ConstantConductivity{1.}};
+    static_assert(noexcept(model.validate()));
+    model.validate();
+    check(false, "throwing viscosity validator unexpectedly returned");
+}
+ 
+void reject_custom_cp(const Exec&)
+{
+    const auto model = p::ConstantPrandtl{0.72, ThrowingValidation{"custom heat capacity validation failed"}};
+    static_assert(noexcept(model.validate()));
+    model.validate();
+    check(false, "throwing heat-capacity validator unexpectedly returned");
+}
+
 int main(int argc, char** argv)
 {
     const std::array cases{
@@ -208,7 +232,9 @@ int main(int argc, char** argv)
         krona::test::Case{"reject_cp", reject_cp}, krona::test::Case{"reject_pr", reject_pr},
         krona::test::Case{"reject_sutherland_mu", reject_sutherland_mu},
         krona::test::Case{"reject_sutherland_temperature", reject_sutherland_temperature},
-        krona::test::Case{"reject_sutherland_shift", reject_sutherland_shift}};
+        krona::test::Case{"reject_sutherland_shift", reject_sutherland_shift},
+        krona::test::Case{"reject_custom_viscosity", reject_custom_viscosity},
+        krona::test::Case{"reject_custom_cp", reject_custom_cp}};
     if (argc == 2 && std::string_view(argv[1]).starts_with("reject_"))
         return krona::test::run(argc, argv, "transport.properties", rejection_cases);
     return krona::test::run(argc, argv, "transport.properties", cases);

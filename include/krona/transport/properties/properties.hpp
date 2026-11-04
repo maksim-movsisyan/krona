@@ -11,7 +11,7 @@ struct TransportProperties {
     Viscosity viscosity;
     Conductivity conductivity;
 
-    void validate() const
+    void validate() const noexcept
     {
         detail::validate(viscosity);
         detail::validate(conductivity);

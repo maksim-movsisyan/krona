@@ -10,7 +10,7 @@ template<class Parameter = ComputeReal>
 struct ConstantHeatCapacity {
     Parameter value = 0;
 
-    void validate() const
+    void validate() const noexcept
     {
         mpi::require(detail::positive(value),
             "Transport properties: constant cp must be finite and positive");
@@ -30,7 +30,7 @@ template<class Parameter = ComputeReal>
 struct ConstantConductivity {
     Parameter value = 0;
 
-    void validate() const
+    void validate() const noexcept
     {
         mpi::require(detail::nonnegative(value),
             "Transport properties: constant thermal conductivity must be finite and nonnegative");
@@ -51,7 +51,7 @@ struct ConstantPrandtl {
     Parameter prandtl = 0;
     HeatCapacity heat_capacity{};
 
-    void validate() const
+    void validate() const noexcept
     {
         mpi::require(detail::positive(prandtl),
             "Transport properties: Prandtl number must be finite and positive");

@@ -14,10 +14,12 @@ inline bool positive(T value)
 { return std::isfinite(value) && value > T{0}; }
 
 /// @brief Custom policies without parameters need not implement validate().
+/// Exceptions from user validators follow the distributed fatal-error policy.
 template<class Model>
-inline void validate(const Model& model)
+inline void validate(const Model& model) noexcept
 {
-    if constexpr (requires { model.validate(); }) model.validate();
+    if constexpr (requires { model.validate(); })
+        mpi::guarded([&] { model.validate(); });
 }
 
 } // namespace krona::transport::properties::detail
