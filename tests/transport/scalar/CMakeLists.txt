@@ -1,4 +1,5 @@
 add_subdirectory(diffusion)
+add_subdirectory(convection/core)
 
 if(NOT KRONA_ENABLE_TRILINOS)
     return()
@@ -25,7 +26,7 @@ set(expected "correction requires attached FaceNonOrthogonalityVector" "correcti
     "invalid correction data" "normal metrics" "gradient extent is too short" "correction-dependent boundary slope" "assembly pending" "pure Neumann" "coefficient must be finite and positive" "source density must be finite"
     "normal metrics" "require attached FaceInterpolationWeights" "nonorthogonal geometry" "invalid affine boundary flux"
     "coefficient must be finite and positive" "in-place residual" "must share the face assembly graph")
-list(LENGTH cases count)  
+list(LENGTH cases count)
 math(EXPR last "${count}-1")
 foreach(i RANGE "${last}")
     list(GET cases "${i}" name)

@@ -384,7 +384,7 @@ void report_balance(const Convection& convection, const Diffusion& diffusion, Fi
     const krona::mesh::device::AuxGeometryStorage<Exec> geometry{host_geometry, exec};
     const df::DiffusionPlan<Exec, Real> diffusion_plan{
         mesh.view(), connectivity.view(), geometry.view(), comm, exec};
-    const cv::ConvectionPlan<Exec, Real> convection_plan{host_mesh, mesh.view(), connectivity.view(), comm, exec};
+    const cv::ConvectionPlan<Exec, Real> convection_plan{mesh.view(), connectivity.view(), comm, exec};
     const df::DiffusionOperator<Exec, Real> diffusion{diffusion_plan};
     const cv::ConvectionOperator<Exec, Real> convection{convection_plan};
     const krona::linalg::FaceAssemblyPlan<Exec> assembly{host_mesh, comm, exec};

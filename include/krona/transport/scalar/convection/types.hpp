@@ -25,26 +25,13 @@ struct UniformMassFlux {
 /// @brief Only FixedValue supplies default inflow data. Other conditions return invalid data
 /// if actually encountered on inflow; zero-flux/outflow faces never access this policy.
 struct FixedValueInflow {
-    template<class Real, class Value>
-    KOKKOS_INLINE_FUNCTION Real operator()(const boundary::FaceContext<Real>&,
-        const boundary::scalar::FixedValue<Value>& condition) const
-    { return static_cast<Real>(condition.value); }
     template<class Real, class Condition>
-    KOKKOS_INLINE_FUNCTION Real operator()(const boundary::FaceContext<Real>&, const Condition&) const
-    { return Kokkos::quiet_NaN_v<Real>; }
-};
-
-/// @brief Device descriptor of one compact patch profile, selected/validated by InflowProfiles.
-/// Borrows a rank-one View's pointer/stride; the condition is deliberately ignored.
-/// The source allocation must outlive submitted work. No ownership or per-face patch lookup.
-template<class Value>
-struct PatchInflowValues {
-    const Value* values = nullptr;
-    std::size_t stride = 1;
-    LocalIndex face_begin = 0;
-    template<class Real, class Condition>
-    KOKKOS_INLINE_FUNCTION Value operator()(const boundary::FaceContext<Real>& c, const Condition&) const
-    { return values[static_cast<std::size_t>(c.face-face_begin)*stride]; }
+    KOKKOS_INLINE_FUNCTION Real operator()(const boundary::FaceContext<Real>& c, const Condition& condition) const
+    {
+        if constexpr (boundary::scalar::is_fixed_value<Condition>)
+            return static_cast<Real>(boundary::profile::sample(condition.value, c));
+        else return Kokkos::quiet_NaN_v<Real>;
+    }
 };
 
 /// @brief No high-order increment; no reconstruction field/gradient input is needed for assembly.

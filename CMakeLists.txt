@@ -671,7 +671,8 @@ target_link_libraries(krona_boundary_physical
     #=== SCALAR TRANSPORT ===
     #========================
 krona_interface(transport_scalar_diffusion krona::transport_diffusion krona::mesh_device krona::boundary_scalar krona::gradient krona::mpi)
-krona_interface(transport_scalar krona::transport_scalar_diffusion krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+krona_interface(transport_scalar_convection krona::mesh_device krona::boundary_scalar krona::reconstruction_mesh krona::fields krona::mpi)
+krona_interface(transport_scalar krona::transport_scalar_diffusion krona::transport_scalar_convection krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
 
     #===============
     #=== CGNS IO ===

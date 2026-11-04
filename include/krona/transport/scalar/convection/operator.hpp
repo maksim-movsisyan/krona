@@ -2,7 +2,6 @@
 
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/transport/scalar/convection/detail/kernels.hpp>
-#include <krona/transport/scalar/convection/inflow_profiles.hpp>
 #include <krona/transport/scalar/detail/views.hpp>
 
 #include <cmath>
@@ -15,8 +14,8 @@ namespace krona::transport::scalar::convection {
 /// Supplied mass flux is frozen in the linearization; its dependence on unknowns is not differentiated.
 /// Outflow uses the interior trace, inflow uses inflow(context, condition), including backflow.
 /// No allocations, halo exchanges, fences, resets or algebra-wrapper commits during contributions.
-/// Device providers are pure borrowed inputs. Host-only InflowProfiles dispatch once per patch.
-/// Keep borrowed buffers alive and current; profile catalogs must outlive their bindings.
+/// Boundary conditions supply constants or profiles through their common provider interface.
+/// Device providers borrow their inputs; keep all backing buffers alive and current.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class ConvectionOperator {
     using Space = typename Exec::memory_space;
@@ -34,27 +33,26 @@ public:
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status, Flux flux,
         Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
     {
-        validate_inputs(boundary, flux, reconstruction, inflow, time);
-        const auto m = plan_.mesh_view();
-        const auto rows = static_cast<std::size_t>(m.sizes.n_own);
-        scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-        scalar::detail::validate_output<Exec>(target.rhs, rows);
-        mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
-            target.entries.owner_entries.extent(0) == static_cast<std::size_t>(m.sizes.n_inner_faces) &&
-            target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(m.sizes.n_internal_faces),
-            "Scalar convection: incompatible system slice/entry map");
-        const auto& exec = execution_space_instance();
-        const auto flags = status.device_flags(exec);
-        Kokkos::parallel_for("convection/add_rows", Policy(exec, 0, m.sizes.n_own),
-            detail::AddRows<Space, Real, Target, Flux, Reconstruction, decltype(flags)>{
-                row_data(), target, flux, reconstruction, flags, time});
-        boundary.for_each_patch([&](auto range, const auto& condition) {
-            using C = std::remove_cvref_t<decltype(condition)>;
-            detail::visit_inflow(inflow, range, [&](const auto& selected) {
-                using I = std::remove_cvref_t<decltype(selected)>;
+        mpi::guarded([&] {
+            validate_inputs(boundary, flux, reconstruction, inflow, time);
+            const auto m = plan_.mesh_view();
+            const auto rows = static_cast<std::size_t>(m.sizes.n_own);
+            scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
+            scalar::detail::validate_output<Exec>(target.rhs, rows);
+            mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
+                target.entries.owner_entries.extent(0) == static_cast<std::size_t>(m.sizes.n_inner_faces) &&
+                target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(m.sizes.n_internal_faces),
+                "Scalar convection: incompatible system slice/entry map");
+            const auto& exec = execution_space_instance();
+            const auto flags = status.device_flags(exec);
+            Kokkos::parallel_for("convection/add_rows", Policy(exec, 0, m.sizes.n_own),
+                detail::AddRows<Space, Real, Target, Flux, Reconstruction, decltype(flags)>{
+                    row_data(), target, flux, reconstruction, flags, time});
+            boundary.for_each_patch([&](auto range, const auto& condition) {
+                using C = std::remove_cvref_t<decltype(condition)>;
                 Kokkos::parallel_for("convection/add_boundary", Policy(exec, range.begin, range.end),
-                    detail::AddBoundary<Space, Real, Target, C, Flux, Reconstruction, I, decltype(flags)>{
-                        boundary.geometry_view(), target, condition, flux, reconstruction, selected, flags, time});
+                    detail::AddBoundary<Space, Real, Target, C, Flux, Reconstruction, Inflow, decltype(flags)>{
+                        boundary.geometry_view(), target, condition, flux, reconstruction, inflow, flags, time});
             });
         });
     }
@@ -66,24 +64,23 @@ public:
     void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
         Flux flux, Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
     {
-        validate_inputs(boundary, flux, reconstruction, inflow, time);
-        const auto m = plan_.mesh_view();
-        scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(m.sizes.n_cells));
-        scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(m.sizes.n_own));
-        mpi::require(m.sizes.n_own == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
-            "Scalar convection: in-place residual is unsupported");
-        const auto& exec = execution_space_instance();
-        const auto flags = status.device_flags(exec);
-        Kokkos::parallel_for("convection/residual_rows", Policy(exec, 0, m.sizes.n_own),
-            detail::ResidualRows<Space, Real, Field, Output, Flux, Reconstruction, decltype(flags)>{
-                row_data(), field, output, flux, reconstruction, flags, time});
-        boundary.for_each_patch([&](auto range, const auto& condition) {
-            using C = std::remove_cvref_t<decltype(condition)>;
-            detail::visit_inflow(inflow, range, [&](const auto& selected) {
-                using I = std::remove_cvref_t<decltype(selected)>;
+        mpi::guarded([&] {
+            validate_inputs(boundary, flux, reconstruction, inflow, time);
+            const auto m = plan_.mesh_view();
+            scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(m.sizes.n_cells));
+            scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(m.sizes.n_own));
+            mpi::require(m.sizes.n_own == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
+                "Scalar convection: in-place residual is unsupported");
+            const auto& exec = execution_space_instance();
+            const auto flags = status.device_flags(exec);
+            Kokkos::parallel_for("convection/residual_rows", Policy(exec, 0, m.sizes.n_own),
+                detail::ResidualRows<Space, Real, Field, Output, Flux, Reconstruction, decltype(flags)>{
+                    row_data(), field, output, flux, reconstruction, flags, time});
+            boundary.for_each_patch([&](auto range, const auto& condition) {
+                using C = std::remove_cvref_t<decltype(condition)>;
                 Kokkos::parallel_for("convection/residual_boundary", Policy(exec, range.begin, range.end),
-                    detail::ResidualBoundary<Space, Real, Field, Output, C, Flux, Reconstruction, I, decltype(flags)>{
-                        boundary.geometry_view(), field, output, condition, flux, reconstruction, selected, flags, time});
+                    detail::ResidualBoundary<Space, Real, Field, Output, C, Flux, Reconstruction, Inflow, decltype(flags)>{
+                        boundary.geometry_view(), field, output, condition, flux, reconstruction, inflow, flags, time});
             });
         });
     }
@@ -95,43 +92,37 @@ public:
     void add_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
         Flux flux, Reconstruction reconstruction, Real time = 0) const
     {
-        validate_inputs(boundary, flux, reconstruction, FixedValueInflow{}, time);
-        const auto m = plan_.mesh_view();
-        scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(m.sizes.n_own));
-        const auto& exec = execution_space_instance();
-        const auto flags = status.device_flags(exec);
-        if constexpr (detail::reconstructed<Reconstruction>) {
-            Kokkos::parallel_for("convection/correction_rows", Policy(exec, 0, m.sizes.n_own),
-                detail::CorrectionRows<Space, Real, Output, Flux, Reconstruction, decltype(flags)>{
-                    row_data(), output, flux, reconstruction, flags, time});
-            boundary.for_each_patch([&](auto range, const auto&) {
-                Kokkos::parallel_for("convection/correction_boundary", Policy(exec, range.begin, range.end),
-                    detail::CorrectionBoundary<Space, Real, Output, Flux, Reconstruction, decltype(flags)>{
-                        boundary.geometry_view(), output, flux, reconstruction, flags, time});
-            });
-        }
+        mpi::guarded([&] {
+            validate_inputs(boundary, flux, reconstruction, FixedValueInflow{}, time);
+            const auto m = plan_.mesh_view();
+            scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(m.sizes.n_own));
+            const auto& exec = execution_space_instance();
+            const auto flags = status.device_flags(exec);
+            if constexpr (detail::reconstructed<Reconstruction>) {
+                Kokkos::parallel_for("convection/correction_rows", Policy(exec, 0, m.sizes.n_own),
+                    detail::CorrectionRows<Space, Real, Output, Flux, Reconstruction, decltype(flags)>{
+                        row_data(), output, flux, reconstruction, flags, time});
+                boundary.for_each_patch([&](auto range, const auto&) {
+                    Kokkos::parallel_for("convection/correction_boundary", Policy(exec, range.begin, range.end),
+                        detail::CorrectionBoundary<Space, Real, Output, Flux, Reconstruction, decltype(flags)>{
+                            boundary.geometry_view(), output, flux, reconstruction, flags, time});
+                });
+            }
+        });
     }
 
     [[nodiscard]] const plan_type& plan() const noexcept { return plan_; }
     [[nodiscard]] const Exec& execution_space_instance() const noexcept { return plan_.execution_space_instance(); }
 private:
     plan_type plan_;
-    auto row_data() const { return detail::RowData<Space>{plan_.mesh_view(), plan_.connectivity_view()}; }
+    auto row_data() const { return detail::row_data(plan_.mesh_view(), plan_.connectivity_view()); }
 
     template<class Flux> void validate_flux(const Flux&) const {}
     template<class View> void validate_flux(FaceMassFlux<View> flux) const
     { scalar::detail::validate_view<Exec>(flux.values, static_cast<std::size_t>(plan_.mesh_view().sizes.n_faces)); }
-    template<class Boundary, class Inflow> void validate_inflow(const Boundary&, const Inflow&) const {}
-    template<class Boundary, class ProfileExec, class Fallback>
-    void validate_inflow(const Boundary& boundary, const InflowProfiles<ProfileExec, Fallback>& inflow) const
-    {
-        static_assert(std::is_same_v<Exec, ProfileExec>, "Inflow profiles execution space mismatch");
-        inflow.require_catalog(boundary.catalog());
-    }
-
     template<class Boundary, class Flux, class Reconstruction, class Inflow>
     void validate_inputs(const Boundary& boundary, const Flux& flux, const Reconstruction& reconstruction,
-        const Inflow& inflow, Real time) const
+        const Inflow&, Real time) const
     {
         static_assert(!std::is_arithmetic_v<Reconstruction> && !std::is_arithmetic_v<Inflow>,
             "Pass time after reconstruction and inflow policies");
@@ -141,12 +132,14 @@ private:
         const auto& g = m.geometry;
         mpi::require(b.n_cells == m.sizes.n_cells && b.n_inner_faces == m.sizes.n_inner_faces &&
             b.face_owner.data() == m.connectivity.face_owner.data() &&
-            b.cell_x.data() == g.cell_centroid_x.data() && b.cell_y.data() == g.cell_centroid_y.data() && b.cell_z.data() == g.cell_centroid_z.data() &&
             b.face_x.data() == g.face_centroid_x.data() && b.face_y.data() == g.face_centroid_y.data() && b.face_z.data() == g.face_centroid_z.data() &&
             b.normal_x.data() == g.face_normal_x.data() && b.normal_y.data() == g.face_normal_y.data() && b.normal_z.data() == g.face_normal_z.data() &&
             b.face_area.data() == g.face_area.data(), "Scalar convection: boundary manager must use the same compute mesh");
+        // Cell centres belong to reconstruction/BC geometry, not the upwind kernel.
+        if (m.has(mesh::device::MeshData::CellGeometry))
+            mpi::require(b.cell_x.data() == g.cell_centroid_x.data() && b.cell_y.data() == g.cell_centroid_y.data() &&
+                b.cell_z.data() == g.cell_centroid_z.data(), "Scalar convection: boundary cell geometry mismatch");
         validate_flux(flux);
-        validate_inflow(boundary, inflow);
         detail::validate_reconstruction<Exec>(reconstruction, static_cast<std::size_t>(m.sizes.n_cells));
     }
 };

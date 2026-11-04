@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/boundary/geometry_view.hpp>
+#include <krona/transport/scalar/convection/detail/row_data.hpp>
 #include <krona/transport/scalar/convection/reconstruction.hpp>
 #include <krona/transport/scalar/status.hpp>
 
@@ -13,21 +14,6 @@ using scalar::detail::BadInflow;
 using scalar::detail::BadReconstruction;
 using scalar::detail::BadSystem;
 
-template<class Space>
-struct RowData { 
-    mesh::device::MeshView<Space> mesh;
-    mesh::device::AuxConnectivityView<Space> connectivity;
-};
-template<class Real, class Space>
-KOKKOS_INLINE_FUNCTION auto context(const RowData<Space>& d, LocalIndex face, Real time)
-{
-    const auto f = static_cast<std::size_t>(face);
-    const auto& g = d.mesh.geometry;
-    return InteriorFaceContext<Real>{face, d.mesh.connectivity.face_owner(f), d.mesh.connectivity.face_neigh(f),
-        static_cast<Real>(g.face_centroid_x(f)), static_cast<Real>(g.face_centroid_y(f)), static_cast<Real>(g.face_centroid_z(f)),
-        static_cast<Real>(g.face_normal_x(f)), static_cast<Real>(g.face_normal_y(f)), static_cast<Real>(g.face_normal_z(f)),
-        static_cast<Real>(g.face_area(f)), time};
-}
 template<class Real, class Flux, class Context, class Flags>
 KOKKOS_INLINE_FUNCTION Real mass_flux(const Flux& flux, const Context& c, Flags flags)
 {
@@ -79,10 +65,9 @@ struct AddRows {
         const auto i = static_cast<std::size_t>(cell);
         using Value = typename decltype(target.values)::non_const_value_type;
         Real diagonal = 0, rhs = 0;
-        const auto& conn = data.connectivity;
-        for (auto k = conn.cell_faces_offsets(i); k < conn.cell_faces_offsets(i+1); ++k) {
-            const auto face = conn.cell_faces(k);
-            if (face >= data.mesh.sizes.n_inner_faces) continue;
+        for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
+            const auto face = data.faces(k);
+            if (face >= data.n_inner_faces) continue;
             const auto c = context<Real>(data, face, time);
             const Real m = mass_flux<Real>(flux, c, flags);
             if (m == Real{0} || !representable_flux<Value>(m, flags)) continue;
@@ -128,10 +113,9 @@ struct ResidualRows {
     {
         const auto i = static_cast<std::size_t>(cell);
         Real residual = 0;
-        const auto& conn = data.connectivity;
-        for (auto k = conn.cell_faces_offsets(i); k < conn.cell_faces_offsets(i+1); ++k) {
-            const auto face = conn.cell_faces(k);
-            if (face >= data.mesh.sizes.n_inner_faces) continue;
+        for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
+            const auto face = data.faces(k);
+            if (face >= data.n_inner_faces) continue;
             const auto c = context<Real>(data, face, time);
             const Real m = mass_flux<Real>(flux, c, flags);
             if (m == Real{0}) continue;
@@ -166,10 +150,9 @@ struct CorrectionRows {
     {
         const auto i = static_cast<std::size_t>(cell);
         Real rhs = 0;
-        const auto& conn = data.connectivity;
-        for (auto k = conn.cell_faces_offsets(i); k < conn.cell_faces_offsets(i+1); ++k) {
-            const auto face = conn.cell_faces(k);
-            if (face >= data.mesh.sizes.n_inner_faces) continue;
+        for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
+            const auto face = data.faces(k);
+            if (face >= data.n_inner_faces) continue;
             const auto c = context<Real>(data, face, time);
             const Real m = mass_flux<Real>(flux, c, flags);
             if (m != Real{0}) rhs -= (c.owner == cell ? m : -m)*interior_increment<Real>(reconstruction, c, m, flags);
