@@ -17,6 +17,7 @@ enum class Kind { FixedValue, NormalGradient, FixedFlux };
 struct ConditionConfig {
     Kind kind = Kind::FixedValue;
     double parameter = 0;
+    std::string profile{}; // Optional caller-resolved reference; mutually exclusive with a numeric parameter.
 };
 
 struct PatchConfig {

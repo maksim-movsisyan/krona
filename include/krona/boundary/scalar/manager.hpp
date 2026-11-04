@@ -74,6 +74,16 @@ public:
     /// @brief Binds all labelled patches by ID and exact name; requires explicit unlabelled handling when present.
     void configure(const Configuration& config)
     {
+        configure(config, [](const ConditionConfig&, const auto&) {
+            mpi::fatal("Scalar boundary: profile reference needs a configure(config, resolver) callback");
+        });
+    }
+
+    /// @brief Resolver(spec, assign) must call assign(typed_condition) once for each profile reference.
+    /// Numeric conditions, patch-ID/name checks and finalization retain the ordinary configure contract.
+    template<class Resolver>
+    void configure(const Configuration& config, Resolver&& resolver)
+    {
         mpi::guarded([&] {
             mpi::require(config.patches.size() == conditions_.size(),
                          "Scalar boundary: configuration must describe every mesh patch");
@@ -85,9 +95,9 @@ public:
                 mpi::require(!seen[p], "Scalar boundary: duplicate configuration patch ID");
                 mpi::require(entry.name == catalog().patches()[p].name, "Scalar boundary: patch name does not match the mesh");
                 seen[p] = true;
-                assign_config(conditions_[p], entry.condition);
+                assign_resolved(conditions_[p], entry.condition, catalog().patches()[p].range, resolver);
             }
-            if (config.unlabelled) assign_config(unlabelled_, *config.unlabelled);
+            if (config.unlabelled) assign_resolved(unlabelled_, *config.unlabelled, catalog().unlabelled(), resolver);
             else unlabelled_.template emplace<std::monostate>();
             finalized_ = false;
         });
@@ -214,7 +224,24 @@ private:
             condition.template validate<Exec>(range);
     }
 
-    static void assign_config(condition_type& destination, ConditionConfig config)
+    template<class Resolver>
+    static void assign_resolved(condition_type& destination, const ConditionConfig& config,
+                                PatchRange range, Resolver& resolver)
+    {
+        if (config.profile.empty()) { assign_config(destination, config); return; }
+        bool assigned = false;
+        resolver(config, [&](auto condition) {
+            using C = std::remove_cvref_t<decltype(condition)>;
+            static_assert(std::is_constructible_v<condition_type, C>, "Register the resolved condition type in Manager");
+            mpi::require(!assigned, "Scalar boundary: profile resolver assigned more than once");
+            validate_condition(condition, range);
+            destination.template emplace<C>(std::move(condition));
+            assigned = true;
+        });
+        mpi::require(assigned, "Scalar boundary: profile resolver did not assign a condition");
+    }
+
+    static void assign_config(condition_type& destination, const ConditionConfig& config)
     {
         mpi::require(std::isfinite(config.parameter) &&
                      std::abs(config.parameter) <= static_cast<double>(std::numeric_limits<Real>::max()),

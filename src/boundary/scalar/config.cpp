@@ -43,10 +43,15 @@ namespace {
     // Strict scalar keys catch misspellings; unrelated physics and import metadata stay untouched.
     for (const auto& [key, node] : table) {
         (void)node;
-        if (key.str() != "type" && (parameter.empty() || key.str() != parameter))
+        if (key.str() != "type" && key.str() != "profile" && (parameter.empty() || key.str() != parameter))
             config_error(where + ": unexpected key '" + std::string{key.str()} + "'");
     }
-    if (!parameter.empty()) {
+    if (table.contains("profile")) {
+        if (parameter.empty() || table.contains(parameter))
+            config_error(where + ": profile requires a parameterized condition without a numeric parameter");
+        condition.profile = required_string(table, "profile", where);
+        if (condition.profile.empty()) config_error(where + ": profile reference must not be empty");
+    } else if (!parameter.empty()) {
         const auto node = table[parameter];
         const auto value = node.value<double>();
         if (!node || !node.is_number() || !value || !std::isfinite(*value))
