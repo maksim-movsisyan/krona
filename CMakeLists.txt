@@ -670,11 +670,21 @@ target_link_libraries(krona_boundary_physical
     #========================
     #=== SCALAR TRANSPORT ===
     #========================
+add_library(krona_transport_scalar_config STATIC src/transport/scalar/config.cpp)
+add_library(krona::transport_scalar_config ALIAS krona_transport_scalar_config)
+krona_public_headers(krona_transport_scalar_config PUBLIC)
+target_compile_features(krona_transport_scalar_config PUBLIC cxx_std_20)
+target_link_libraries(krona_transport_scalar_config
+    PUBLIC krona::gradient krona::mpi
+    PRIVATE krona::warnings krona::tomlplusplus)
+
 krona_interface(transport_scalar_diffusion krona::transport_diffusion krona::mesh_device krona::boundary_scalar krona::gradient krona::mpi)
 krona_interface(transport_scalar_convection krona::mesh_device krona::boundary_scalar krona::reconstruction_mesh krona::fields krona::mpi)
 krona_interface(transport_scalar_transient krona::execution krona::mpi)
-krona_interface(transport_scalar krona::transport_scalar_diffusion krona::transport_scalar_convection krona::transport_scalar_transient
+krona_interface(transport_scalar krona::transport_scalar_config krona::transport_scalar_diffusion 
+                krona::transport_scalar_convection krona::transport_scalar_transient
                 krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+                
 
     #===============
     #=== CGNS IO ===
@@ -757,6 +767,10 @@ if(KRONA_BUILD_APPLICATIONS)
         krona::transport_scalar krona::mesh_io krona::warnings)
 
 
+    #======================================================
+    #=== TRANSIENT SCALAR CONVECTION DIFFUSION EQUATION ===
+    #======================================================
+    add_subdirectory(apps/scalar_transport)
 
 endif()
     
