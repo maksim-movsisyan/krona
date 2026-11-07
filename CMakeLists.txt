@@ -48,10 +48,10 @@ option(KRONA_BUILD_APPLICATIONS "Build KRONA applications" ${PROJECT_IS_TOP_LEVE
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
 endif()
-include(CheckCSourceCompiles)   # check_c_source_compiles
-include(CheckCXXSourceCompiles) # check_cxx_source_compiles
-include(CheckCXXCompilerFlag)   # check_cxx_compiler_flag
-include(CMakePushCheckState)    # cmake_push_check_state / cmake_pop_check_state
+include(CheckCSourceCompiles)
+include(CheckCXXSourceCompiles)
+include(CheckCXXCompilerFlag)
+include(CMakePushCheckState)
 
 #==================================================================
 #==== CORE ARCHITECTURE & DATA TYPE CONFIGURATION =================
@@ -584,6 +584,20 @@ target_link_libraries(krona_boundary_config_io
 
 
     #===============
+    #=== MESH IO ===
+    #===============
+add_library(krona_mesh_io STATIC
+    src/io/solver_mesh/hdf5_reader.cpp
+    src/io/solver_mesh/hdf5_writer.cpp
+    src/io/vtu/vtu.cpp)
+add_library(krona::mesh_io ALIAS krona_mesh_io)
+krona_public_headers(krona_mesh_io PUBLIC)
+target_link_libraries(krona_mesh_io
+    PUBLIC krona::build_config krona::mpi krona::mesh_host
+    PRIVATE krona::warnings krona::hdf5)
+
+
+    #===============
     #=== CGNS IO ===
     #===============
 if(KRONA_ENABLE_CGNS)
@@ -613,20 +627,6 @@ if(KRONA_ENABLE_PARTITIONING)
 endif()
 
 
-    #===============
-    #=== MESH IO ===
-    #===============
-add_library(krona_mesh_io STATIC
-    src/io/solver_mesh/hdf5_reader.cpp
-    src/io/solver_mesh/hdf5_writer.cpp
-    src/io/vtu/vtu.cpp)
-add_library(krona::mesh_io ALIAS krona_mesh_io)
-krona_public_headers(krona_mesh_io PUBLIC)
-target_link_libraries(krona_mesh_io
-    PUBLIC krona::build_config krona::mpi krona::mesh_host
-    PRIVATE krona::warnings krona::hdf5)
-
-
     #======================
     #=== MESH DEVICE ===
     #======================
@@ -642,6 +642,14 @@ if(KRONA_BUILD_APPLICATIONS)
     #======================
     if(KRONA_ENABLE_CGNS)
         add_subdirectory(apps/mesh_generator)
+    endif()
+
+    
+    #========================
+    #=== MESH PARTITIONER ===
+    #========================
+    if(KRONA_ENABLE_CGNS AND KRONA_ENABLE_PARTITIONING)
+        add_subdirectory(apps/mesh_partitioner)
     endif()
 
 endif()

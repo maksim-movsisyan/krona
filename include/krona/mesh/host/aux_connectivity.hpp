@@ -28,16 +28,21 @@ struct MeshAuxConnectivity {
     /// @brief Builds missing requested tables locally, retaining tables already built.
     void add_connectivity(const MeshPart& mesh, AuxConnType requested);
 
+    /// @brief Reports whether every requested data group is ready.
     [[nodiscard]] bool has(AuxConnType flag) const noexcept { return has_flag(active_mask, flag); }
+    /// @brief Reports availability of owned-cell-to-face rows.
     [[nodiscard]] bool has_cell_faces() const noexcept { return has(AuxConnType::CellFaces); }
+    /// @brief Reports availability of owned-cell face-neighbour rows.
     [[nodiscard]] bool has_cell_cells_face() const noexcept { return has(AuxConnType::CellCellsByFace); }
+    /// @brief Reports availability of unique local vertex-neighbour rows.
     [[nodiscard]] bool has_cell_cells_node() const noexcept { return has(AuxConnType::CellCellsByNode); }
+    /// @brief Reports availability of owned-used-node-to-cell rows.
     [[nodiscard]] bool has_node_cells() const noexcept { return has(AuxConnType::NodeCells); }
+    /// @brief Reports availability of owned-used-node-to-face rows.
     [[nodiscard]] bool has_node_faces() const noexcept { return has(AuxConnType::NodeFaces); }
 
     /// @brief Releases all tables; call before rebuilding after topology or numbering changes.
-    void clear() noexcept
-    {
+    void clear() noexcept {
         // Move an empty object over the old one to release vector capacities as well.
         *this = MeshAuxConnectivity{};
     }
@@ -60,8 +65,8 @@ void build_node_faces_conn(const MeshPart& mesh, std::vector<std::size_t>& offse
                            std::vector<LocalIndex>& faces);
 /// @brief Builds unique local vertex neighbours, reusing an existing node-to-cell table.
 void build_cell_cells_node_conn(const MeshPart& mesh, std::span<const std::size_t> node_offsets,
-                                std::span<const LocalIndex> node_cells,
-                                std::vector<std::size_t>& offsets, std::vector<LocalIndex>& cells);
+                                std::span<const LocalIndex> node_cells, std::vector<std::size_t>& offsets,
+                                std::vector<LocalIndex>& cells);
 /// @brief Builds unique local vertex neighbours using a temporary node-to-cell table.
 void build_cell_cells_node_conn(const MeshPart& mesh, std::vector<std::size_t>& offsets,
                                 std::vector<LocalIndex>& cells);

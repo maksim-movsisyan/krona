@@ -5,8 +5,8 @@
 
 namespace krona::mesh::host {
 
-struct Patch
-{
+/// @brief Stores source patch labels independently of solver boundary conditions.
+struct Patch {
     std::string name;
     std::string family;
     std::string source_type; // Import label, not a solver boundary condition.

@@ -13,6 +13,7 @@ namespace krona::mesh::host {
 struct MeshPart;
 struct MeshAuxConnectivity;
 
+/// @brief Selects the available local graph used for wall-distance propagation.
 enum class WallDistStencil : std::uint8_t {
     FaceNeighbors,
     NodeNeighbors // Uses only vertex neighbours present in the current local halo.
@@ -63,26 +64,46 @@ struct MeshAuxGeometry {
 
     /// @brief Computes or recomputes graph wall distance collectively and refreshes final ghost values.
     /// wall_patch is a replicated byte mask; nonzero entries identify physical wall patches.
-    [[nodiscard]] WallDistanceStats add_wall_distance(const MeshPart& mesh,
-                                                      MeshAuxConnectivity& connectivity,
+    [[nodiscard]] WallDistanceStats add_wall_distance(const MeshPart& mesh, MeshAuxConnectivity& connectivity,
                                                       mpi::CommView comm,
                                                       std::span<const std::uint8_t> wall_patch,
                                                       WallDistanceOptions options = {});
 
+    /// @brief Reports whether every requested data group is ready.
     [[nodiscard]] bool has(AuxGeomType flag) const noexcept { return has_flag(active_mask, flag); }
+    /// @brief Reports availability of centre-separation magnitudes.
     [[nodiscard]] bool has_face_cell_dist() const noexcept { return has(AuxGeomType::FaceCellDistance); }
-    [[nodiscard]] bool has_face_cell_dist_vector() const noexcept { return has(AuxGeomType::FaceCellDistanceVector); }
-    [[nodiscard]] bool has_face_cell_dist_inv() const noexcept { return has(AuxGeomType::FaceCellDistanceInv); }
-    [[nodiscard]] bool has_face_interp_weights() const noexcept { return has(AuxGeomType::FaceInterpolationWeights); }
-    [[nodiscard]] bool has_face_non_ortho() const noexcept { return has(AuxGeomType::FaceNonOrthogonalityVector); }
+    /// @brief Reports availability of centre-displacement components.
+    [[nodiscard]] bool has_face_cell_dist_vector() const noexcept {
+        return has(AuxGeomType::FaceCellDistanceVector);
+    }
+    /// @brief Reports availability of reciprocal centre separations.
+    [[nodiscard]] bool has_face_cell_dist_inv() const noexcept {
+        return has(AuxGeomType::FaceCellDistanceInv);
+    }
+    /// @brief Reports availability of owner-side interpolation weights.
+    [[nodiscard]] bool has_face_interp_weights() const noexcept {
+        return has(AuxGeomType::FaceInterpolationWeights);
+    }
+    /// @brief Reports availability of nonorthogonal area corrections.
+    [[nodiscard]] bool has_face_non_ortho() const noexcept {
+        return has(AuxGeomType::FaceNonOrthogonalityVector);
+    }
+    /// @brief Reports availability of normal centre separations.
     [[nodiscard]] bool has_face_normal_dist() const noexcept { return has(AuxGeomType::FaceNormalDistance); }
-    [[nodiscard]] bool has_face_normal_dist_inv() const noexcept { return has(AuxGeomType::FaceNormalDistanceInv); }
-    [[nodiscard]] bool has_face_area_over_normal_dist() const noexcept { return has(AuxGeomType::FaceAreaOverNormalDistance); }
+    /// @brief Reports availability of reciprocal normal separations.
+    [[nodiscard]] bool has_face_normal_dist_inv() const noexcept {
+        return has(AuxGeomType::FaceNormalDistanceInv);
+    }
+    /// @brief Reports availability of area divided by normal separation.
+    [[nodiscard]] bool has_face_area_over_normal_dist() const noexcept {
+        return has(AuxGeomType::FaceAreaOverNormalDistance);
+    }
+    /// @brief Reports availability of the collective graph wall-distance field.
     [[nodiscard]] bool has_wall_dist() const noexcept { return has(AuxGeomType::WallDistance); }
 
     /// @brief Releases cached metrics before recomputation after motion or topology changes.
-    void clear() noexcept
-    {
+    void clear() noexcept {
         // Replacing with an empty object releases retained vector capacities.
         *this = MeshAuxGeometry{};
     }

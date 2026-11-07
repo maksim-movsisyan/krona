@@ -169,3 +169,10 @@ Shape/readiness errors prevent validation kernels from being launched. Further c
 `valid_halo_plan(mesh, plan, rank, comm_size)` checks host peer metadata against map lengths. `duplicate_halo_receives(exec, mesh)` checks repeated receive destinations using temporary storage. Element-specific topology checks are also available as validation kernels; none of these establish global manifoldness or matching remote messages.
 
 Counters are diagnostics, not automatic fatal errors. As in the example, explicitly pass `result.ok()` to `mpi::require` when invalid data must abort the job.
+
+## Module tests
+
+`tests/mesh/device` uses the common Kokkos test runner in the configured execution
+space. It checks selected groups, CPU borrowing or device copies, storage lifetime
+contracts, auxiliary attachment, empty views and validation counters. Host topology,
+geometry and MPI migration algorithms are tested separately in `tests/mesh/host`.

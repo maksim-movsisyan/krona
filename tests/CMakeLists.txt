@@ -10,7 +10,8 @@ target_include_directories(krona_test_support_host_only INTERFACE "${CMAKE_CURRE
 target_compile_features(krona_test_support_host_only INTERFACE cxx_std_20)
 target_link_libraries(krona_test_support_host_only INTERFACE krona::mpi krona::warnings)
 
+add_subdirectory(math)
 if(KRONA_ENABLE_CGNS)
     add_subdirectory(mesh/generation)
 endif()
-add_subdirectory(math)
+add_subdirectory(mesh)

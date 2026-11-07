@@ -16,17 +16,15 @@
 namespace krona::mesh::host {
 
 // A matching key only; retain oriented connectivity separately.
-struct FaceKey
-{
+/// @brief Matches facets by sorted global node IDs independently of orientation.
+struct FaceKey {
     std::array<GlobalIndex, 4> nodes{-1, -1, -1, -1};
     /// @brief Compares sorted node IDs for facet matching.
-    auto operator<=>(const FaceKey &) const = default;
+    auto operator<=>(const FaceKey&) const = default;
 };
 
 /// @brief Builds an orientation-independent key for a facet with one to four nodes.
-[[nodiscard]] inline FaceKey make_face_key(
-    std::span<const GlobalIndex> nodes) noexcept
-{
+[[nodiscard]] inline FaceKey make_face_key(std::span<const GlobalIndex> nodes) noexcept {
     assert(!nodes.empty() && nodes.size() <= 4);
 
     FaceKey key;
@@ -78,11 +76,11 @@ struct BuildFacesResult {
     graph::CsrGraph graph;
     FaceStats stats;
 };
- 
+
 /// @brief Collectively matches cell faces and boundary labels, then builds the dual graph.
 /// Uses connectivity only; coordinates and the mesh source do not affect matching.
-[[nodiscard]] BuildFacesResult build_faces(
-    const RawMesh& mesh, mpi::CommView comm, const BuildFacesOptions& options = {});
+[[nodiscard]] BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm,
+                                           const BuildFacesOptions& options = {});
 
 // All ranks participate with identical options, including ranks without cells or labels.
 // RawMesh contains owned cells only, in its current block-distribution order.

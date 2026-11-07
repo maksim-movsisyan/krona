@@ -31,16 +31,13 @@ struct DualEdge {
 };
 
 /// @brief Releases large temporary storage as soon as its stage is complete.
-template<class T>
-void release(std::vector<T>& data)
-{
+template <class T> void release(std::vector<T>& data) {
     // clear() would retain capacity and increase the next stage's peak memory.
     std::vector<T>{}.swap(data);
 }
 
 /// @brief Hashes the complete face key and avalanches regularly numbered nodes.
-[[nodiscard]] std::uint64_t face_hash(const FaceKey& key) noexcept
-{
+[[nodiscard]] std::uint64_t face_hash(const FaceKey& key) noexcept {
     std::uint64_t hash = UINT64_C(14695981039346656037);
     for (const auto node : key.nodes) {
         hash ^= static_cast<std::uint64_t>(node);
@@ -55,9 +52,7 @@ void release(std::vector<T>& data)
 }
 
 /// @brief Builds a matching key from an oriented cell face.
-[[nodiscard]] FaceKey cell_face_key(const RawMesh& mesh, std::size_t cell,
-                                    std::size_t face) noexcept
-{
+[[nodiscard]] FaceKey cell_face_key(const RawMesh& mesh, std::size_t cell, std::size_t face) noexcept {
     const auto type = static_cast<std::size_t>(mesh.cells.types[cell]);
     const auto nodes = mesh.cells.nodes(cell);
     const auto count = static_cast<std::size_t>(face_nodes[type][face]);
@@ -69,9 +64,7 @@ void release(std::vector<T>& data)
 }
 
 /// @brief Visits source keys with compact references instead of materializing records.
-template<class Visit>
-void visit_sources(const RawMesh& mesh, Visit&& visit)
-{
+template <class Visit> void visit_sources(const RawMesh& mesh, Visit&& visit) {
     // Eight slots per cell encode all supported local face indices.
     for (std::size_t cell = 0; cell < mesh.cells.size(); ++cell) {
         const std::size_t type = static_cast<std::size_t>(mesh.cells.types[cell]);
@@ -85,25 +78,21 @@ void visit_sources(const RawMesh& mesh, Visit&& visit)
 }
 
 /// @brief Expands one compact source reference when its communication round is due.
-[[nodiscard]] HalfFace source_record(const RawMesh& mesh, std::size_t source)
-{
+[[nodiscard]] HalfFace source_record(const RawMesh& mesh, std::size_t source) {
     const auto boundary_begin = mesh.cells.size() * 8;
     if (source >= boundary_begin) {
         const auto i = source - boundary_begin;
         // Boundary IDs and coordinate ownership are irrelevant for face matching.
-        return {make_face_key(mesh.boundary.elements.nodes(i)), invalid_cell_id,
-                mesh.boundary.patch_ids[i], invalid_local_face};
+        return {make_face_key(mesh.boundary.elements.nodes(i)), invalid_cell_id, mesh.boundary.patch_ids[i],
+                invalid_local_face};
     }
     const auto cell = source / 8, face = source % 8;
-    const auto id = mesh.distribution.cells.begin(mesh.distribution.rank) +
-                    static_cast<GlobalIndex>(cell);
-    return {cell_face_key(mesh, cell, face), id, invalid_patch_id,
-            static_cast<std::uint8_t>(face)};
+    const auto id = mesh.distribution.cells.begin(mesh.distribution.rank) + static_cast<GlobalIndex>(cell);
+    return {cell_face_key(mesh, cell, face), id, invalid_patch_id, static_cast<std::uint8_t>(face)};
 }
 
 /// @brief Builds packing cursors from record counts for each destination.
-[[nodiscard]] std::vector<std::size_t> packing_offsets(std::span<const int> counts)
-{
+[[nodiscard]] std::vector<std::size_t> packing_offsets(std::span<const int> counts) {
     std::vector<std::size_t> offsets(counts.size() + 1, 0);
     // MPI layouts are built later by the reusable collective workspace.
     for (std::size_t i = 0; i < counts.size(); ++i)
@@ -112,14 +101,13 @@ void visit_sources(const RawMesh& mesh, Visit&& visit)
 }
 
 /// @brief Matches complete equal-key groups and rejects ambiguous topology or labels.
-template<class Visit>
+template <class Visit>
 void visit_matches(std::span<const HalfFace> records,
-                   const distribution::BlockDistribution<GlobalIndex>& ownership,
-                   Visit&& visit)
-{
+                   const distribution::BlockDistribution<GlobalIndex>& ownership, Visit&& visit) {
     for (std::size_t begin = 0; begin < records.size();) {
         std::size_t end = begin + 1;
-        while (end < records.size() && records[begin].key == records[end].key) ++end;
+        while (end < records.size() && records[begin].key == records[end].key)
+            ++end;
 
         const HalfFace* cells[2]{};
         const HalfFace* boundary = nullptr;
@@ -127,25 +115,34 @@ void visit_matches(std::span<const HalfFace> records,
         for (std::size_t i = begin; i < end; ++i) {
             const auto& record = records[i];
             if (record.cell == invalid_cell_id) {
-                if (boundary) mpi::fatal("Duplicate boundary face records");
+                if (boundary)
+                    mpi::fatal("Duplicate boundary face records");
                 boundary = &record;
             } else {
-                if (count == 2) mpi::fatal("Non-manifold face shared by more than two cells");
+                if (count == 2)
+                    mpi::fatal("Non-manifold face shared by more than two cells");
                 cells[count++] = &record;
             }
         }
-        if (count == 0) mpi::fatal("Boundary element does not match any cell face");
+        if (count == 0)
+            mpi::fatal("Boundary element does not match any cell face");
         if (count == 2) {
             if (cells[0]->cell == cells[1]->cell)
                 mpi::fatal("A cell contains duplicate faces");
-            if (boundary) mpi::fatal("Boundary element matches an interior face");
+            if (boundary)
+                mpi::fatal("Boundary element matches an interior face");
             // Unique face ownership follows the smaller global cell ID.
-            if (cells[0]->cell > cells[1]->cell) std::swap(cells[0], cells[1]);
+            if (cells[0]->cell > cells[1]->cell)
+                std::swap(cells[0], cells[1]);
         }
         const auto& a = *cells[0];
         const auto b = count == 2 ? cells[1]->cell : invalid_cell_id;
-        const FaceRecord face{a.key, a.cell, b, boundary ? boundary->patch : invalid_patch_id,
-                              a.local_face, count == 2 ? cells[1]->local_face : invalid_local_face};
+        const FaceRecord face{a.key,
+                              a.cell,
+                              b,
+                              boundary ? boundary->patch : invalid_patch_id,
+                              a.local_face,
+                              count == 2 ? cells[1]->local_face : invalid_local_face};
         visit(face, ownership.owner(a.cell), count == 2 ? ownership.owner(b) : -1);
         begin = end;
     }
@@ -153,25 +150,22 @@ void visit_matches(std::span<const HalfFace> records,
 
 /// @brief Fills bounded CSR rows directly while communication rounds complete.
 class GraphBuilder {
-public:
+  public:
     /// @brief Reserves at most one neighbour slot per local cell face.
     GraphBuilder(graph::CsrGraph& graph, const RawMesh& mesh)
         : graph_(graph), first_(mesh.distribution.cells.begin(mesh.distribution.rank)),
-          degrees_(mesh.cells.size(), 0)
-    {
+          degrees_(mesh.cells.size(), 0) {
         graph_.offsets.resize(mesh.cells.size() + 1, 0);
         // A conforming cell cannot have more neighbours than faces.
         for (std::size_t cell = 0; cell < mesh.cells.size(); ++cell) {
             const auto type = static_cast<std::size_t>(mesh.cells.types[cell]);
-            graph_.offsets[cell + 1] = graph_.offsets[cell] +
-                                       static_cast<std::size_t>(faces_per_type[type]);
+            graph_.offsets[cell + 1] = graph_.offsets[cell] + static_cast<std::size_t>(faces_per_type[type]);
         }
         graph_.adjacency.resize(graph_.offsets.back());
     }
 
     /// @brief Adds one directed adjacency to an owned row without reallocating.
-    void add(GlobalIndex cell, GlobalIndex neighbour)
-    {
+    void add(GlobalIndex cell, GlobalIndex neighbour) {
         const auto row = static_cast<std::size_t>(cell - first_);
         assert(row < degrees_.size());
         assert(degrees_[row] < graph_.offsets[row + 1] - graph_.offsets[row]);
@@ -180,8 +174,7 @@ public:
     }
 
     /// @brief Sorts neighbours, removes duplicate adjacencies and compacts rows in place.
-    void finish()
-    {
+    void finish() {
         std::size_t written = 0;
         for (std::size_t row = 0; row < degrees_.size(); ++row) {
             const auto start = graph_.offsets[row];
@@ -191,23 +184,24 @@ public:
             last = std::unique(first, last);
             graph_.offsets[row] = written;
             // The destination never passes the source, so forward copying is safe.
-            for (auto at = first; at != last; ++at) graph_.adjacency[written++] = *at;
+            for (auto at = first; at != last; ++at)
+                graph_.adjacency[written++] = *at;
         }
         graph_.offsets.back() = written;
         graph_.adjacency.resize(written); // Keep the small face-count upper-bound capacity.
-        if (written == 0) release(graph_.adjacency);
+        if (written == 0)
+            release(graph_.adjacency);
         release(degrees_);
     }
 
-private:
+  private:
     graph::CsrGraph& graph_;
     GlobalIndex first_;
     std::vector<std::uint8_t> degrees_;
 };
 
 /// @brief Validates stage contracts once and counts local half-faces and labels.
-[[nodiscard]] std::uint64_t count_sources(const RawMesh& mesh, mpi::CommView comm)
-{
+[[nodiscard]] std::uint64_t count_sources(const RawMesh& mesh, mpi::CommView comm) {
     // get cell distribution
     const auto& ownership = mesh.distribution.cells;
 
@@ -237,7 +231,7 @@ private:
         count += static_cast<std::uint64_t>(faces_per_type[type]);
     }
 
-    // 
+    //
     for (std::size_t i = 0; i < mesh.boundary.size(); ++i) {
         const auto type = mesh.boundary.elements.types[i];
         if (type != CellType::TRI && type != CellType::QUAD)
@@ -249,32 +243,32 @@ private:
 
 /// @brief Runs key-based rendezvous batches and delivers faces to their cell owners.
 [[nodiscard]] BuildFacesResult build(const RawMesh& mesh, mpi::CommView comm,
-                                     const BuildFacesOptions& options)
-{
-    // get total number of local faces (boundary faces are counted twice: as boundary element and as face of boundary cell)
+                                     const BuildFacesOptions& options) {
+    // Count cell half-faces and optional boundary labels as separate matching records.
     const std::uint64_t local_sources = count_sources(mesh, comm);
-    
-    // get number of ranks
-    const std::size_t peers = static_cast<std::size_t>(comm.size());
-    if (options.batch_bytes < sizeof(HalfFace)) mpi::fatal("Face batch size is too small");
 
-    // all ranks need the same round count; this is algorithm planning, not status checking.
+    const std::size_t peers = static_cast<std::size_t>(comm.size());
+    if (options.batch_bytes < sizeof(HalfFace))
+        mpi::fatal("Face batch size is too small");
+
+    // Match round counts across ranks before assigning keys to communication buckets.
     const auto maximum = mpi::allreduce<mpi::Reduction::max>(comm, local_sources);
-    
+
     const auto target = std::min(options.batch_bytes / sizeof(HalfFace),
-        static_cast<std::size_t>(std::numeric_limits<int>::max()) / peers);
+                                 static_cast<std::size_t>(std::numeric_limits<int>::max()) / peers);
     const auto rounds = std::max<std::uint64_t>(1, maximum / target + (maximum % target != 0));
-    if (rounds > (std::numeric_limits<std::size_t>::max() - 1) / peers) 
+    if (rounds > (std::numeric_limits<std::size_t>::max() - 1) / peers)
         mpi::fatal("Face bucket count exceeds size_t");
-    
+
     const std::size_t buckets = static_cast<std::size_t>(rounds) * peers;
 
-    // the same key always selects the same round and rendezvous rank.
+    // Equal keys always select the same round and rendezvous rank.
     std::vector<std::size_t> offsets(buckets + 1, 0);
     visit_sources(mesh, [&](const FaceKey& key, std::size_t) {
         ++offsets[static_cast<std::size_t>(face_hash(key) % buckets) + 1];
     });
-    for (std::size_t i = 0; i < buckets; ++i) offsets[i + 1] += offsets[i];
+    for (std::size_t i = 0; i < buckets; ++i)
+        offsets[i + 1] += offsets[i];
     std::vector<std::size_t> sources(offsets.back());
     {
         auto cursor = offsets;
@@ -298,27 +292,28 @@ private:
         const auto bucket = round * peers;
         for (std::size_t peer = 0; peer < peers; ++peer) {
             const auto count = offsets[bucket + peer + 1] - offsets[bucket + peer];
-            if (!std::in_range<int>(count)) mpi::fatal("Face bucket exceeds MPI INT_MAX; reduce batch_bytes");
+            if (!std::in_range<int>(count))
+                mpi::fatal("Face bucket exceeds MPI INT_MAX; reduce batch_bytes");
             counts[peer] = static_cast<int>(count);
         }
         std::vector<HalfFace> send(offsets[bucket + peers] - offsets[bucket]);
         for (std::size_t i = 0; i < send.size(); ++i)
             send[i] = source_record(mesh, sources[offsets[bucket] + i]);
         std::vector<HalfFace> received;
-        mpi::alltoallv_packed(comm, std::span<const int>{counts}, std::span<const HalfFace>{send},
-                             received, workspace, half_type);
+        mpi::alltoallv_packed(comm, std::span<const int>{counts}, std::span<const HalfFace>{send}, received,
+                              workspace, half_type);
         release(send);
         if (!std::in_range<int>(received.size()))
             mpi::fatal("Face receive batch exceeds MPI INT_MAX; reduce batch_bytes");
-        std::sort(received.begin(), received.end(), [](const HalfFace& a, const HalfFace& b) {
-            return a.key < b.key;
-        });
+        std::sort(received.begin(), received.end(),
+                  [](const HalfFace& a, const HalfFace& b) { return a.key < b.key; });
 
         std::fill(face_counts.begin(), face_counts.end(), 0);
         std::fill(edge_counts.begin(), edge_counts.end(), 0);
         visit_matches(received, mesh.distribution.cells, [&](const FaceRecord&, int a, int b) {
             ++face_counts[static_cast<std::size_t>(a)];
-            if (b != -1 && a != b) ++edge_counts[static_cast<std::size_t>(b)];
+            if (b != -1 && a != b)
+                ++edge_counts[static_cast<std::size_t>(b)];
         });
         auto face_cursor = packing_offsets(face_counts);
         auto edge_cursor = packing_offsets(edge_counts);
@@ -333,8 +328,8 @@ private:
 
         // Keep unique faces in chunks; avoid repeatedly growing a large output array.
         chunks.emplace_back();
-        mpi::alltoallv_packed(comm, std::span<const int>{face_counts},
-                             std::span<const FaceRecord>{face_send}, chunks.back(), workspace, face_type);
+        mpi::alltoallv_packed(comm, std::span<const int>{face_counts}, std::span<const FaceRecord>{face_send},
+                              chunks.back(), workspace, face_type);
         release(face_send);
         total_faces += chunks.back().size();
         for (const auto& face : chunks.back()) {
@@ -348,10 +343,11 @@ private:
             }
         }
         std::vector<DualEdge> reverse_edges;
-        mpi::alltoallv_packed(comm, std::span<const int>{edge_counts},
-                             std::span<const DualEdge>{edge_send}, reverse_edges, workspace, edge_type);
+        mpi::alltoallv_packed(comm, std::span<const int>{edge_counts}, std::span<const DualEdge>{edge_send},
+                              reverse_edges, workspace, edge_type);
         // Reverse edges are consumed now rather than retained until CSR assembly.
-        for (const auto& edge : reverse_edges) graph.add(edge.cell, edge.neighbour);
+        for (const auto& edge : reverse_edges)
+            graph.add(edge.cell, edge.neighbour);
     }
     release(sources);
     release(offsets);
@@ -370,7 +366,7 @@ private:
     result.stats.faces = result.faces.size();
     result.stats.graph_arcs = result.graph.adjacency.size();
     std::array<std::uint64_t, 4> totals{result.stats.faces, result.stats.boundary_faces,
-                                       result.stats.interior_faces, result.stats.graph_arcs};
+                                        result.stats.interior_faces, result.stats.graph_arcs};
     // One reduction returns all global counts; there are no diagnostic reductions.
     mpi::allreduce_in_place<mpi::Reduction::sum>(comm, std::span{totals});
     result.stats = {totals[0], totals[1], totals[2], totals[3]};
@@ -380,14 +376,13 @@ private:
 } // namespace
 
 /// @brief Builds unique faces and symmetric adjacency from an owned 3D mesh snapshot.
-BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm, const BuildFacesOptions& options)
-{
+BuildFacesResult build_faces(const RawMesh& mesh, mpi::CommView comm, const BuildFacesOptions& options) {
     mpi::require(!comm.is_null() && mpi::is_active(), "Face construction requires active MPI");
     mpi::require_main_thread();
-    return mpi::guarded([&](){
+    return mpi::guarded([&]() {
         // Abort immediately on local allocation failure so peers cannot remain blocked.
         return build(mesh, comm, options);
     });
 }
- 
+
 } // namespace krona::mesh::host

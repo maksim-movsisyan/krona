@@ -126,6 +126,12 @@ Partitioning leaves input arrays and current ownership unchanged. The wrapper ma
 
 ## Application choices
 
+The application entry point is `apps/mesh_partitioner.cpp`; it owns MPI runtime and
+communicator lifetime. `apps/mesh_partitioner/cli.*` parses arguments locally, and
+`driver.*` broadcasts rank-zero settings and executes the pipeline inside
+`mpi::guarded`. Help and argument errors select the same exit branch on every rank;
+only rank zero prints them. Application checks are manual.
+
 The current application fixes partition settings to the defaults above; they are not CLI options. It accepts an input CGNS path and an output HDF5 path, plus:
 
 | Option | Effect |

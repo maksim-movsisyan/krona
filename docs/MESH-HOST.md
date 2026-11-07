@@ -211,3 +211,12 @@ Auxiliary caches are independent snapshots. `active_mask`, `has(flag)` and conve
 Builders fill snapshot counts automatically for ready data. Manually populated connectivity caches must set `n_faces`, `n_cells_own` and `n_nodes_own`; geometry caches must set `n_faces` and `n_cells` (including ghosts), the selected arrays and `active_mask` consistently.
 
 For source-independent migration, `MigrationSource` accepts cell connectivity, coordinates, patch metadata and explicit `P + 1` cell/node ownership endpoints. IDs must remain globally dense and contiguous by source rank; renumber/remap adapted inputs first. Migration consumes payloads, accepts one destination rank per source cell and currently requires packed MPI counts/displacements to fit `int`.
+
+## Module tests
+
+`tests/mesh/host` uses the common host-only MPI runner and has no Kokkos dependency.
+Small analytic fixtures cover distributed face matching and CSR construction,
+migration with balanced and unequal source ownership, halo slot matching, all four
+volume-cell types, geometry scaling, reordering, auxiliary caches, wall distance and
+planar extrusion. Cases run with 1, 2 and 4 ranks, including empty source and
+destination ranks. Separate rejection cases check fatal topology and layout contracts.
