@@ -13,3 +13,4 @@ target_link_libraries(krona_test_support_host_only INTERFACE krona::mpi krona::w
 if(KRONA_ENABLE_CGNS)
     add_subdirectory(mesh/generation)
 endif()
+add_subdirectory(math)

@@ -553,6 +553,86 @@ if(KRONA_ENABLE_CGNS)
 endif()
 
 
+    #=================
+    #=== MESH HOST ===
+    #=================
+krona_interface(graph krona::build_config)
+krona_interface(mesh_types krona::build_config)    
+
+add_library(krona_mesh_host STATIC
+    src/mesh/host/extrusion.cpp
+    src/mesh/host/faces.cpp
+    src/mesh/host/migrate.cpp
+    src/mesh/host/geometry.cpp
+    src/mesh/host/reorder.cpp
+    src/mesh/host/validate.cpp
+    src/mesh/host/aux_connectivity.cpp
+    src/mesh/host/aux_geometry.cpp
+    src/mesh/host/wall_distance.cpp)
+add_library(krona::mesh_host ALIAS krona_mesh_host)
+krona_public_headers(krona_mesh_host PUBLIC)
+target_link_libraries(krona_mesh_host
+    PUBLIC krona::mesh_types krona::graph krona::mpi
+    PRIVATE krona::warnings)
+
+add_library(krona_boundary_config_io STATIC src/io/boundary_config/writer.cpp)
+add_library(krona::boundary_config_io ALIAS krona_boundary_config_io)
+krona_public_headers(krona_boundary_config_io PUBLIC)
+target_link_libraries(krona_boundary_config_io
+    PUBLIC krona::mesh_host
+    PRIVATE krona::warnings)
+
+
+    #===============
+    #=== CGNS IO ===
+    #===============
+if(KRONA_ENABLE_CGNS)
+    add_library(krona_cgns_io STATIC src/io/cgns/reader.cpp)
+    add_library(krona::cgns_io ALIAS krona_cgns_io)
+    krona_public_headers(krona_cgns_io PUBLIC)
+    target_link_libraries(krona_cgns_io
+        PUBLIC krona::mesh_host krona::mpi
+        PRIVATE krona::cgns krona::warnings)
+endif()
+
+
+    #===========================
+    #=== HOST MESH PARTITION ===
+    #===========================
+if(KRONA_ENABLE_PARTITIONING)
+    add_library(krona_mesh_partition STATIC src/mesh/partition/partition.cpp)
+    add_library(krona::mesh_partition ALIAS krona_mesh_partition)
+    krona_public_headers(krona_mesh_partition PUBLIC)
+    if(_KRONA_CHECK_HOST_ONLY)
+        target_compile_options(krona_mesh_partition PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:--host-only>")
+    endif()
+    target_link_libraries(krona_mesh_partition
+        PUBLIC krona::graph krona::mpi
+        PRIVATE krona::partitioning krona::warnings)
+endif()
+
+
+    #===============
+    #=== MESH IO ===
+    #===============
+add_library(krona_mesh_io STATIC
+    src/io/solver_mesh/hdf5_reader.cpp
+    src/io/solver_mesh/hdf5_writer.cpp
+    src/io/vtu/vtu.cpp)
+add_library(krona::mesh_io ALIAS krona_mesh_io)
+krona_public_headers(krona_mesh_io PUBLIC)
+target_link_libraries(krona_mesh_io
+    PUBLIC krona::build_config krona::mpi krona::mesh_host
+    PRIVATE krona::warnings krona::hdf5)
+
+
+    #======================
+    #=== MESH DEVICE ===
+    #======================
+krona_interface(mesh_device krona::mesh_types krona::execution krona::mpi)
+
+
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
