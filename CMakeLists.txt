@@ -633,6 +633,12 @@ endif()
 krona_interface(mesh_device krona::mesh_types krona::execution krona::mpi)
 
 
+    #==============
+    #=== FIELDS ===
+    #==============
+krona_interface(fields krona::execution krona::mpi)
+
+
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
