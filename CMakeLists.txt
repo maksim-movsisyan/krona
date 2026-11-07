@@ -644,6 +644,19 @@ krona_interface(fields krona::execution krona::mpi)
     #=====================
 krona_interface(halo krona::execution krona::mpi krona::mesh_device krona::fields)
 
+
+    #======================
+    #=== LINEAR ALGEBRA ===
+    #======================
+if(KRONA_ENABLE_TRILINOS)
+    add_library(krona_linalg STATIC src/linalg/mesh_adapter.cpp)
+    add_library(krona::linalg ALIAS krona_linalg)
+    krona_public_headers(krona_linalg PUBLIC)
+    target_link_libraries(krona_linalg
+        PUBLIC krona::execution krona::mpi krona::fields krona::linear_algebra
+        PRIVATE krona::warnings)
+endif()
+
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
