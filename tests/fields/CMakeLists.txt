@@ -1,3 +1,4 @@
+# Manager registration, field views, storage and host snapshots.
 add_executable(krona_test_fields test_fields.cpp)
 target_link_libraries(krona_test_fields PRIVATE krona_test_support krona::fields)
 
@@ -16,6 +17,7 @@ foreach(case IN ITEMS registry soa transfers tensor empty fill_types aos extende
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
 
+# Field/DOF round-trips cover both layouts, exact scalar types and empty prefixes.
 add_executable(krona_test_field_transfer test_transfer.cpp)
 target_link_libraries(krona_test_field_transfer PRIVATE krona_test_support krona::fields)
 foreach(case IN ITEMS left right types empty)
@@ -25,6 +27,7 @@ foreach(case IN ITEMS left right types empty)
     set_tests_properties("fields.transfer.${case}" PROPERTIES LABELS "fields;unit" TIMEOUT 120 RUN_SERIAL TRUE
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
+# Invalid transfers must fail with the expected diagnostic, not just a nonzero exit.
 foreach(case IN ITEMS mismatch short_input short_output)
     if(case STREQUAL "mismatch")
         set(diagnostic "field pack/DOF size mismatch")
@@ -41,6 +44,7 @@ foreach(case IN ITEMS mismatch short_input short_output)
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
 
+# Borrowed packs cover mixed types, constness, extents, strides and nesting.
 add_executable(krona_test_field_pack test_pack.cpp)
 target_link_libraries(krona_test_field_pack PRIVATE krona_test_support krona::fields)
 

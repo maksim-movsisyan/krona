@@ -10,19 +10,18 @@ namespace {
 
 using namespace krona::test;
 using namespace krona::fields;
- 
+
 /// @brief Completes a manager snapshot before returning host-readable values.
-template<class T = Real, int Components = 1, class Layout = Kokkos::LayoutLeft>
-auto host_copy(FieldsManager<>& fields, const std::string& name)
-{
+template <class T = Real, int Components = 1, class Layout = Kokkos::LayoutLeft>
+auto host_copy(FieldsManager<>& fields, const std::string& name) {
     auto host = fields.copy_to_host_async<T, Components, Layout>(name);
     complete(fields.execution_space(), [] {});
     return host;
 }
 
 /// @brief Locations, typed lookup and zero initialization follow the registry contract.
-void registry(const Exec& exec)
-{
+void registry(const Exec& exec) {
+    // Register each location and wait for default initialization.
     FieldsManager<> fields({.own_cells = 2, .cells = 3, .faces = 7, .nodes = 6}, exec);
     complete(exec, [&] {
         fields.add_field_async("owned", FieldLocation::OwnCell);
@@ -32,6 +31,8 @@ void registry(const Exec& exec)
         fields.add_field_async("node_value", FieldLocation::Node);
         fields.add_field_async("scratch", 4, FieldLocation::Custom);
     });
+
+    // Sizes come from the location; typed lookup also checks components and layout.
     equal(fields.get_field_size("owned"), std::size_t{2}, "Owned field size");
     equal(fields.get_field_size("density"), std::size_t{3}, "Cell size includes ghosts");
     equal(fields.get_field_size("face_flag"), std::size_t{7}, "Local face count");
@@ -46,6 +47,7 @@ void registry(const Exec& exec)
     equal(fields.get_field("velocity")->component_count(), 3, "Component metadata");
     check(fields.get_field("velocity")->location() == FieldLocation::Cell, "Location metadata");
 
+    // Const access borrows the same allocation without granting write access.
     const auto read_only = std::as_const(fields).get_field_view<Real>("density");
     static_assert(std::is_same_v<decltype(read_only.data()), const Real*>);
     static_assert(!std::is_copy_constructible_v<FieldsManager<>>);
@@ -58,6 +60,7 @@ void registry(const Exec& exec)
     static_assert(!std::is_convertible_v<decltype(read_only), decltype(density)>);
     equal(density.as_const().data(), read_only.data(), "Read-only conversion aliases the field");
 
+    // Inspect initialized values only after the host copies complete.
     auto host = host_copy(fields, "density");
     for (std::size_t cell = 0; cell < host.extent(0); ++cell)
         equal(host(cell), Real{0}, "Default initialization includes all cell slots");
@@ -67,16 +70,17 @@ void registry(const Exec& exec)
 }
 
 /// @brief Two-component SoA views survive registry growth and work in ordered kernels.
-void soa(const Exec& exec)
-{
+void soa(const Exec& exec) {
     FieldsManager<> fields({.own_cells = 5, .cells = 5}, exec);
-    auto state = fields.add_field_async<Real, 2>("state", FieldLocation::Cell,
-                                         FieldInitialization::Uninitialized);
+    auto state =
+        fields.add_field_async<Real, 2>("state", FieldLocation::Cell, FieldInitialization::Uninitialized);
     auto component = state.component(1);
     const auto* original = state.data();
+
+    // Force registry growth while retaining field and component views.
     for (int field = 0; field < 64; ++field)
-        fields.add_field_async<int>("unrelated_" + std::to_string(field), 2,
-                              FieldLocation::Custom, FieldInitialization::Uninitialized);
+        fields.add_field_async<int>("unrelated_" + std::to_string(field), 2, FieldLocation::Custom,
+                                    FieldInitialization::Uninitialized);
     equal(state.data(), original, "Adding a field does not invalidate cached views");
     equal(fields.get_field_view<Real, 2>("state").data(), original,
           "Registry growth preserves the original field allocation");
@@ -85,16 +89,21 @@ void soa(const Exec& exec)
     equal(component.stride(0), std::size_t{1}, "A fixed SoA component is contiguous");
     static_assert(std::is_same_v<typename decltype(state)::array_layout, Kokkos::LayoutLeft>);
 
+    // Write both components, then update the second through its contiguous subview.
     auto host = fields.create_host_buffer<Real, 2>("state");
     complete(exec, [&] {
-        Kokkos::parallel_for("test/soa_write", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
-            for (int c = 0; c < 2; ++c) state(static_cast<std::size_t>(cell), c) = static_cast<Real>(10 * cell + c);
-        });
-        Kokkos::parallel_for("test/component_write", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
-            component(cell) += Real{100};
-        });
+        Kokkos::parallel_for(
+            "test/soa_write", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
+                for (int c = 0; c < 2; ++c)
+                    state(static_cast<std::size_t>(cell), c) = static_cast<Real>(10 * cell + c);
+            });
+        Kokkos::parallel_for(
+            "test/component_write", Policy(exec, 0, 5),
+            KOKKOS_LAMBDA(Index cell) { component(cell) += Real{100}; });
         Kokkos::deep_copy(exec, host, state.kokkos_view());
     });
+
+    // The component update must leave the first component untouched.
     for (std::size_t cell = 0; cell < 5; ++cell) {
         equal(host(cell, 0), static_cast<Real>(10 * cell), "First component is unchanged");
         equal(host(cell, 1), static_cast<Real>(10 * cell + 101), "Subview writes the second component");
@@ -102,11 +111,12 @@ void soa(const Exec& exec)
 }
 
 /// @brief Uploads, fills and independent snapshots preserve all components.
-void transfers(const Exec& exec)
-{
+void transfers(const Exec& exec) {
     FieldsManager<> fields({.own_cells = 4, .cells = 4}, exec);
-    auto velocity = fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell,
-                                            FieldInitialization::Uninitialized);
+    auto velocity =
+        fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell, FieldInitialization::Uninitialized);
+
+    // Distinct values expose entity or component ordering mistakes.
     auto upload = fields.create_host_buffer<Real, 3>("velocity");
     for (std::size_t cell = 0; cell < 4; ++cell)
         for (int c = 0; c < 3; ++c)
@@ -115,9 +125,11 @@ void transfers(const Exec& exec)
     // Both operations use the manager's instance, with no fence between them.
     complete(exec, [&] {
         fields.copy_from_host_async<Real, 3>("velocity", upload);
-        Kokkos::parallel_for("test/after_upload", Policy(exec, 0, 4), KOKKOS_LAMBDA(Index cell) {
-            for (int c = 0; c < 3; ++c) velocity(static_cast<std::size_t>(cell), c) *= Real{2};
-        });
+        Kokkos::parallel_for(
+            "test/after_upload", Policy(exec, 0, 4), KOKKOS_LAMBDA(Index cell) {
+                for (int c = 0; c < 3; ++c)
+                    velocity(static_cast<std::size_t>(cell), c) *= Real{2};
+            });
     });
     auto snapshot = host_copy<Real, 3>(fields, "velocity");
     for (std::size_t cell = 0; cell < 4; ++cell)
@@ -128,6 +140,8 @@ void transfers(const Exec& exec)
     snapshot(0, 0) = Real{99};
     auto unchanged = host_copy<Real, 3>(fields, "velocity");
     equal(unchanged(0, 0), Real{0}, "Editing a snapshot does not edit the field");
+
+    // A fill changes every field value while the earlier snapshot stays independent.
     complete(exec, [&] {
         fields.fill_field_async<Real, 3>("velocity", Real{7});
         Kokkos::deep_copy(exec, upload, velocity.kokkos_view());
@@ -139,29 +153,35 @@ void transfers(const Exec& exec)
 }
 
 /// @brief Vector aliases and full tensors use their documented component ordering.
-void tensor(const Exec& exec)
-{
+void tensor(const Exec& exec) {
     FieldsManager<> fields({.own_cells = 2, .cells = 3}, exec);
-    auto velocity = fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell,
-                                            FieldInitialization::Uninitialized);
-    auto stress = fields.add_field_async<Real, 9>("stress", FieldLocation::OwnCell,
-                                          FieldInitialization::Uninitialized);
+    auto velocity =
+        fields.add_field_async<Real, 3>("velocity", FieldLocation::Cell, FieldInitialization::Uninitialized);
+    auto stress =
+        fields.add_field_async<Real, 9>("stress", FieldLocation::OwnCell, FieldInitialization::Uninitialized);
     auto host_velocity = fields.create_host_buffer<Real, 3>("velocity");
     auto host_stress = fields.create_host_buffer<Real, 9>("stress");
+
+    // Encode the entity and tensor indices through the named accessors.
     complete(exec, [&] {
-        Kokkos::parallel_for("test/vector", Policy(exec, 0, 3), KOKKOS_LAMBDA(Index cell) {
-            velocity.x(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 1);
-            velocity.y(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 11);
-            velocity.z(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 21);
-        });
-        Kokkos::parallel_for("test/tensor", Policy(exec, 0, 2), KOKKOS_LAMBDA(Index cell) {
-            for (int row = 0; row < 3; ++row)
-                for (int column = 0; column < 3; ++column)
-                    stress(static_cast<std::size_t>(cell), row, column) = static_cast<Real>(100 * cell + 10 * row + column);
-        });
+        Kokkos::parallel_for(
+            "test/vector", Policy(exec, 0, 3), KOKKOS_LAMBDA(Index cell) {
+                velocity.x(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 1);
+                velocity.y(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 11);
+                velocity.z(static_cast<std::size_t>(cell)) = static_cast<Real>(cell + 21);
+            });
+        Kokkos::parallel_for(
+            "test/tensor", Policy(exec, 0, 2), KOKKOS_LAMBDA(Index cell) {
+                for (int row = 0; row < 3; ++row)
+                    for (int column = 0; column < 3; ++column)
+                        stress(static_cast<std::size_t>(cell), row, column) =
+                            static_cast<Real>(100 * cell + 10 * row + column);
+            });
         Kokkos::deep_copy(exec, host_velocity, velocity.kokkos_view());
         Kokkos::deep_copy(exec, host_stress, stress.kokkos_view());
     });
+
+    // Compare the raw component order with the logical vector and matrix indices.
     equal(host_velocity(2, 0), Real{3}, "x maps to component zero");
     equal(host_velocity(2, 1), Real{13}, "y maps to component one");
     equal(host_velocity(2, 2), Real{23}, "z maps to component two");
@@ -174,8 +194,8 @@ void tensor(const Exec& exec)
 }
 
 /// @brief Empty fields remain valid registry entries and accept empty kernel ranges.
-void empty(const Exec& exec)
-{
+void empty(const Exec& exec) {
+    // Zero entities must not erase registry entries or vector component metadata.
     FieldsManager<> fields({}, exec);
     complete(exec, [&] {
         fields.add_field_async("density", FieldLocation::Cell);
@@ -190,10 +210,12 @@ void empty(const Exec& exec)
     auto host_velocity = fields.create_host_buffer<Real, 3>("velocity");
     equal(host_velocity.extent(0), std::size_t{0}, "Empty vector has no entities");
     equal(host_velocity.extent(1), std::size_t{3}, "Empty vector retains its component count");
+
+    // Empty kernels, fills and uploads must accept these views without resizing them.
     complete(exec, [&] {
-        Kokkos::parallel_for("test/empty_field", Policy(exec, 0, 0), KOKKOS_LAMBDA(Index cell) {
-            density(static_cast<std::size_t>(cell)) = Real{1};
-        });
+        Kokkos::parallel_for(
+            "test/empty_field", Policy(exec, 0, 0),
+            KOKKOS_LAMBDA(Index cell) { density(static_cast<std::size_t>(cell)) = Real{1}; });
         fields.fill_field_async<Real>("density", Real{2});
         fields.fill_field_async<Real, 3>("velocity", Real{3});
         fields.copy_from_host_async<Real, 3>("velocity", host_velocity);
@@ -202,8 +224,7 @@ void empty(const Exec& exec)
 }
 
 /// @brief Fill values convert to the selected field type without deducing it.
-void fill_types(const Exec& exec)
-{
+void fill_types(const Exec& exec) {
     using Default = krona::StorageReal;
     FieldsManager<> fields({.own_cells = 3, .cells = 4}, exec);
     fields.add_field_async("scalar", FieldLocation::Cell);
@@ -211,6 +232,7 @@ void fill_types(const Exec& exec)
     fields.add_field_async<float>("single", FieldLocation::Cell);
     fields.add_field_async<double>("double", FieldLocation::Cell);
 
+    // Queue fills from literals, lvalues and temporaries, taking a snapshot after each.
     const double const_value = 3.5;
     double mutable_value = 4.5;
     fields.fill_field_async("scalar", 0); // An int literal must not select an int field.
@@ -223,12 +245,16 @@ void fill_types(const Exec& exec)
     auto variables = fields.copy_to_host_async<>("scalar");
     fields.fill_field_async("scalar", Default{5});
     auto temporaries = fields.copy_to_host_async<>("scalar");
+
+    // Explicit template arguments select the field type independently of the value type.
     fields.fill_field_async<int>("integer", 7.0);
     fields.fill_field_async<float>("single", 1.25);
     fields.fill_field_async<double>("double", 6);
     auto integers = fields.copy_to_host_async<int>("integer");
     auto singles = fields.copy_to_host_async<float>("single");
     auto doubles = fields.copy_to_host_async<double>("double");
+
+    // One fence completes all queued snapshots before the host checks.
     fields.fence();
 
     for (std::size_t cell = 0; cell < 4; ++cell) {
@@ -244,18 +270,19 @@ void fill_types(const Exec& exec)
 }
 
 /// @brief AoS raw storage, component subviews and read-only views agree on indexing.
-void aos(const Exec& exec)
-{
+void aos(const Exec& exec) {
     using Layout = Kokkos::LayoutRight;
     FieldsManager<> fields({.own_cells = 5, .cells = 5}, exec);
-    auto velocity = fields.add_field_async<Real, 3, Layout>(
-        "velocity", FieldLocation::Cell, FieldInitialization::Uninitialized);
-    auto stress = fields.add_field_async<Real, 9, Layout>(
-        "stress", FieldLocation::Cell, FieldInitialization::Uninitialized);
+    auto velocity = fields.add_field_async<Real, 3, Layout>("velocity", FieldLocation::Cell,
+                                                            FieldInitialization::Uninitialized);
+    auto stress = fields.add_field_async<Real, 9, Layout>("stress", FieldLocation::Cell,
+                                                          FieldInitialization::Uninitialized);
     auto z = velocity.component(2);
     const auto* original = velocity.data();
     const FieldView<const Real, 3, typename Exec::memory_space, Layout> read_only = velocity;
     auto* raw = velocity.data();
+
+    // AoS components are adjacent; a fixed component therefore has a stride of three.
     static_assert(std::is_same_v<typename decltype(velocity)::array_layout, Layout>);
     static_assert(decltype(z)::memory_traits::is_unmanaged);
     static_assert(std::is_same_v<decltype(read_only.component(1).data()), const Real*>);
@@ -265,30 +292,34 @@ void aos(const Exec& exec)
     equal(z.extent(0), std::size_t{5}, "A component subview keeps all entities");
     equal(read_only.data(), original, "Read-only AoS conversion shares the allocation");
 
+    // Mix raw writes, vector aliases and strided subviews on the same allocation.
     auto host_velocity = fields.create_host_buffer<Real, 3, Layout>("velocity");
     auto host_stress = fields.create_host_buffer<Real, 9, Layout>("stress");
     complete(exec, [&] {
-        Kokkos::parallel_for("test/aos_raw_write", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
-            for (int c = 0; c < 3; ++c)
-                raw[3 * static_cast<std::size_t>(cell) + static_cast<std::size_t>(c)] =
-                    static_cast<Real>(10 * cell + c);
-        });
-        Kokkos::parallel_for("test/aos_component", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
-            velocity.x(static_cast<std::size_t>(cell)) += Real{1};
-            velocity.y(static_cast<std::size_t>(cell)) += Real{2};
-            z(cell) += Real{100};
-            for (int row = 0; row < 3; ++row)
-                for (int column = 0; column < 3; ++column)
-                    stress(static_cast<std::size_t>(cell), row, column) =
-                        read_only(static_cast<std::size_t>(cell), column) + static_cast<Real>(10 * row);
-        });
+        Kokkos::parallel_for(
+            "test/aos_raw_write", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
+                for (int c = 0; c < 3; ++c)
+                    raw[3 * static_cast<std::size_t>(cell) + static_cast<std::size_t>(c)] =
+                        static_cast<Real>(10 * cell + c);
+            });
+        Kokkos::parallel_for(
+            "test/aos_component", Policy(exec, 0, 5), KOKKOS_LAMBDA(Index cell) {
+                velocity.x(static_cast<std::size_t>(cell)) += Real{1};
+                velocity.y(static_cast<std::size_t>(cell)) += Real{2};
+                z(cell) += Real{100};
+                for (int row = 0; row < 3; ++row)
+                    for (int column = 0; column < 3; ++column)
+                        stress(static_cast<std::size_t>(cell), row, column) =
+                            read_only(static_cast<std::size_t>(cell), column) + static_cast<Real>(10 * row);
+            });
         Kokkos::deep_copy(exec, host_velocity, velocity.kokkos_view());
         Kokkos::deep_copy(exec, host_stress, stress.kokkos_view());
     });
+
+    // Logical tensor indexing must agree with flattened row-major components.
     for (std::size_t cell = 0; cell < 5; ++cell) {
-        const std::array expected{
-            static_cast<Real>(10 * cell + 1), static_cast<Real>(10 * cell + 3),
-            static_cast<Real>(10 * cell + 102)};
+        const std::array expected{static_cast<Real>(10 * cell + 1), static_cast<Real>(10 * cell + 3),
+                                  static_cast<Real>(10 * cell + 102)};
         for (int c = 0; c < 3; ++c)
             equal(host_velocity(cell, c), expected[static_cast<std::size_t>(c)],
                   "AoS accessors and strided component writes address the right elements");
@@ -299,6 +330,7 @@ void aos(const Exec& exec)
                       "AoS tensors retain logical row-major component numbering");
     }
 
+    // Manager fills must also respect the non-default layout.
     complete(exec, [&] { fields.fill_field_async<Real, 3, Layout>("velocity", 8); });
     auto filled = host_copy<Real, 3, Layout>(fields, "velocity");
     for (std::size_t cell = 0; cell < 5; ++cell)
@@ -307,15 +339,16 @@ void aos(const Exec& exec)
 }
 
 /// @brief Extended fields include distinct owned, ghost and appended boundary slots.
-void extended(const Exec& exec)
-{
+void extended(const Exec& exec) {
+    // Two owned cells, two ghosts and three boundary slots occupy consecutive ranges.
     FieldsManager<> fields({.own_cells = 2, .cells = 4, .faces = 9, .bfaces = 3, .nodes = 6}, exec);
     auto scalar = fields.add_field_async("extended", FieldLocation::CellExtnd);
     fields.add_field_async("cells", FieldLocation::Cell);
     fields.add_field_async("explicit_extended", 7, FieldLocation::CellExtnd);
     equal(scalar.size(), std::size_t{7}, "Extended fields include all cells and boundary faces");
     equal(fields.get_field_size("cells"), std::size_t{4}, "Cell fields exclude appended boundary entries");
-    equal(fields.get_field_size("explicit_extended"), std::size_t{7}, "Explicit extended size matches FieldSizes");
+    equal(fields.get_field_size("explicit_extended"), std::size_t{7},
+          "Explicit extended size matches FieldSizes");
     equal(fields.sizes().bfaces, std::size_t{3}, "Boundary-face count is retained");
     check(fields.get_field("extended")->location() == FieldLocation::CellExtnd,
           "Extended location is retained in metadata");
@@ -323,23 +356,26 @@ void extended(const Exec& exec)
     for (std::size_t i = 0; i < 7; ++i)
         equal(initial(i), Real{0}, "Default initialization includes appended boundary entries");
 
+    // Exercise scalar aliases across all slots, then update only the boundary tail.
     auto component = scalar.component(0);
     equal(component.data(), scalar.data(), "A scalar component aliases the scalar field");
     complete(exec, [&] {
-        Kokkos::parallel_for("test/extended_write", Policy(exec, 0, 7), KOKKOS_LAMBDA(Index i) {
-            scalar[static_cast<std::size_t>(i)] = static_cast<Real>(i + 1);
-            scalar(static_cast<std::size_t>(i)) += Real{10};
-            component(i) += Real{20};
-        });
-        Kokkos::parallel_for("test/extended_boundary", Policy(exec, 4, 7), KOKKOS_LAMBDA(Index i) {
-            scalar(static_cast<std::size_t>(i), 0) += Real{100};
-        });
+        Kokkos::parallel_for(
+            "test/extended_write", Policy(exec, 0, 7), KOKKOS_LAMBDA(Index i) {
+                scalar[static_cast<std::size_t>(i)] = static_cast<Real>(i + 1);
+                scalar(static_cast<std::size_t>(i)) += Real{10};
+                component(i) += Real{20};
+            });
+        Kokkos::parallel_for(
+            "test/extended_boundary", Policy(exec, 4, 7),
+            KOKKOS_LAMBDA(Index i) { scalar(static_cast<std::size_t>(i), 0) += Real{100}; });
     });
     auto populated = host_copy(fields, "extended");
     for (std::size_t i = 0; i < 7; ++i)
         equal(populated(i), static_cast<Real>(i + 31 + (i >= 4 ? 100 : 0)),
               "Boundary updates preserve the owned and ghost cell portions");
 
+    // A full fill includes the appended boundary entries as well as cells.
     complete(exec, [&] { fields.fill_field_async("extended", -2); });
     auto filled = host_copy(fields, "extended");
     for (std::size_t i = 0; i < 7; ++i)
@@ -347,8 +383,8 @@ void extended(const Exec& exec)
 }
 
 /// @brief Standalone storage owns data and exposes independent host buffers.
-void storage(const Exec& exec)
-{
+void storage(const Exec& exec) {
+    // Standalone storage has the same ownership and const-view rules as registered fields.
     using Storage = FieldStorage<Real, 3>;
     static_assert(!std::is_copy_constructible_v<Storage>);
     static_assert(!std::is_move_constructible_v<Storage>);
@@ -363,13 +399,14 @@ void storage(const Exec& exec)
     equal(field.component_count(), 3, "Standalone component metadata");
     check(field.byte_size() >= std::size_t{12} * sizeof(Real), "Byte size covers all scalar values");
 
+    // Fill and modify the owned allocation, then inspect an independent host buffer.
     auto host = field.create_host_buffer();
     check(host.data() != values.data(), "A host buffer is independent even with host field storage");
     complete(exec, [&] {
         field.fill_async(exec, Real{4});
-        Kokkos::parallel_for("test/standalone_storage", Policy(exec, 0, 4), KOKKOS_LAMBDA(Index i) {
-            values.y(static_cast<std::size_t>(i)) += static_cast<Real>(i);
-        });
+        Kokkos::parallel_for(
+            "test/standalone_storage", Policy(exec, 0, 4),
+            KOKKOS_LAMBDA(Index i) { values.y(static_cast<std::size_t>(i)) += static_cast<Real>(i); });
         Kokkos::deep_copy(exec, host, read_only.kokkos_view());
     });
     for (std::size_t i = 0; i < 4; ++i) {
@@ -381,11 +418,11 @@ void storage(const Exec& exec)
 
 } // namespace
 
-int main(int argc, char** argv)
-{
+/// @brief Runs the selected manager, view or storage case through the shared test harness.
+int main(int argc, char** argv) {
     const std::array cases{
-        Case{"registry", registry}, Case{"soa", soa}, Case{"transfers", transfers},
-        Case{"tensor", tensor}, Case{"empty", empty}, Case{"fill_types", fill_types},
-        Case{"aos", aos}, Case{"extended", extended}, Case{"storage", storage}};
+        Case{"registry", registry}, Case{"soa", soa},           Case{"transfers", transfers},
+        Case{"tensor", tensor},     Case{"empty", empty},       Case{"fill_types", fill_types},
+        Case{"aos", aos},           Case{"extended", extended}, Case{"storage", storage}};
     return krona::test::run(argc, argv, "fields", cases);
 }
