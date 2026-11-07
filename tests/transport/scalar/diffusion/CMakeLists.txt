@@ -1,3 +1,4 @@
+# Native-entry diffusion tests compare corrected assembly with direct residuals. 
 add_executable(krona_test_diffusion_core test_operator.cpp fixture.hpp)
 target_link_libraries(krona_test_diffusion_core PRIVATE krona_test_support krona::transport_scalar_diffusion)
 if(NOT MPIEXEC_EXECUTABLE)
@@ -15,6 +16,7 @@ foreach(ranks IN ITEMS 2 3)
             "$<TARGET_FILE:krona_test_diffusion_core>" ${MPIEXEC_POSTFLAGS})
     set_tests_properties("transport.scalar.diffusion.mpi${ranks}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE PROCESSORS "${ranks}" LABELS "transport;diffusion;mpi")
 endforeach()
+# Pair each invalid metric, descriptor or coefficient with the diagnostic it must trigger.
 set(cases stale_metric missing_weights null_comm short_gradient nan_gradient bad_coefficient bad_profile)
 set(messages "normal metrics" "requires attached FaceInterpolationWeights" "null communicator"
     "gradient extent is too short" "invalid correction data" "coefficient must be finite and positive" "invalid affine boundary flux")

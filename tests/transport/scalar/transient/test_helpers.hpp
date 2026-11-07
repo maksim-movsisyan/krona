@@ -7,6 +7,7 @@ using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
 template<class T> using View = Kokkos::View<T*, Space>;
 
+/// @brief Uploads explicit reference values and completes the copy before returning.
 template<class T>
 View<T> input(const Exec& exec, std::initializer_list<T> values)
 { 
@@ -18,8 +19,12 @@ View<T> input(const Exec& exec, std::initializer_list<T> values)
     exec.fence("Test input ready");
     return result;
 }
+
+/// @brief Returns host-readable values after a blocking mirror copy.
 template<class V> auto host_copy(V v)
 { return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, v); }
+
+/// @brief Maps each owned cell to its temporal matrix-diagonal entry.
 struct Entries { View<std::size_t> diagonal; };
 
 } // namespace krona::test::scalar_transient

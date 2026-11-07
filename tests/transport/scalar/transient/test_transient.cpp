@@ -17,6 +17,7 @@ using test::check;
  
 using namespace krona::test::scalar_transient;
 
+/// @brief Checks Euler/BDF2 weights and exact differentiation of a quadratic with unequal steps.
 void coefficients(const Exec&)
 {
     const auto e = nt::BackwardEuler{}.coefficients(0.25);
@@ -27,11 +28,14 @@ void coefficients(const Exec&)
     test::equal(b.weights[1], -8.0, "BDF2 newest history");
     test::equal(b.weights[2], 2.0, "BDF2 older history");
     const auto v = nt::Bdf2{}.coefficients(0.3, 0.2);
+
     // Exact derivative of 2+3*t+4*t*t at t=0.5, for unequal steps.
+    // Use exact polynomial values to test variable-step weights independently of assembly.
     const double derivative = v.weights[0]*4.5+v.weights[1]*2.76+v.weights[2]*2.0;
     test::near(derivative, 7.0, 1.e-13, "Variable-step BDF2 differentiates a quadratic");
 }
 
+/// @brief Checks additive temporal matrix/RHS assembly against the corresponding residual.
 void additive(const Exec& exec)
 {
     auto values = input<double>(exec, {10, 20, 30, 40, 50, 60});
@@ -52,6 +56,8 @@ void additive(const Exec& exec)
         const auto report = status.check(mpi::CommView::world());
         check(!report.has_diffusion_anchor, "A temporal diagonal is not a diffusion boundary anchor");
     });
+
+    // Compare additive coefficient changes and residuals while checking off-diagonal sentinels.
     const auto a = host_copy(values), b = host_copy(rhs), r = host_copy(residual);
     const auto m = host_copy(mass), x = host_copy(phi), p = host_copy(old);
     const auto map = host_copy(entries.diagonal);
@@ -68,6 +74,7 @@ void additive(const Exec& exec)
     test::equal(a(5), 60.0, "Off-diagonal entry preserved");
 }
 
+/// @brief Checks integrated-quantity conservation when mass varies between time layers.
 void conservation(const Exec& exec)
 {
     const auto old = input<double>(exec, {3, 6});
@@ -78,6 +85,7 @@ void conservation(const Exec& exec)
     auto residual = input<double>(exec, {0, 0});
     tt::TransientOperator<Exec, double> op(2, exec);
     ts::AssemblyStatus<Exec> status(exec);
+
     // All layers have M*phi={6,12}, although mass and scalar vary.
     const auto h = tt::time_history(tt::TimeLevel{tt::UniformMass{2.0}, old},
                                   tt::TimeLevel{tt::UniformMass{4.0}, older});
@@ -91,12 +99,15 @@ void conservation(const Exec& exec)
     for (std::size_t i = 0; i < 2; ++i) test::near(r(i), 0.0, 1.e-12, "Conserve integrated quantity for changing mass");
 }
 
+/// @brief Checks temporal updates through strided matrix and RHS component views.
 void strided(const Exec& exec)
 {
     Kokkos::View<float***, Kokkos::LayoutRight, Space> blocks("test/blocks", 2, 3, 3);
     Kokkos::View<float**, Kokkos::LayoutLeft, Space> rhs("test/rhs", 6, 1);
     Kokkos::deep_copy(exec, blocks, 7.f);
     Kokkos::deep_copy(exec, rhs, 11.f);
+
+    // Select one matrix component and an AoS RHS slice; other entries retain sentinels.
     const auto slice = Kokkos::subview(blocks, Kokkos::ALL(), 1, 1);
     using Rhs = Kokkos::View<float*, Kokkos::LayoutStride, Space, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
     const Rhs b(rhs.data()+rhs.stride(0), Kokkos::LayoutStride(2, 3*rhs.stride(0)));
@@ -122,6 +133,7 @@ void strided(const Exec& exec)
         test::equal(r(i, 0), i == 1 ? 23.f : i == 4 ? 29.f : 11.f, "AoS RHS component stride");
 }
 
+/// @brief Measures scalar decay error with Euler startup and fixed or alternating time steps.
 double decay(const Exec& exec, int steps, bool bdf, bool variable = false)
 {
     auto value = input<double>(exec, {1});
@@ -135,6 +147,7 @@ double decay(const Exec& exec, int steps, bool bdf, bool variable = false)
     tt::TransientOperator<Exec, double> op(1, exec);
     for (int step = 0; step < steps; ++step) {
         const double dt = base_dt*(variable ? (step%2 == 0 ? 0.8 : 1.2) : 1.0);
+
         // q'=-q. The spatial reaction is A=1, b=0.
         Kokkos::deep_copy(exec, a, 1.0);
         Kokkos::deep_copy(exec, b, 0.0);
@@ -149,6 +162,7 @@ double decay(const Exec& exec, int steps, bool bdf, bool variable = false)
         static_cast<void>(status.check(mpi::CommView::world()));
         const double next = host_copy(b)(0)/host_copy(a)(0);
         Kokkos::deep_copy(exec, value, next);
+
         // Accept the completed step; never rotate during assembly/outer iterations.
         Kokkos::deep_copy(exec, older, previous);
         Kokkos::deep_copy(exec, previous, value);
@@ -157,8 +171,11 @@ double decay(const Exec& exec, int steps, bool bdf, bool variable = false)
     exec.fence("Decay history complete");
     return std::abs(host_copy(value)(0)-std::exp(-1.0));
 }
+
+/// @brief Checks first-order Euler and second-order BDF2 error reduction under step refinement.
 void order(const Exec& exec)
 {
+    // Halving the time step should reduce Euler error by two and BDF2 error by four.
     const double be_ratio = decay(exec, 20, false)/decay(exec, 40, false);
     const double bdf_ratio = decay(exec, 20, true)/decay(exec, 40, true);
     check(be_ratio > 1.9 && be_ratio < 2.1, "Backward Euler is first order");
@@ -167,6 +184,7 @@ void order(const Exec& exec)
     check(variable_ratio > 3.7 && variable_ratio < 4.4, "Variable-step BDF2 is second order");
 }
 
+/// @brief Checks empty system and residual assembly without accessing any entries.
 void empty(const Exec& exec)
 {
     View<double> values("test/empty", 0);
@@ -184,6 +202,7 @@ void empty(const Exec& exec)
 
 // Both input arrays are float. Their product must be formed in the operator's
 // double precision, including historical layers, before any storage conversion.
+/// @brief Checks mass products in operator precision before destination storage conversion.
 void mass_precision(const Exec& exec)
 {
     const auto volumes = input<float>(exec, {1.e20f, 1.e-30f, 1.00000011920928955078125f});
@@ -214,6 +233,7 @@ void mass_precision(const Exec& exec)
         test::near(b(i)/(6*expected), 1.0, 2.e-15, "History mass product uses computation precision");
         test::near(r(i)/(2*expected), 1.0, 2.e-15, "Residual mass product uses computation precision");
     }
+
     // Exercise the scalar-density branch as well, without a temporary mass array.
     Kokkos::deep_copy(exec, values, 0.0);
     Kokkos::deep_copy(exec, rhs, 0.0);
@@ -231,6 +251,7 @@ void mass_precision(const Exec& exec)
 
 // An explicit float operator must override a potentially double ComputeReal.
 // These inputs distinguish casting each factor from casting their double product.
+/// @brief Checks that an explicit float operator selects mass-product arithmetic.
 void precision_selection(const Exec& exec)
 {
     const auto volumes = input<double>(exec, {1024.00004});
@@ -250,6 +271,7 @@ void precision_selection(const Exec& exec)
     test::equal(a(0), 1048576.f, "Operator Real selects mass multiplication precision");
 }
 
+/// @brief Supplies cell-dependent mass while checking the size_t callable-index contract.
 struct CustomMass {
     // Index deduction must remain size_t: this is the existing mass(cell) contract.
     template<class Index>
@@ -259,6 +281,8 @@ struct CustomMass {
         return 2.0+static_cast<double>(i);
     }
 };
+
+/// @brief Checks custom mass callables for current and historical time layers.
 void custom_mass(const Exec& exec)
 {
     auto values = input<double>(exec, {0, 0});
@@ -280,11 +304,14 @@ void custom_mass(const Exec& exec)
     test::equal(b(1), 12.0, "Custom mass history layer index");
 }
 
+/// @brief Checks empty local ownership and untouched tails containing deliberately invalid inputs.
 void empty_rank(const Exec& exec)
 {
     const auto comm = mpi::CommView::world();
     const std::size_t owned = comm.size() > 1 && comm.rank()+1 == comm.size() ? 0 : 1;
     const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    // Poison entries outside local ownership to detect unintended reads on empty ranks.
     const auto old = input<double>(exec, {3, nan});
     const auto current = input<double>(exec, {2, nan});
     const auto volumes = input<double>(exec, {4, nan});
@@ -312,6 +339,7 @@ void empty_rank(const Exec& exec)
     test::equal(r(0), owned == 0 ? 0.0 : 8.0, "Local empty/owned residual");
 }
 
+/// @brief Triggers an invalid assembly input, access state or unrepresentable destination update.
 void rejection(const Exec& exec, std::string_view name)
 {
     auto a = input<float>(exec, {0}), b = input<float>(exec, {0});
@@ -327,13 +355,24 @@ void rejection(const Exec& exec, std::string_view name)
     static_cast<void>(status.check(mpi::CommView::world()));
     check(false, "Expected rejection");
 }
+
+/// @brief Rejects nonpositive current cell mass.
 void bad_mass(const Exec& e) { rejection(e, "bad_mass"); }
+
+/// @brief Rejects a nonfinite historical state.
 void bad_state(const Exec& e) { rejection(e, "bad_state"); }
+
+/// @brief Rejects a diagonal-entry index outside coefficient storage.
 void bad_entry(const Exec& e) { rejection(e, "bad_entry"); }
+
+/// @brief Rejects a temporal contribution unrepresentable in float destination storage.
 void overflow(const Exec& e) { rejection(e, "overflow"); }
+
+/// @brief Rejects assembly before the status object begins a new operation.
 void not_started(const Exec& e) { rejection(e, "not_started"); }
 
 
+/// @brief Rejects negative mass factors even when their product would be positive.
 void invalid_product(const Exec& exec)
 {
     auto values = input<double>(exec, {0});
@@ -352,16 +391,21 @@ void invalid_product(const Exec& exec)
     check(false, "Negative mass factors must fail even if their product is positive");
 }
 
+/// @brief Rejects a zero current time step.
 void zero_step(const Exec&)
 {
     static_cast<void>(nt::BackwardEuler{}.coefficients(0.0));
     check(false, "Zero time step must fail");
 }
+
+/// @brief Rejects a negative previous BDF2 time step.
 void negative_previous_step(const Exec&)
 {
     static_cast<void>(nt::Bdf2{}.coefficients(1.0, -1.0));
     check(false, "Negative previous step must fail");
 }
+
+/// @brief Rejects a time step whose reciprocal produces an unrepresentable coefficient.
 void coefficient_overflow(const Exec&)
 {
     static_cast<void>(nt::BackwardEuler{}.coefficients(std::numeric_limits<double>::denorm_min()));
@@ -369,6 +413,7 @@ void coefficient_overflow(const Exec&)
 }
 } // namespace
 
+/// @brief Runs successful temporal cases together or an explicitly selected failure case.
 int main(int argc, char** argv)
 {
     const std::array cases{
@@ -382,6 +427,7 @@ int main(int argc, char** argv)
         test::Case{"zero_step", zero_step}, test::Case{"negative_previous_step", negative_previous_step},
         test::Case{"coefficient_overflow", coefficient_overflow}, test::Case{"invalid_product", invalid_product}
     };
+
     // Failure cases are selected explicitly and run in separate processes.
     return test::run(argc, argv, "transport.scalar.transient",
         argc == 1 ? std::span<const test::Case>{cases.data(), 10} : std::span<const test::Case>{cases});

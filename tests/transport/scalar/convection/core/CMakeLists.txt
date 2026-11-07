@@ -1,3 +1,4 @@
+# Native-entry convection tests exercise assembly without a Trilinos dependency. 
 add_executable(krona_test_convection_core test_operator.cpp fixture.hpp)
 target_link_libraries(krona_test_convection_core PRIVATE krona_test_support krona::transport_scalar_convection krona::transport_scalar_diffusion)
 if(NOT MPIEXEC_EXECUTABLE)
@@ -7,6 +8,7 @@ foreach(case IN ITEMS upwind linear tvd muscl float_storage duplicate empty_rank
     add_test(NAME "transport.scalar.convection.core.${case}" COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_convection_core>" ${MPIEXEC_POSTFLAGS} "${case}")
     set_tests_properties("transport.scalar.convection.core.${case}" PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 endforeach()
+# Exercise real interface donors, empty ranks and duplicate-face accumulation.
 foreach(ranks IN ITEMS 2 3)
     foreach(case IN ITEMS linear tvd patch_values unlabelled unused_inputs empty_rank empty duplicate)
         add_test(NAME "transport.scalar.convection.core.mpi${ranks}.${case}" COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}" ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_convection_core>" ${MPIEXEC_POSTFLAGS} "${case}")

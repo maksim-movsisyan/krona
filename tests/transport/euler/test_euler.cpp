@@ -7,6 +7,7 @@ using namespace euler_test;
 using krona::test::check;
 using krona::test::near;
 
+/// @brief Checks that a selected Riemann solver preserves a uniform free stream.
 template<class Solver>
 void uniform_run(const Exec& exec,Solver solver)
 {
@@ -19,8 +20,11 @@ void uniform_run(const Exec& exec,Solver solver)
     const auto report=status.check(comm);check(report.reconstruction_fallbacks==0,"uniform reconstruction has no fallback");
     const auto result=fields.snapshot();for(std::size_t i=0;i<result.extent(0);++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"uniform flow residual");
 }
+
+/// @brief Applies the uniform-flow check to HLLC, Rusanov and Roe fluxes.
 void uniform(const Exec& exec){uniform_run(exec,ri::Hllc<>{});uniform_run(exec,ri::Rusanov{});uniform_run(exec,ri::Roe{gas().gamma});}
 
+/// @brief Checks split cell/face ranges, additive residuals and internal flux cancellation.
 void split_additive(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec,true);
@@ -37,16 +41,20 @@ void split_additive(const Exec& exec)
     (void)status.check(comm);
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(result(i,c),expected(i,c)+2.,tolerance(),"split calls preserve existing residual");
+
     // Internal flux cancellation in canonical orientation, independently of physical boundaries.
     fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
     const auto inner=fields.snapshot();for(int c=0;c<5;++c)near(inner(0,c)+inner(1,c),0.,tolerance(),"internal conservation");
 }
 
+/// @brief Builds a reconstruction descriptor from explicit primitive gradients and mesh geometry.
 auto high_order(const Grid& grid,const auto& fields,auto gradients,auto scheme)
 {
     return eu::Reconstruction{scheme,rec::data(fields.primitive(),rec::gradient_pack(gradients)),
         rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
 }
+
+/// @brief Supplies a configured reconstruction policy to check parameter forwarding.
 struct ScaledLinear {
     static constexpr unsigned requirements=rec::Gradients;
     R scale=0;
@@ -54,6 +62,8 @@ struct ScaledLinear {
     KOKKOS_INLINE_FUNCTION T increment(const Side& side,const Data& data,std::size_t component)const
     {return static_cast<T>(scale)*rec::SecondOrderUpwind{}.template increment<T>(side,data,component);}
 };
+
+/// @brief Checks analytic affine face fluxes, configured schemes and zero-factor first-order recovery.
 void affine(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec,true);
@@ -82,6 +92,7 @@ void affine(const Exec& exec)
     op.add_residual_async(reconstruction,fields.output(),boundary,status,eu::EvaluatedExterior<>{});(void)status.check(comm);
     const auto evaluated=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(evaluated(i,c),result(i,c),tolerance(),"boundary re-evaluation from reconstructed inside");
+
     // The TVD/Darwish adapter uses the same five-component batch and canonical stencil.
     fields.zero(exec);status.begin_async();
     op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::Tvd<>{}),fields.output(),status);(void)status.check(comm);
@@ -97,6 +108,7 @@ void affine(const Exec& exec)
         near(result_limited(i,c),first_order(i,c),tolerance(),"zero external factors select first order");
 }
 
+/// @brief Checks whole-side first-order fallback when reconstructed primitive states are invalid.
 void reconstruction_fallback(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -112,6 +124,7 @@ void reconstruction_fallback(const Exec& exec)
     const auto actual=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(actual(i,c),expected(i,c),tolerance(),"whole-side first-order fallback");
 }
 
+/// @brief Checks impermeable inviscid walls and independence from thermal wall data.
 void walls(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -129,6 +142,7 @@ void walls(const Exec& exec)
         near(evaluated(i,c),result(i,c),tolerance(),"inviscid wall re-evaluation needs no thermal law");
 }
 
+/// @brief Checks primitive/residual component packs backed by AoS fields.
 void layouts(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<Kokkos::LayoutRight> fields(grid,exec);fields.initialize(grid,exec);
@@ -139,6 +153,7 @@ void layouts(const Exec& exec)
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"strided component packs");
 }
 
+/// @brief Checks interface orientation and global conservation after explicit primitive publication.
 void distributed(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();check(comm.size()>=2,"distributed test needs at least two ranks");
@@ -146,6 +161,7 @@ void distributed(const Exec& exec)
     const auto own=profile(comm.rank()+0.5,true);
     std::array<double,5> local{static_cast<double>(own.pressure),static_cast<double>(own.velocity.x),0,0,static_cast<double>(own.temperature)};
     std::vector<double> gathered(static_cast<std::size_t>(comm.size())*5);
+
     // Application/test exchange: the Euler operator itself performs none.
     krona::mpi::check(MPI_Allgather(local.data(),5,MPI_DOUBLE,gathered.data(),5,MPI_DOUBLE,comm.native()),"test exchange primitives");
     auto p=fields.pressure.create_host_buffer();auto t=fields.temperature.create_host_buffer();auto u=fields.velocity.create_host_buffer();
@@ -172,12 +188,15 @@ void distributed(const Exec& exec)
     near(sum[0],static_cast<double>(a.mass),tolerance(),"global mass balance");near(sum[4],static_cast<double>(a.energy),tolerance(),"global energy balance");
 }
 
+/// @brief Initializes a subsonic state so both interface directions affect the reference flux.
 template<class Velocity>
 struct SetSubsonicVelocity {
     Velocity velocity;
     KOKKOS_INLINE_FUNCTION void operator()(int i)const
     {velocity(static_cast<std::size_t>(i),0)=static_cast<S>(0.3);}
 };
+
+/// @brief Compares synthetic subsonic partitions against the unpartitioned residual.
 void partition_algebra(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();
@@ -189,6 +208,8 @@ void partition_algebra(const Exec& exec)
     Grid serial(comm,exec,0,3,3);Fields<> whole(serial,exec);initialize(whole,serial);
     const eu::EulerOperator serial_op{serial.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();serial_op.add_inner_residual_async(whole.reconstruction(serial),whole.output(),status);(void)status.check(comm);
+
+    // Compare each synthetic partition against the same rows of one complete system.
     const auto reference=whole.snapshot();
     for(int part=0;part<3;++part){
         // Synthetic partitions with explicit ghost values; this checks the algebra without a multi-process runtime.
@@ -199,12 +220,16 @@ void partition_algebra(const Exec& exec)
             near(result(0,c),reference(static_cast<std::size_t>(part),c),tolerance(),"partition-independent subsonic residual");
     }
 }
+
+/// @brief Returns an exterior pressure depending on the face evaluation time.
 struct TimeBoundary {
     template<class T,class M,class L,class C>
     KOKKOS_INLINE_FUNCTION auto operator()(const krona::boundary::FaceContext<T>& c,ph::Primitive<T,true> inside,
         const M&,const L&,const C&)const
     {inside.pressure=T{1}+static_cast<T>(0.1)*c.time;return ph::Evaluation{inside,inside};}
 };
+
+/// @brief Checks that a custom exterior-state callback receives the requested evaluation time.
 void custom_time(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -220,6 +245,8 @@ void custom_time(const Exec& exec)
     near(result(0,0),static_cast<double>(f.mass),tolerance(),"custom boundary observes requested time");
     near(result(0,4),static_cast<double>(f.energy),tolerance(),"custom boundary energy");
 }
+
+/// @brief Checks that empty ownership submits no flux contributions or fallback counts.
 void empty(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec,0,0,0);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -229,11 +256,14 @@ void empty(const Exec& exec)
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);
     const auto report=status.check(comm);check(report.reconstruction_fallbacks==0&&report.riemann_fallbacks==0,"empty rank is a no-op");
 }
+
+/// @brief Checks that prepared inlet-face values override the stored constant condition.
 void prepared_profile(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
+
     // A caller-provided profile overrides the already prepared inlet face, without changing the stored condition.
     const auto index=static_cast<std::size_t>(grid.host.n_cells);
     Kokkos::deep_copy(exec,Kokkos::subview(fields.pressure.view().kokkos_view(),index),static_cast<S>(1.2));
@@ -244,6 +274,8 @@ void prepared_profile(const Exec& exec)
     near(result(0,0),static_cast<double>(expected.mass),tolerance(),"prepared inlet profile is consumed");
     near(result(0,4),static_cast<double>(expected.energy),tolerance(),"prepared inlet energy");
 }
+
+/// @brief Rejects a nonphysical prepared exterior boundary state.
 void reject_boundary(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -254,6 +286,7 @@ void reject_boundary(const Exec& exec)
     op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
 }
 
+/// @brief Checks boundary row mapping for unlabelled physical faces.
 void unlabelled(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec,0,2,2,true);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -263,10 +296,14 @@ void unlabelled(const Exec& exec)
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"unlabelled patch row map");
 }
+
+/// @brief Defines the admissible pressure range for the restricted test EOS.
 struct PressureDomain {
     template<class E,class P>KOKKOS_INLINE_FUNCTION bool operator()(const E&,const P& q)const
     {return q.pressure<=static_cast<decltype(q.pressure)>(1.1);}
 };
+
+/// @brief Aborts if domain validation fails to intercept an out-of-range EOS call.
 struct RestrictedEOS {
     Gas gas= euler_test::gas();
     void validate()const{gas.validate();}
@@ -276,6 +313,8 @@ struct RestrictedEOS {
         return gas.from_pT(pressure,temperature);
     }
 };
+
+/// @brief Checks reconstruction-domain fallback before invoking a restricted EOS.
 void eos_domain(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -283,6 +322,8 @@ void eos_domain(const Exec& exec)
     status.begin_async();baseline.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);const auto expected=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,15,Exec> gradients("domain_gradient",2,krona::fields::FieldLocation::Custom,exec);
     auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
+
+    // Reconstruction leaves the EOS domain although original cell values remain admissible.
     h(0,0)=2.;h(1,0)=-2.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{RestrictedEOS{},PressureDomain{}}};status.begin_async();
     op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::SecondOrderUpwind{}),fields.output(),status);
@@ -290,6 +331,7 @@ void eos_domain(const Exec& exec)
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),expected(i,c),tolerance(),"domain fallback");
 }
 
+/// @brief Checks uniform-flow preservation on skewed cells with nonunit cross-sections.
 void geometry(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec,0,2,2,false,1.3,0.7,true);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -301,6 +343,7 @@ void geometry(const Exec& exec)
         near(result(i,c),0.,512.*static_cast<double>(Kokkos::epsilon_v<A>),"skew-cell free stream and geometry precision");
 }
 
+/// @brief Rejects residual outputs aliasing primitive input storage.
 void reject_alias(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -308,6 +351,8 @@ void reject_alias(const Exec& exec)
     auto output=eu::primitive_fields(fields.pressure.view(),fields.velocity.view(),fields.temperature.view());
     op.add_inner_residual_async(fields.reconstruction(grid),output,status);
 }
+
+/// @brief Rejects a nonphysical cell thermodynamic state.
 void reject_state(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);fields.pressure.fill_async(exec,S{-1});
@@ -315,10 +360,13 @@ void reject_state(const Exec& exec)
     op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
 }
 
+/// @brief Supplies a time-dependent thermal wall profile for mechanical-only Euler checks.
 struct ProfiledHeatFlux {
     KOKKOS_INLINE_FUNCTION R operator()(const krona::boundary::FaceContext<R>& c)const
     { return static_cast<R>(0.1)+static_cast<R>(0.05)*c.time; }
 };
+
+/// @brief Compares prepared and re-evaluated mechanical walls with thermal profiles.
 void profiled_walls(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -331,17 +379,23 @@ void profiled_walls(const Exec& exec)
     publish_boundary(boundary,fields.physical(),law,ph::Corrections<>{},R{2});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check(comm);
+
+    // Re-evaluate wall mechanics and compare against the already published exterior states.
     const auto prepared=fields.snapshot();fields.zero(exec);
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{},R{2});(void)status.check(comm);
     const auto evaluated=fields.snapshot();
     for(std::size_t i=0;i<prepared.extent(0);++i)for(int c=0;c<5;++c)
         near(evaluated(i,c),prepared(i,c),tolerance(),"Profiled mechanical walls bypass thermal flux conversion in Euler");
 }
+
+/// @brief Counts inlet pressure-profile evaluations to distinguish prepared and evaluated paths.
 struct CountedPressure {
     Kokkos::View<int*,Space> calls;
     KOKKOS_INLINE_FUNCTION R operator()(const krona::boundary::FaceContext<R>& c)const
     { ++calls(c.face);return R{1}+static_cast<R>(0.1)*c.time; }
 };
+
+/// @brief Checks when prepared versus evaluated inlet paths sample their parameter profile.
 void profiled_inlet(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
@@ -361,6 +415,7 @@ void profiled_inlet(const Exec& exec)
     Kokkos::deep_copy(h,calls);krona::test::equal(h(face),2,"Evaluated inlet samples its parameter once at the requested time");
 }
 
+/// @brief Runs Euler cases or an explicitly selected distributed/expected-failure case.
 int main(int argc,char** argv)
 {
     const std::array cases{krona::test::Case{"profiled_walls",profiled_walls},krona::test::Case{"profiled_inlet",profiled_inlet},krona::test::Case{"uniform",uniform},krona::test::Case{"split_additive",split_additive},

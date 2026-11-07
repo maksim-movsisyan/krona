@@ -17,6 +17,7 @@ namespace grad = krona::numerics::gradient;
 using Space = Exec::memory_space;
 using Array = Kokkos::View<double*, Space>;
 
+/// @brief Returns a completed independent host snapshot on the supplied execution instance.
 template<class View>
 auto snapshot(const Exec& exec, View view)
 {
@@ -25,6 +26,7 @@ auto snapshot(const Exec& exec, View view)
 }
 
 
+/// @brief Builds two owners with labelled, empty and unlabelled boundary ranges.
 krona::mesh::host::MeshPart fixture()
 {
     krona::mesh::host::MeshPart m;
@@ -40,6 +42,7 @@ krona::mesh::host::MeshPart fixture()
     return m;
 }
 
+/// @brief Supplies an analytic value depending on face position and evaluation time.
 template<class R>
 struct SpaceTime {
     R base = 0;
@@ -47,12 +50,14 @@ struct SpaceTime {
     { return base+R{2}*c.x+R{3}*c.time; }
 };
 
+/// @brief Converts outward flux into normal gradient using a known coefficient of two.
 struct Law {
     template<class R>
     KOKKOS_INLINE_FUNCTION R normal_gradient(const bc::FaceContext<R>&, R flux) const
     { return -flux/R{2}; }
 };
 
+/// @brief Stores all affine relation coefficients for independent comparison on the host.
 struct Capture {
     Kokkos::View<double*[4], Space> relations;
     KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<double>& c, const sc::Relation<double>& r) const
@@ -64,6 +69,7 @@ struct Capture {
     }
 };
 
+/// @brief Checks analytic profile values converted to affine value/gradient relations.
 template<class R>
 void direct_relations(const Exec& exec)
 {
@@ -81,8 +87,11 @@ void direct_relations(const Exec& exec)
     const R expected[]{18, R{-2.5}, 59, 18, 5, -9};
     for (std::size_t i = 0; i < 6; ++i) near(h(0, i), expected[i], static_cast<R>(1e-5), "Profiled affine relation");
 }
+
+/// @brief Exercises profiled relation factories with float and double arithmetic.
 void relations_case(const Exec& exec) { direct_relations<float>(exec); direct_relations<double>(exec); }
 
+/// @brief Checks space/time profiles, tangential corrections and independent manager/status lifecycles.
 void analytic_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -103,6 +112,8 @@ void analytic_case(const Exec& exec)
     Kokkos::View<double*[4], Space> result("result", 4);
     sc::Status<Exec> status(exec); status.begin_async();
     manager.apply_component_async(field, status, Law{}, correction, 2.0);
+
+    // Evaluate relations separately from field filling and compare both with analytic results.
     manager.evaluate_async(Capture{result}, status, Law{}, correction, 2.0); status.check();
     const auto h = snapshot(exec, field); const auto r = snapshot(exec, result);
     const double expected[]{20, 20, 18, 22, 61, -1};
@@ -116,6 +127,7 @@ void analytic_case(const Exec& exec)
     check(manager.finalized() && !status.pending(), "Configuration and status have independent lifecycles");
 }
 
+/// @brief Checks const strided patch arrays, borrowed updates and preservation of provider storage.
 void arrays_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -137,6 +149,8 @@ void arrays_case(const Exec& exec)
     sc::Status<Exec> status(exec); status.begin_async(); manager.apply_component_async(field, status); status.check();
     auto h = snapshot(exec, field); near(h(2), 11.0, 1e-12, "First local patch value");
     near(h(3), 17.0, 1e-12, "Strided second local patch value");
+
+    // Changing borrowed values must become visible without rebinding or refinalizing.
     Kokkos::deep_copy(exec, data, 29.0f);
     status.begin_async(); manager.apply_component_async(field, status); status.check();
     h = snapshot(exec, field); near(h(2), 29.0, 1e-12, "Borrowed buffer updated without rebinding");
@@ -144,6 +158,7 @@ void arrays_case(const Exec& exec)
     near(snapshot(exec, storage)(0, 0), -123.0f, 1e-6f, "Provider never writes the input storage");
 }
 
+/// @brief Checks array-based gradient/flux data on labelled, unlabelled and empty patches.
 void array_kinds_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -163,10 +178,13 @@ void array_kinds_case(const Exec& exec)
     for (std::size_t i = 0; i < 6; ++i) near(h(i), expected[i], 1e-12, "Array gradient/flux and unlabelled data");
 }
 
+/// @brief Aborts if a prescribed-value path evaluates its unused correction.
 struct NeverReadCorrection {
     KOKKOS_INLINE_FUNCTION double operator()(const bc::FaceContext<double>&) const
     { Kokkos::abort("Dirichlet must not read a correction"); return 0; }
 };
+
+/// @brief Checks prescribed values without reading NaN owner values or unused corrections.
 void independent_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -177,12 +195,15 @@ void independent_case(const Exec& exec)
     manager.set_unlabelled(C{SpaceTime<double>{10}}); manager.finalize();
     Array field("field", 6); Kokkos::deep_copy(exec, field, std::numeric_limits<double>::quiet_NaN());
     sc::Status<Exec> status(exec); status.begin_async();
+
+    // A prescribed value is independent of both the unavailable owner and tangential correction.
     manager.apply_component_async(field, status, sc::NoFluxLaw{}, NeverReadCorrection{}, 2.0); status.check();
     const auto h = snapshot(exec, field);
     const double expected[]{18, 22, 20, 24};
     for (std::size_t i = 0; i < 4; ++i) near(h(i+2), expected[i], 1e-12, "Profiled Dirichlet ignores NaN owners/correction");
 }
 
+/// @brief Checks two managers share layout/catalog storage while retaining independent conditions.
 void shared_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -199,6 +220,7 @@ void shared_case(const Exec& exec)
     a.finalize();
 }
 
+/// @brief Checks constant and borrowed vector-valued profile providers inside a device kernel.
 void vectors_case(const Exec& exec)
 {
     using V = krona::math::Vector3<double>;
@@ -215,11 +237,14 @@ void vectors_case(const Exec& exec)
     near(h(0).y, 2.0, 1e-12, "Constant vector provider"); near(h(1).z, 6.0, 1e-12, "Borrowed vector profile");
 }
 
+/// @brief Counts profile evaluations independently for every boundary face.
 struct Counted {
     Kokkos::View<int*, Space> calls;
     KOKKOS_INLINE_FUNCTION double operator()(const bc::FaceContext<double>& c) const
     { ++calls(c.boundary_index); return 7; }
 };
+
+/// @brief Checks one provider sample per face for each apply/evaluate operation.
 void once_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -235,11 +260,14 @@ void once_case(const Exec& exec)
     for (int i = 0; i < 4; ++i) equal(h(i), 2, "Provider sampled once per face per operation");
 }
 
+/// @brief Checks rank-local patch arrays when ranks have different local patch sizes.
 void distributed_case(const Exec& exec)
 {
     int rank = 0, size = 0; krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "rank");
     krona::mpi::check(MPI_Comm_size(MPI_COMM_WORLD, &size), "size"); equal(size, 2, "Requires two ranks");
     auto host = fixture(); host.n_bfaces_g = 8; host.n_labeled_bfaces_g = 6;
+
+    // Different per-rank patch sizes expose assumptions about global profile-array indexing.
     if (rank == 1) { host.face_patch = {0, 1, 1, -1}; }
     krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
     bc::BoundaryLayout<Exec, double> layout(host, mesh.view(), exec);
@@ -255,6 +283,7 @@ void distributed_case(const Exec& exec)
     for (auto f = range.begin; f < range.end; ++f) near(h(static_cast<std::size_t>(f)+2), 100.0+rank, 1e-12, "Rank-local patch order");
 }
 
+/// @brief Checks captured device-lambda providers through rebinding and configuration reset.
 void lambda_case(const Exec& exec)
 {
     const auto host = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
@@ -268,6 +297,7 @@ void lambda_case(const Exec& exec)
     Array field("field", 6); sc::Status<Exec> status(exec); status.begin_async();
     manager.apply_component_async(field, status, sc::NoFluxLaw{}, grad::NoCorrection{}, 2.0); status.check();
     near(snapshot(exec, field)(2), 9.0, 1e-12, "Device lambda with a capture");
+
     // Rebinding and config assignment must not require the lambda's deleted assignment operator.
     manager.set(0, condition); manager.finalize();
     sc::Configuration config;
@@ -280,6 +310,7 @@ void lambda_case(const Exec& exec)
     near(snapshot(exec, field)(2), 11.0, 1e-12, "Config reset with a lambda alternative present");
 }
 
+/// @brief Rejects visitation after assignments invalidate manager finalization.
 void dirty_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -288,6 +319,8 @@ void dirty_case(const Exec& exec)
     manager.set_unlabelled(sc::FixedValue<double>{7}); manager.finalize(); manager.set(0, sc::FixedValue<double>{9});
     manager.for_each_patch([](bc::PatchRange, const auto&) {});
 }
+
+/// @brief Rejects a profile array shorter than its assigned patch range.
 void short_array_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -295,6 +328,8 @@ void short_array_case(const Exec& exec)
     Array values("short", 1); const auto c = sc::fixed_value<double>(pr::patch_values(layout.catalog().patches()[0].range, values));
     sc::Manager<Exec, double, decltype(c)> manager(layout); manager.set(0, c);
 }
+
+/// @brief Rejects a profile bound to a different patch range.
 void wrong_range_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -302,10 +337,14 @@ void wrong_range_case(const Exec& exec)
     Array values("one", 1); const auto c = sc::fixed_value<double>(pr::patch_values(layout.catalog().unlabelled(), values));
     sc::Manager<Exec, double, decltype(c)> manager(layout); manager.set(1, c);
 }
+
+/// @brief Supplies a nonfinite value to test profile-result validation.
 struct Invalid {
     KOKKOS_INLINE_FUNCTION double operator()(const bc::FaceContext<double>&) const
     { return Kokkos::quiet_NaN_v<double>; }
 };
+
+/// @brief Rejects a nonfinite sampled normal-gradient profile.
 void nonfinite_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -316,9 +355,13 @@ void nonfinite_case(const Exec& exec)
     Array field("field", 6); Kokkos::deep_copy(exec, field, 20.0);
     sc::Status<Exec> status(exec); status.begin_async(); manager.apply_component_async(field, status); status.check();
 }
+
+/// @brief Ignores its flux argument to verify validation occurs before constitutive conversion.
 struct IgnoringLaw {
     KOKKOS_INLINE_FUNCTION double normal_gradient(const bc::FaceContext<double>&, double) const { return 0; }
 };
+
+/// @brief Rejects nonfinite prescribed flux even if a custom law would ignore its value.
 void nonfinite_flux_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -330,6 +373,8 @@ void nonfinite_flux_case(const Exec& exec)
     sc::Status<Exec> status(exec); status.begin_async();
     manager.apply_component_async(field, status, IgnoringLaw{}); status.check();
 }
+
+/// @brief Rejects a boundary value unrepresentable in float destination storage.
 void overflow_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -339,10 +384,14 @@ void overflow_case(const Exec& exec)
     Kokkos::View<float*, Space> field("float", 6); sc::Status<Exec> status(exec); status.begin_async();
     manager.apply_component_async(field, status); status.check();
 }
+
+/// @brief Rejects device-status access before beginning an operation.
 void status_not_begun_case(const Exec& exec)
 {
     sc::Status<Exec> status(exec); (void)status.device_flags(exec);
 }
+
+/// @brief Rejects profiled fixed-flux application without a transport law.
 void profile_flux_without_law_case(const Exec& exec)
 {
     const auto h = fixture(); krona::mesh::device::MeshStorage<Exec> mesh(h, {}, exec);
@@ -354,6 +403,7 @@ void profile_flux_without_law_case(const Exec& exec)
 }
 } // namespace
 
+/// @brief Runs scalar profile cases, including individually selected contract rejections.
 int main(int argc, char** argv)
 {
     constexpr std::array cases{Case{"relations", relations_case}, Case{"analytic", analytic_case},

@@ -27,6 +27,7 @@ using krona::test::check;
 
 #include "diffusion/fixture.hpp"
  
+/// @brief Owns shared mesh/auxiliary allocations, diffusion geometry and native assembly maps.
 struct Attached {
     mesh::device::MeshStorage<Exec> mesh;
     mesh::device::AuxConnectivityStorage<Exec> connectivity;
@@ -38,6 +39,7 @@ struct Attached {
           plan(mesh.view(), connectivity.view(), geometry.view(), comm, exec, options), assembly(f.host, comm, exec) {}
 };
 
+/// @brief Supplies a configurable affine value/normal-gradient boundary relation.
 struct Robin {
     Real a = 1, b = 1, value = 0;
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c, Real increment = 0) const {
@@ -46,12 +48,15 @@ struct Robin {
                 -a/denominator, (value-a*increment)/denominator};
     }
 };
+
+/// @brief Produces a deliberately invalid owner-gradient relation for system validation.
 struct NegativeRelation {
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>&, Real = 0) const
     { return {1, 0, 1, 0}; }
 };
 using Boundary = bc::Manager<Exec, Real, Robin, NegativeRelation>;
 
+/// @brief Creates solver settings with an optional zero iteration budget for nonpublication checks.
 linalg::SolverOptions settings(bool no_iterations = false) {
     linalg::SolverOptions o;
     o.method = "FGMRES"; o.relative_tolerance = 1e-10;
@@ -62,11 +67,13 @@ linalg::SolverOptions settings(bool no_iterations = false) {
 
 #include "diffusion/solve.hpp"
 
+/// @brief Completes an independent host snapshot of the full multi-component field.
 template<class Storage, class Layout>
 auto snapshot(const fields::FieldStorage<Storage, 3, Exec, Layout>& field, Exec exec) {
     auto result = field.create_host_buffer(); Kokkos::deep_copy(exec, result, field.view().kokkos_view()); exec.fence("test snapshot"); return result;
 }
 
+/// @brief Solves a known linear diffusion problem and checks publication, halo and boundary values.
 template<class Storage = double, class Layout = Kokkos::LayoutLeft, class Prec = double, class Scalar = double>
 void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool empty_last = false, bool all_empty = false)
 {
@@ -90,6 +97,8 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     const auto result = solve_field<Scalar, Prec>(a, field.view().component(1), boundary, options, law);
     check(result.converged, "linear bar did not converge");
     auto h = snapshot(field, exec);
+
+    // Verify only the selected owned component changed before halo and boundary publication.
     const double tolerance = std::is_same_v<Scalar, float> ? 2e-4 : (std::is_same_v<Storage, float> ? 2e-5 : 1e-8);
     for (std::size_t i = 0; i < field.size(); ++i) {
         test::near(static_cast<double>(h(i, 0)), -77.0, 0.0, "another component was overwritten");
@@ -98,6 +107,8 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
             test::near(static_cast<double>(h(i, 1)), 1+2*static_cast<double>(f.host.cell_centroid_x[i]), tolerance, "owned linear solution is incorrect");
         else test::near(static_cast<double>(h(i, 1)), -77.0, 0.0, "solution publication wrote a ghost/boundary slot");
     }
+
+    // Solving publishes owned values; ghost and physical-boundary publication are explicit later stages.
     halo::Exchange<Storage, Exec> exchange(a.mesh.view(), a.mesh.halo_plan(), comm, 17, exec);
     exchange.add_component(field.view().component(1)); exchange.prepare(); exchange.exchange();
     krona::boundary::scalar::Status<Exec> boundary_status_0(exec);
@@ -115,8 +126,10 @@ void linear_case(const Exec& exec, int kind = 0, bool duplicate = false, bool em
     test::near(balance.defect, 0.0, tolerance*10, "linear bar violates global balance");
 }
 
+/// @brief Checks volume-integrated sources and the analytic discrete boundary stencil.
 void source_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
+
     // Cross-section two checks both volume integration and face-area scaling.
     for (auto& volume : f.host.cell_volume) volume *= 2;
     for (auto& area : f.host.face_area) area *= 2;
@@ -133,6 +146,7 @@ void source_case(const Exec& exec) {
     const auto h = snapshot(field, exec);
     for (LocalIndex i = 0; i < f.host.n_own; ++i) {
         const double x = static_cast<double>(f.host.cell_centroid_x[static_cast<std::size_t>(i)]);
+
         // Exact discrete TPFA solution: the half-cell boundary stencil adds this 1/4 term.
         test::near(h(static_cast<std::size_t>(i), 0), 0.75*(x*(f.total-x)+0.25), 1e-8, "wrong integrated source or boundary stencil");
     }
@@ -141,8 +155,10 @@ void source_case(const Exec& exec) {
     test::near(balance.defect, 0.0, 1e-7, "source/boundary flux signs disagree");
 }
 
+/// @brief Checks harmonic distance-weighted coefficients against series resistance and global balance.
 void variable_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
+
     // Unequal cell widths exercise distance-weighted interpolation, including MPI-cut orientation.
     const auto width = [](int gid) { return gid%2 == 0 ? 1.0 : 2.0; };
     const auto position = [](int gid) { return static_cast<double>(gid+gid/2); };
@@ -183,12 +199,14 @@ void variable_case(const Exec& exec) {
         test::near(h(static_cast<std::size_t>(i), 0), expected, 1e-9, "harmonic cell coefficient violates series resistance");
     }
     test::near(td::DiffusionOperator(a.plan).balance(field.view().component(0), boundary, law).defect, 0.0, 1e-8, "variable coefficient violates balance across MPI cuts");
+
     // Explicit arithmetic interpolation is a distinct, supported numerical policy.
     const auto arithmetic = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient<decltype(coefficient), transport::ArithmeticCoefficient>{coefficient}};
     check(solve_field(a, field.view().component(0), boundary, settings(), arithmetic).converged, "arithmetic coefficient solve failed");
     test::near(td::DiffusionOperator(a.plan).balance(field.view().component(0), boundary, arithmetic).defect, 0.0, 1e-8, "arithmetic coefficient is not conservative");
 }
 
+/// @brief Checks two scalar equations share topology while retaining separate fields and revisions.
 void shared_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
     krona::boundary::BoundaryLayout<Exec, Real> shared_layout(f.host, a.mesh.view(), exec);
@@ -229,6 +247,7 @@ void shared_case(const Exec& exec) {
         test::near(h(j, 1), 3-0.5*x, 1e-8, "second scalar publication failed");
         test::near(h(j, 2), -77.0, 0.0, "group exchange touched another component");
     }
+
     // A coefficient revision refreshes only the first equation, preserving the shared topology.
     const auto revision = first.revision();
     assemble_equation(a, first, first_rhs, left, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{5}});
@@ -236,6 +255,7 @@ void shared_case(const Exec& exec) {
     check(first.revision() > revision, "reassembly did not update matrix revision");
 }
 
+/// @brief Adds a reference contribution to a scalar entry or one dense block component.
 template<class Values>
 KOKKOS_INLINE_FUNCTION void add_coefficient(Values values, std::size_t entry, int equation, int variable,
                                            typename Values::non_const_value_type value)
@@ -244,6 +264,7 @@ KOKKOS_INLINE_FUNCTION void add_coefficient(Values values, std::size_t entry, in
     else values(entry) += value;
 }
 
+/// @brief Checks CSR/BSR entry maps against independently evaluated local matrix products.
 template<class Matrix>
 void assembly_product(Matrix& matrix, const Fixture& f, mesh::device::MeshView<Space> mesh,
     mesh::device::AuxConnectivityView<Space> connectivity, linalg::FaceAssemblyMap<Space> entries, const Exec& exec)
@@ -309,10 +330,12 @@ void assembly_product(Matrix& matrix, const Fixture& f, mesh::device::MeshView<S
     }
 }
 
+/// @brief Checks copied assembly-plan lifetimes, shared entry maps and CSR/BSR graph reuse.
 void assembly_case(const Exec& exec) {
     const auto comm = mpi::CommView::world();
     for (int scenario = 0; scenario < 4; ++scenario) {
         const auto f = bar(comm, scenario == 1, scenario == 2, scenario == 3);
+
         // Returning a copy exercises allocation lifetime after the original plan is destroyed.
         auto assembly = [&] {
             const linalg::FaceAssemblyPlan<Exec> original(f.host, comm, exec);
@@ -356,6 +379,7 @@ void assembly_case(const Exec& exec) {
     }
 }
 
+/// @brief Checks that a zero iteration budget leaves application field storage unchanged.
 void nonconvergence(const Exec& exec) {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
     krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
@@ -369,22 +393,39 @@ void nonconvergence(const Exec& exec) {
         test::near(h(i, c), -77.0, 0.0, "nonconvergence modified application storage");
 }
 
+/// @brief Checks a fixed-value linear diffusion solution.
 void linear(const Exec& e) { linear_case(e); }
+
+/// @brief Checks a prescribed normal-gradient boundary against the linear solution.
 void gradient(const Exec& e) { linear_case(e, 1); }
+
+/// @brief Checks outward diffusive-flux boundary signs against the linear solution.
 void flux(const Exec& e) { linear_case(e, 2); }
+
+/// @brief Checks a Robin boundary against the linear manufactured solution.
 void robin(const Exec& e) { linear_case(e, 3); }
+
+/// @brief Checks duplicate faces accumulate into the same scalar system entries.
 void duplicates(const Exec& e) { linear_case(e, 0, true); }
+
+/// @brief Checks float/AoS field publication with mixed-precision algebra.
 void strided_float(const Exec& e) { linear_case<float, Kokkos::LayoutRight, float>(e); }
+
+/// @brief Checks the manufactured diffusion solve with float algebra and field storage.
 void float_solver(const Exec& e) { linear_case<float, Kokkos::LayoutLeft, float, float>(e); }
+
+/// @brief Checks both an empty final MPI rank and a globally empty solve.
 void empty(const Exec& e) { linear_case(e, 0, false, true); linear_case(e, 0, false, false, true); }
 
 
+/// @brief Returns a completed host snapshot of an arbitrary test view.
 template<class View>
 auto copy_view(View view, const Exec& exec) {
     auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
     Kokkos::deep_copy(exec, host, view); exec.fence("test component snapshot"); return host;
 }
 
+/// @brief Checks diffusion and source additions retain previous system contributions.
 void additive_case(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm, true);
     for (auto& volume : f.host.cell_volume) volume *= 3;
@@ -426,6 +467,7 @@ void additive_case(const Exec& exec) {
         test::near(hv(k),expected[k],1e-12,"additive diffusion overwrote an existing matrix coefficient");
 }
 
+/// @brief Checks direct residuals against b-A*phi while preserving inputs and unselected entries.
 template<class Storage, class Layout>
 void residual_case_impl(const Exec& exec) {
     const auto comm=mpi::CommView::world(); auto f=bar(comm,true);
@@ -477,8 +519,11 @@ void residual_case_impl(const Exec& exec) {
         }
     }
 }
+
+/// @brief Exercises residual comparisons in double/SoA and float/AoS layouts.
 void residual_case(const Exec& e){residual_case_impl<double,Kokkos::LayoutLeft>(e);residual_case_impl<float,Kokkos::LayoutRight>(e);}
 
+/// @brief Checks constant-field Neumann residuals without constructing an algebra system.
 void matrix_free_case(const Exec& exec) {
     const auto comm=mpi::CommView::world(); const auto f=bar(comm);
     mesh::device::MeshStorage<Exec> mesh(f.host,{},exec);
@@ -494,13 +539,17 @@ void matrix_free_case(const Exec& exec) {
     td::DiffusionOperator<> diffusion(plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
     boundary.finalize();
     diffusion.add_residual_async(field,residual,boundary,status);
+
+    // Pure Neumann residual evaluation must not fabricate a value-boundary anchor.
     const auto report=status.check(comm);
     check(!report.has_diffusion_anchor,"pure Neumann contribution acquired a value anchor");
     const auto host=copy_view(residual,exec);
     for(std::size_t i=0;i<host.extent(0);++i)test::near(host(i),Real{7},Real{0},"constant field is not preserved");
+
     // No FaceAssemblyPlan, Tpetra object, or Tpetra::ScopeGuard was constructed.
 }
 
+/// @brief Checks scalar diffusion assembled into one BSR equation and matching AoS RHS entries.
 void bsr_slice_case(const Exec& exec) {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
     krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
@@ -526,6 +575,7 @@ void bsr_slice_case(const Exec& exec) {
         test::near(br(3*i+c,0),c==1?sb(i,0):11.0,1e-12,"BSR RHS is not in cell-major order");
 }
 
+/// @brief Triggers one invalid diffusion configuration, system or assembly state.
 template<int Which>
 void rejected(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
@@ -582,6 +632,7 @@ void rejected(const Exec& exec) {
 
 #include "test_nonorthogonal.hpp"
 
+/// @brief Runs one algebra-dependent case with Tpetra borrowing harness-owned runtimes.
 template<auto Function>
 void with_tpetra(const Exec& exec) {
     mpi::guarded([&] {
@@ -591,6 +642,7 @@ void with_tpetra(const Exec& exec) {
 }
 } // namespace
 
+/// @brief Dispatches standalone residual checks, native solves and expected failures.
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const std::array positive{

@@ -30,18 +30,22 @@ using FloatPatch = bc::FixedValue<Real, boundary::profile::PatchValues<float, Sp
 using DoublePatch = bc::FixedValue<Real, boundary::profile::PatchValues<double, Space>>;
 using Boundary = bc::Manager<Exec, Real, FloatPatch, DoublePatch>;
 
+/// @brief Binds a borrowed fixed-value profile to one labelled patch.
 template<class View>
 void set_profile(Boundary& manager, mesh::PatchId id, View values)
 {
     mpi::require(id >= 0 && static_cast<std::size_t>(id) < manager.catalog().patches().size(), "Scalar boundary: unknown patch ID");
     manager.set(id, bc::fixed_value<Real>(boundary::profile::patch_values(manager.catalog().patches()[static_cast<std::size_t>(id)].range, values)));
 }
+
+/// @brief Binds borrowed inflow values to the unlabelled boundary range.
 template<class View>
 void set_unlabelled_profile(Boundary& manager, View values)
 { manager.set_unlabelled(bc::fixed_value<Real>(boundary::profile::patch_values(manager.catalog().unlabelled(), values))); }
 using krona::test::check;
 
 // References are evaluated in double; account for configured compute/geometry rounding.
+/// @brief Compares double references while accounting for configured computation and geometry precision.
 void near(double actual,double expected,double tolerance,std::string_view message,
     std::source_location where=std::source_location::current())
 {
@@ -54,6 +58,7 @@ void near(double actual,double expected,double tolerance,std::string_view messag
 
 #include "core/fixture.hpp"
 
+/// @brief Owns mesh/auxiliary storage, convection geometry and native algebra entry maps.
 struct Attached {
     mesh::device::MeshStorage<Exec> mesh;
     mesh::device::AuxConnectivityStorage<Exec> connectivity;
@@ -64,16 +69,21 @@ struct Attached {
           plan(mesh.view(), connectivity.view(), comm, exec), assembly(f.host, comm, exec) {}
 };
 
+/// @brief Supplies the oriented integrated face flux for a constant x velocity.
 struct VelocityFlux {
     Real velocity = 1;
     template<class C>
     KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
     { return velocity*c.nx*c.area; }
 };
+
+/// @brief Supplies a spatially varying mass flux to test conservative divergence.
 struct DivergentFlux {
     template<class C>
     KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const { return (Real{1}+c.x)*c.nx*c.area; }
 };
+
+/// @brief Returns a completed independent host snapshot on the selected execution instance.
 template<class View>
 auto snapshot(View view, const Exec& exec)
 {
@@ -82,10 +92,13 @@ auto snapshot(View view, const Exec& exec)
     exec.fence("Convection test snapshot ready");
     return host;
 }
+
+/// @brief Assigns fixed scalar values to the two physical end patches.
 void conditions(Boundary& boundary, Real left = 2, Real right = 7)
 { boundary.set(0, bc::FixedValue<Real>{left}); boundary.set(1, bc::FixedValue<Real>{right}); }
 
 // NVCC extended lambdas cannot be defined in constructors; use a named kernel here.
+/// @brief Initializes manufactured values, gradients and factors through a named device functor.
 template<class R, class Mesh, class Values, class Gradients, class Factors>
 struct InitializeInputs {
     Mesh mesh;
@@ -115,6 +128,7 @@ struct InitializeInputs {
     }
 };
 
+/// @brief Owns multi-component manufactured state, gradient and limiter field storage.
 template<class R = double, class Layout = Kokkos::LayoutLeft>
 struct Inputs {
     fields::FieldStorage<R, 2, Exec, Layout> values, factors;
@@ -134,6 +148,7 @@ struct Inputs {
     { return rec::data(krona::fields::pack(values.view()), rec::gradient_pack(gradients.view()), krona::fields::pack(factors.view())); }
 };
 
+/// @brief Computes b-A*phi through native algebra and compares with the direct residual.
 template<class Matrix, class Field, class Output>
 void compare_system_residual(Matrix& matrix, linalg::Vector<typename Matrix::scalar_type, Exec>& rhs,
     Field field, Output residual, const Exec& exec, double tolerance = 1e-11, int component = 0)
@@ -160,6 +175,7 @@ void compare_system_residual(Matrix& matrix, linalg::Vector<typename Matrix::sca
     }
 }
 
+/// @brief Checks donor selection, coefficient signs and inflow RHS for both flow directions.
 void upwind(const Exec& exec)
 {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f, comm, exec);
@@ -199,6 +215,7 @@ void upwind(const Exec& exec)
     }
 }
 
+/// @brief Checks affine deferred correction, matrix invariance and correction-only RHS updates.
 template<class Scheme, class R = double, class Layout = Kokkos::LayoutLeft>
 void affine_scheme(const Exec& exec, Scheme scheme)
 {
@@ -210,6 +227,7 @@ void affine_scheme(const Exec& exec, Scheme scheme)
     const auto reconstruction = cv::make_reconstruction(a.plan, scheme, input.data(), 1);
     const double tolerance = std::is_same_v<R,float> ? 3e-6 : 2e-11;
     for (const Real velocity : {Real{3}, Real{-3}}) {
+        // Deliberately wrong outflow values expose accidental use of a non-inflow boundary.
         conditions(boundary, velocity > 0 ? static_cast<Real>(2.06) : Real{900},
             velocity < 0 ? static_cast<Real>(2.06)+Real{2}*static_cast<Real>(f.total) : Real{-900});
         linalg::CsrMatrix<double,Exec> base(a.assembly.pattern()), matrix(a.assembly.pattern());
@@ -223,6 +241,8 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         convection.add_system_async(plain, boundary, status, VelocityFlux{velocity});
         convection.add_system_async(target, boundary, status, VelocityFlux{velocity}, reconstruction);
         (void)status.check(comm); base.commit(); base_rhs.commit(); matrix.commit(); rhs.commit();
+
+        // Reconstruction changes only the explicit RHS; compare all implicit coefficients directly.
         const auto a0 = snapshot(base.read_values(exec), exec); base.commit();
         const auto a1 = snapshot(matrix.read_values(exec), exec); matrix.commit();
         for (std::size_t i = 0; i < a0.extent(0); ++i) near(a0(i), a1(i), 0.0, "Reconstruction changed the upwind matrix");
@@ -234,6 +254,8 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         const auto h = snapshot(residual, exec);
         for (LocalIndex i = 0; i < f.host.n_own; ++i)
             near(h(static_cast<std::size_t>(i)), -2.0*static_cast<double>(velocity), tolerance, "Skew affine convective divergence");
+
+        // Reapply only the deferred correction and check both the matrix revision and output tail.
         const auto revision = matrix.revision();
         Kokkos::View<double*,Space> corrected("correction only", f.host.n_own+2);
         Kokkos::deep_copy(exec, corrected, 17.0);
@@ -247,11 +269,20 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         check(matrix.revision() == revision, "Correction-only update touched matrix revision");
     }
 }
+
+/// @brief Checks linear upwind reconstruction in the native algebra path.
 void linear(const Exec& e) { affine_scheme(e, rec::SecondOrderUpwind{}); }
+
+/// @brief Checks TVD reconstruction in the native algebra path.
 void tvd(const Exec& e) { affine_scheme(e, rec::Tvd{}); }
+
+/// @brief Checks MUSCL-kappa reconstruction in the native algebra path.
 void muscl(const Exec& e) { affine_scheme(e, rec::MusclKappa{}); }
+
+/// @brief Checks float/AoS fields and strided components with TVD reconstruction.
 void strided_float(const Exec& e) { affine_scheme<rec::Tvd<>,float,Kokkos::LayoutRight>(e, rec::Tvd{}); }
 
+/// @brief Checks zero limiter factors recover first order without reading invalid gradients.
 void limiting(const Exec& exec)
 {
     const auto comm = mpi::CommView::world(); const auto f = bar(comm); Attached a(f,comm,exec);
@@ -271,10 +302,13 @@ void limiting(const Exec& exec)
     for(std::size_t i=0;i<hp.extent(0);++i)near(hp(i),hl(i),0.0,"Zero limiter did not recover upwind without gradient reads");
 }
 
+/// @brief Poisons reconstructed increments to expose unintended reads.
 struct InvalidReconstruction {
     template<class R> KOKKOS_INLINE_FUNCTION R interior(const cv::InteriorFaceContext<R>&,bool) const { return Kokkos::quiet_NaN_v<R>; }
     template<class R> KOKKOS_INLINE_FUNCTION R boundary(const boundary::FaceContext<R>&) const { return Kokkos::quiet_NaN_v<R>; }
 };
+
+/// @brief Checks zero flux leaves residuals unchanged and ignores poisoned unused data.
 void zero_flux(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -295,12 +329,17 @@ void zero_flux(const Exec& exec)
     const auto h=snapshot(out,exec);for(std::size_t i=0;i<h.extent(0);++i)near(h(i),7.0,0.0,"Zero flux read unused data or modified residual");
 }
 
+/// @brief Supplies a face mass flux depending on evaluation time.
 struct TimedFlux {
     template<class C>KOKKOS_INLINE_FUNCTION Real operator()(const C& c)const{return (Real{1}+c.time)*c.nx*c.area;}
 };
+
+/// @brief Supplies an analytic inflow value depending on evaluation time.
 struct TimedInflow {
     template<class C,class Condition>KOKKOS_INLINE_FUNCTION Real operator()(const C& c,const Condition&)const{return Real{2}+c.time+c.x;}
 };
+
+/// @brief Uses a prescribed profile where available and a time-dependent fallback otherwise.
 struct ProfileOrTimedInflow {
     template<class C, class Condition>
     KOKKOS_INLINE_FUNCTION Real operator()(const C& c, const Condition& condition) const
@@ -309,6 +348,8 @@ struct ProfileOrTimedInflow {
         else return TimedInflow{}(c, condition);
     }
 };
+
+/// @brief Checks time-dependent mass-flux and inflow callbacks against system/residual agreement.
 void inflow(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -328,6 +369,7 @@ void inflow(const Exec& exec)
     if(f.host.n_own>0&&f.first==0)near(hb(0),12.0,0.0,"Time-dependent inflow callback was not used");
 }
 
+/// @brief Checks strided per-face flux/inflow arrays and reversed flow direction.
 void face_inputs(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -370,6 +412,7 @@ void face_inputs(const Exec& exec)
     }
 }
 
+/// @brief Forces inward physical-boundary flux to test each inflow value path.
 struct BoundaryInwardFlux {
     template<class C>
     KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
@@ -379,6 +422,7 @@ struct BoundaryInwardFlux {
     }
 };
 
+/// @brief Checks prescribed patch-profile assembly against explicit RHS values and direct residuals.
 template<class Inflow,class Flux>
 void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,Flux flux,
     std::array<double,3> expected,const Exec& exec,Real time=0)
@@ -400,6 +444,7 @@ void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,F
     (void)status.check(comm);compare_system_residual(matrix,rhs,field,residual,exec);
 }
 
+/// @brief Checks patch-local indexing, strides and updates to borrowed inflow arrays.
 void patch_profiles(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
@@ -417,6 +462,7 @@ void patch_profiles(const Exec& exec)
     profile_system(a,boundary,cv::FixedValueInflow{},VelocityFlux{3},{7.5,0,0},exec);
     profile_system(a,boundary,cv::FixedValueInflow{},VelocityFlux{-3},{0,0,75},exec);
     profile_system(a,boundary,cv::FixedValueInflow{},BoundaryInwardFlux{},{5,0,50},exec);
+
     // Registered views are borrowed: changes to their data are visible without set().
     Kokkos::deep_copy(exec,right,30.0);
     profile_system(a,boundary,cv::FixedValueInflow{},BoundaryInwardFlux{},{5,0,60},exec);
@@ -428,6 +474,7 @@ void patch_profiles(const Exec& exec)
     profile_system(a,boundary,cv::FixedValueInflow{},BoundaryInwardFlux{},{4,0,14},exec);
 }
 
+/// @brief Checks callback fallback when a boundary condition supplies no fixed inflow value.
 void profile_fallback(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,false,false,4);Attached a(f,comm,exec);
@@ -441,6 +488,7 @@ void profile_fallback(const Exec& exec)
     profile_system(a,boundary,ProfileOrTimedInflow{},BoundaryInwardFlux{},{8,0,14},exec,Real{2});
 }
 
+/// @brief Checks inflow profile routing for unlabelled physical faces.
 void profile_unlabelled(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();auto f=bar(comm,false,false,false,4);
@@ -458,6 +506,7 @@ void profile_unlabelled(const Exec& exec)
     profile_system(a,boundary,cv::FixedValueInflow{},BoundaryInwardFlux{},{4,0,18},exec);
 }
 
+/// @brief Checks conservative transport retains the constant-field mass-flux divergence term.
 void divergent(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -473,6 +522,7 @@ void divergent(const Exec& exec)
     const auto hc=snapshot(out,exec);for(std::size_t i=0;i<hc.extent(0);++i)near(hc(i),0.0,0.0,"Constant field changed under divergence-free mass flux");
 }
 
+/// @brief Checks convection assembly into one selected block-matrix equation.
 void bsr(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -493,6 +543,7 @@ void bsr(const Exec& exec)
         if(r!=1||c!=1)near(values(i,r,c),0.0,0.0,"Convection modified another BSR component");
 }
 
+/// @brief Checks repeated convection contributions preserve existing matrix/RHS values.
 void additive(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,true);Attached a(f,comm,exec);
@@ -511,6 +562,7 @@ void additive(const Exec& exec)
     for(std::size_t i=0;i<hb.extent(0);++i)near(hb(i),f.first+static_cast<int>(i)==0?17.0:5.0,0.0,"Convection cleared the existing RHS");
 }
 
+/// @brief Supplies explicit polynomial stencils for independent cell-average QUICK checks.
 struct QuickStencil {
     mesh::device::MeshView<Space> mesh;
     KOKKOS_INLINE_FUNCTION auto side(std::size_t cell,std::size_t face)const
@@ -528,12 +580,18 @@ struct QuickStencil {
     KOKKOS_INLINE_FUNCTION auto boundary_side(std::size_t f)const
     {return side(static_cast<std::size_t>(mesh.connectivity.face_owner(f)),f);}
 };
+
+/// @brief Supplies known polynomial Hessians for exact quadratic advection.
 struct Hessians {
     KOKKOS_INLINE_FUNCTION auto operator()(std::size_t,std::size_t)const{return rec::SymmetricTensor<double>{2,0,0,0,0,0};}
 };
+
+/// @brief Supplies analytic cell moments for the quadratic cell-average correction.
 struct Moments {
     KOKKOS_INLINE_FUNCTION auto operator()(std::size_t)const{return rec::SymmetricTensor<double>{1.0/12,0,0,0,0,0};}
 };
+
+/// @brief Checks exact quadratic cell-average advection with QUICK or Hessian reconstruction.
 template<bool Quick>
 void quadratic_case(const Exec& exec)
 {
@@ -566,8 +624,14 @@ void quadratic_case(const Exec& exec)
         for(std::size_t i=0;i<h.extent(0);++i)near(h(i),-2*static_cast<double>(velocity)*(static_cast<double>(i)+0.5),2e-11,"Quadratic cell-average advection is not exact");
     }
 }
+
+/// @brief Checks quadratic advection through explicit cell-average QUICK stencils.
 void quick(const Exec& e){quadratic_case<true>(e);}
+
+/// @brief Checks quadratic advection through Hessian and cell-moment descriptors.
 void quadratic(const Exec& e){quadratic_case<false>(e);}
+
+/// @brief Checks composed convection/diffusion solves while reusing a frozen matrix and linear solver.
 void frozen_system(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -592,6 +656,7 @@ void frozen_system(const Exec& exec)
     Kokkos::View<double*,Space> base_rhs("base combined RHS",f.host.n_own);
     Kokkos::deep_copy(exec,base_rhs,Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0));rhs.commit();
     linalg::SolverOptions options;options.method="GMRES";options.relative_tolerance=1e-12;options.preconditioner.type="RELAXATION";
+
     // This fixture deliberately uses double algebra; vary transport compute precision independently.
     linalg::Solver<decltype(matrix),double> linear_solver(matrix,options);
     for(int iteration=0;iteration<2;++iteration){
@@ -615,6 +680,8 @@ void frozen_system(const Exec& exec)
     source.add_async(residual,status,ts::UniformSource<Real>{1});(void)status.check(comm);
     const auto r=snapshot(residual,exec);for(std::size_t i=0;i<r.extent(0);++i)near(r(i),0.0,5e-10,"Combined convection-diffusion/source residual is nonzero");
 }
+
+/// @brief Checks halo readiness and global conservative balance with optional empty ranks.
 void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty=false)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm,false,empty_last,globally_empty);Attached a(f,comm,exec);
@@ -643,9 +710,17 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
     mpi::check(MPI_Allreduce(&local,&global,1,MPI_DOUBLE,MPI_SUM,comm.native()),"Convection conservation sum");
     near(global,-2.0*static_cast<double>(f.total),3e-10,"Internal/interface convective fluxes are not conservative");
 }
+
+/// @brief Exercises ordinary, partially empty and globally empty distributed assembly.
 void distributed(const Exec& e){distributed_case(e);distributed_case(e,true);distributed_case(e,true,true);}
+
+/// @brief Checks a globally empty distributed convection problem.
 void empty(const Exec& e){distributed_case(e,true,true);}
+
+/// @brief Identifies the individual invalid-input scenarios run by the failure wrapper.
 enum class Reject { MassFlux,Inflow,ShortFlux,ShortInflow,LongInflow,UnknownPatch,ForeignRange,ProfileNan,ShortGradient,ShortFactors,Component,Reconstruction,InPlace,Pending,Overflow,Underflow,Batch,Time };
+
+/// @brief Triggers one invalid flux, profile, reconstruction, access state or storage conversion.
 void rejection(const Exec& exec,Reject which)
 {
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,comm,exec);
@@ -718,6 +793,8 @@ CONVECTION_REJECT_CASE(reject_underflow,Underflow)
 CONVECTION_REJECT_CASE(reject_batch,Batch)
 CONVECTION_REJECT_CASE(reject_time,Time)
 #undef CONVECTION_REJECT_CASE
+
+/// @brief Runs one case with scoped Tpetra initialization inside the shared runtime harness.
 template<auto Function>
 void with_tpetra(const Exec& exec)
 {
@@ -726,6 +803,8 @@ void with_tpetra(const Exec& exec)
         test::complete(exec,[&] { Function(exec); });
     });
 }
+
+/// @brief Dispatches an explicitly selected expected-failure case.
 int reject(int argc,char** argv)
 {
     const std::array cases{
@@ -744,6 +823,7 @@ int reject(int argc,char** argv)
 
 } // namespace
 
+/// @brief Runs successful convection cases or routes a selected contract violation.
 int main(int argc,char** argv)
 {
     std::setvbuf(stdout,nullptr,_IONBF,0);

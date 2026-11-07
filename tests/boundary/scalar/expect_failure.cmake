@@ -1,3 +1,4 @@
+# Isolate fatal contracts; allow the assertion-specific skip marker only when requested.
 execute_process(
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1
             ${MPIEXEC_PREFLAGS} "${TEST_EXECUTABLE}" ${MPIEXEC_POSTFLAGS} "${TEST_CASE}"

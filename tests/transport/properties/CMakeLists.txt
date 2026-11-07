@@ -1,3 +1,4 @@
+# Property-law tests compare analytic coefficients, scalar types and device evaluation. 
 add_executable(krona_test_transport_properties test_properties.cpp)
 target_link_libraries(krona_test_transport_properties PRIVATE
     krona_test_support krona::transport_properties krona::thermodynamics)
@@ -15,6 +16,7 @@ foreach(case IN ITEMS constants sutherland prandtl custom precision invalid_stat
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach() 
   
+# Configuration errors and exceptions in user validators must produce diagnosed fatal exits.
 set(cases mu k cp pr sutherland_mu sutherland_temperature sutherland_shift custom_viscosity custom_cp)
 set(messages
     "constant dynamic viscosity must be finite and nonnegative"

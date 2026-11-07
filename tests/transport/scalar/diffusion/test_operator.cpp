@@ -22,6 +22,7 @@ using test::check;
 
 #include "fixture.hpp" 
 
+/// @brief Returns a completed host snapshot of native test storage.
 template<class View>
 auto snapshot(View view, const Exec& exec)
 {
@@ -31,6 +32,7 @@ auto snapshot(View view, const Exec& exec)
     return host;
 }
 
+/// @brief Owns mesh/auxiliary storage and the diffusion plan borrowing those allocations.
 struct Attached {
     mesh::device::MeshStorage<Exec> mesh;
     mesh::device::AuxConnectivityStorage<Exec> connectivity;
@@ -41,22 +43,30 @@ struct Attached {
           plan(mesh.view(), connectivity.view(), geometry.view(), comm, exec, {orthogonal, 1e-6}) {}
 };
 
+/// @brief Defines the exact space/time scalar profile used by every boundary policy.
 KOKKOS_INLINE_FUNCTION Real affine(Real x, Real y, Real z, Real time)
 { return Real{2}+Real(0.7)*x-Real(1.1)*y+Real(0.6)*z+time; }
 
+/// @brief Supplies the exact affine boundary value or a deliberately invalid value.
 struct ValueProfile {
     bool invalid = false;
     template<class C> KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
     { return invalid ? Kokkos::quiet_NaN_v<Real> : affine(c.x, c.y, c.z, c.time); }
 };
+
+/// @brief Projects the known affine gradient onto the outward face normal.
 struct GradientProfile {
     template<class C> KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
     { return Real(0.7)*c.nx-Real(1.1)*c.ny+Real(0.6)*c.nz; }
 };
+
+/// @brief Supplies the outward diffusive flux for the fixed coefficient used by the tests.
 struct FluxProfile {
     template<class C> KOKKOS_INLINE_FUNCTION Real operator()(const C& c) const
     { return -Real{2}*GradientProfile{}(c); }
 };
+
+/// @brief Builds a Robin relation consistent with the exact affine value and normal gradient.
 struct Robin {
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c, Real increment) const
     {
@@ -71,6 +81,7 @@ using ProfileGradient = bc::NormalGradient<Real, GradientProfile>;
 using ProfileFlux = bc::FixedFlux<Real, FluxProfile>;
 using Boundary = bc::Manager<Exec, Real, ProfileValue, ProfileGradient, ProfileFlux, Robin>;
 
+/// @brief Assigns exact fixed values or mixed gradient, flux and Robin boundary relations.
 void configure(Boundary& boundary, const Fixture& f, bool mixed)
 {
     for (std::size_t p = 0; p < f.host.patches.size(); ++p)
@@ -85,6 +96,7 @@ void configure(Boundary& boundary, const Fixture& f, bool mixed)
 
 // A real native-entry SystemView, independent of an algebra wrapper. Each row has
 // one diagonal and one entry per unique local neighbour; duplicate faces share entries.
+/// @brief Provides independent native-entry maps and strided system storage without an algebra backend.
 template<class R>
 struct NativeSystem {
     struct Entries { Kokkos::View<std::size_t*, Space> diagonal, owner_entries, neighbour_entries; } entries;
@@ -110,6 +122,8 @@ struct NativeSystem {
         entries = {Kokkos::View<std::size_t*, Space>("diagonal", owned),
                    Kokkos::View<std::size_t*, Space>("owner entries", m.n_inner_faces),
                    Kokkos::View<std::size_t*, Space>("neighbour entries", m.n_internal_faces)};
+
+        // Resolve face-entry maps in the deduplicated reference graph.
         const auto find = [&](LocalIndex row, LocalIndex col) {
             const auto i = static_cast<std::size_t>(row);
             auto first = columns.begin()+static_cast<std::ptrdiff_t>(offsets[i]);
@@ -132,12 +146,16 @@ struct NativeSystem {
         right = decltype(right)("strided RHS", owned+1, 3);
         reset(exec);
     }
+
+    // Expose one matrix/RHS component while unrelated entries remain sentinel-filled.
     auto view() const
     {
         const auto values = Kokkos::subview(blocks, Kokkos::ALL(), 1, 1);
         const auto rhs = Kokkos::subview(right, std::pair<std::size_t, std::size_t>{0, owned}, 1);
         return ts::SystemView{values, rhs, entries};
     }
+
+    // Clear only the selected equation; preserve sentinels in every other storage component.
     void reset(const Exec& exec)
     {
         Kokkos::deep_copy(exec, blocks, R{7}); Kokkos::deep_copy(exec, right, R{7});
@@ -145,6 +163,7 @@ struct NativeSystem {
     }
 };
 
+/// @brief Compares native assembly, direct residuals, correction-only updates and global balance.
 template<class Storage = double>
 void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = false, bool duplicate = false)
 {
@@ -177,6 +196,8 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
     Kokkos::View<Storage*, Space> residual("residual", m.sizes.n_own);
     Kokkos::deep_copy(exec, residual, Storage{0});
     status.begin_async(); op.add_residual_async(phi, residual, boundary, status, law, correction, time); (void)status.check(comm);
+
+    // Compare the direct residual with an independent b-A*phi row evaluation.
     const auto result = snapshot(residual, exec);
     const auto field = snapshot(phi, exec);
     const double tolerance = std::is_same_v<Storage, float> ? 2e-4 : 2e-11;
@@ -187,6 +208,7 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
         test::near(action, 0., tolerance, "affine assembled equation");
         test::near(static_cast<double>(result(row)), action, tolerance, "matrix-free versus assembled residual");
     }
+
     // The correction-only update must reproduce the complete RHS without changing the matrix.
     system.reset(exec);
     status.begin_async(); op.add_system_async(system.view(), boundary, status, law, time); (void)status.check(comm);
@@ -197,6 +219,8 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
         test::near(static_cast<double>(base_coefficients(k)), static_cast<double>(coefficients(k)), 0., "correction changed matrix coefficients");
     for (std::size_t row = 0; row < system.owned; ++row)
         test::near(static_cast<double>(corrected_rhs(row)), static_cast<double>(rhs(row)), tolerance, "correction-only RHS differs from full assembly");
+
+    // Sentinels expose writes to unselected block components or extra RHS entries.
     const auto blocks = snapshot(system.blocks, exec);
     const auto right = snapshot(system.right, exec);
     for (std::size_t k = 0; k < system.columns.size(); ++k)
@@ -204,17 +228,31 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
             if (i != 1 || j != 1) test::near(static_cast<double>(blocks(k, i, j)), 7., 0., "unselected block coefficient changed");
     for (std::size_t row = 0; row <= system.owned; ++row) for (int c = 0; c < 3; ++c)
         if (row == system.owned || c != 1) test::near(static_cast<double>(right(row, c)), 7., 0., "unselected RHS component/tail changed");
+
+    // The manufactured affine solution must also satisfy the reduced global flux balance.
     const auto balance = op.balance(phi, boundary, law, ts::UniformSource<Real>{0}, correction, time);
     test::near(balance.defect, 0., tolerance*static_cast<double>(comm.size()), "global affine balance");
 }
 
+/// @brief Checks analytic diffusion on an orthogonal line mesh.
 void orthogonal(const Exec& e) { run_case(e, false); }
+
+/// @brief Checks corrected affine diffusion on stretched and skewed cells.
 void nonorthogonal(const Exec& e) { run_case(e, true); }
+
+/// @brief Checks corrected diffusion with gradient, flux and Robin profiles.
 void mixed_profiles(const Exec& e) { run_case(e, true, true); }
+
+/// @brief Checks corrected mixed-boundary diffusion with float storage.
 void float_storage(const Exec& e) { run_case<float>(e, true, true); }
+
+/// @brief Checks assembly and balance for a globally empty mesh.
 void empty(const Exec& e) { run_case(e, false, false, true); }
+
+/// @brief Checks duplicate-face accumulation into shared native graph entries.
 void duplicate(const Exec& e) { run_case(e, false, false, false, true); }
 
+/// @brief Implements a validated zero correction without exposing a gradients member.
 struct ZeroProjection {
     std::size_t expected_cells;
     template<class E> void validate(std::size_t cells) const
@@ -224,6 +262,7 @@ struct ZeroProjection {
     { return std::remove_cvref_t<decltype(c.tx)>{0}; }
 };
 
+/// @brief Checks a correction policy with validation but no gradients data member.
 void custom_correction(const Exec& exec)
 {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
@@ -242,6 +281,7 @@ void custom_correction(const Exec& exec)
     for (std::size_t i = 0; i < x.extent(0); ++i) test::near(x(i), y(i), Real{0}, "custom correction without a gradients member");
 }
 
+/// @brief Triggers invalid geometry, correction data, communicator or boundary/coefficient values.
 void rejection(const Exec& exec, std::string_view which)
 {
     const auto comm = mpi::CommView::world(); auto f = skew_grid(comm);
@@ -261,15 +301,30 @@ void rejection(const Exec& exec, std::string_view which)
     td::DiffusionOperator(a.plan).add_residual_async(field, residual, boundary, status, law, correction);
     (void)status.check(comm); check(false, "invalid diffusion input was accepted");
 }
+
+/// @brief Rejects auxiliary metrics inconsistent with mesh geometry.
 void stale_metric(const Exec& e) { rejection(e, "stale_metric"); }
+
+/// @brief Rejects a corrected plan missing interpolation weights.
 void missing_weights(const Exec& e) { rejection(e, "missing_weights"); }
+
+/// @brief Rejects a diffusion plan with a null communicator.
 void null_comm(const Exec& e) { rejection(e, "null_comm"); }
+
+/// @brief Rejects gradient data shorter than the local cell range.
 void short_gradient(const Exec& e) { rejection(e, "short_gradient"); }
+
+/// @brief Rejects a nonfinite gradient used by a correction.
 void nan_gradient(const Exec& e) { rejection(e, "nan_gradient"); }
+
+/// @brief Rejects a negative diffusion coefficient during assembly.
 void bad_coefficient(const Exec& e) { rejection(e, "bad_coefficient"); }
+
+/// @brief Rejects a nonfinite prescribed boundary value.
 void bad_profile(const Exec& e) { rejection(e, "bad_profile"); }
 } // namespace
 
+/// @brief Runs native diffusion cases or one isolated invalid-input case.
 int main(int argc, char** argv)
 {
     const std::array cases{test::Case{"orthogonal", orthogonal}, test::Case{"nonorthogonal", nonorthogonal},

@@ -1,3 +1,4 @@
+# Euler module cases cover flux conservation, boundary coupling and explicit MPI publication.
 add_executable(krona_test_euler test_euler.cpp)
 target_link_libraries(krona_test_euler PRIVATE
     krona_test_support krona::execution krona::mpi krona::boundary_physical krona::riemann)
@@ -10,6 +11,7 @@ foreach(case IN ITEMS profiled_walls profiled_inlet uniform split_additive affin
     set_tests_properties("transport.euler.${case}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS "transport;euler"
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
+# Repeat interface-orientation and conservation checks across MPI partitions.
 foreach(ranks IN ITEMS 2 3)
     add_test(NAME "transport.euler.mpi${ranks}" COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
         ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_euler>" ${MPIEXEC_POSTFLAGS} distributed)

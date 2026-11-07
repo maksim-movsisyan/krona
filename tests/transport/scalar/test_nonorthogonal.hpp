@@ -7,15 +7,19 @@
 KOKKOS_INLINE_FUNCTION Real affine_value(Real x,Real y,Real z)
 {return Real{2}+Real(0.7)*x-Real(1.1)*y+Real(0.6)*z;}
 
+/// @brief Supplies analytic affine gradient components for independent correction references.
 struct ExactGradient {
     KOKKOS_INLINE_FUNCTION auto operator()(std::size_t) const
     {return Kokkos::Array<Real,3>{Real(0.7),Real(-1.1),Real(0.6)};}
 };
 
+/// @brief Prescribes the analytic skew-grid affine field at boundary face positions.
 struct AffineValue {
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c,Real increment=0)const
     {return bc::FixedValue<Real>{affine_value(c.x,c.y,c.z)}(c,increment);}
 };
+
+/// @brief Supplies an affine-consistent Robin relation including the explicit geometric correction.
 struct AffineRobin { 
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c,Real increment=0)const
     {
@@ -26,12 +30,15 @@ struct AffineRobin {
             -Real{1}/denominator,(value-increment)/denominator};
     }
 };
+
+/// @brief Deliberately makes an implicit boundary slope depend on the explicit correction.
 struct ChangingSlope {
     KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>& c,Real increment=0)const
     {return {0,0,-(Real{1}+increment*increment)/c.distance,0};}
 };
 using SkewBoundary=bc::Manager<Exec,Real,AffineValue,AffineRobin,ChangingSlope>;
 
+/// @brief Assigns fixed or mixed boundary relations matching the exact skew-grid affine field.
 void configure_affine(SkewBoundary& boundary,const Fixture& f,bool mixed=false)
 {
     for(int p=0;p<6;++p)boundary.set(p,AffineValue{});
@@ -47,6 +54,7 @@ void configure_affine(SkewBoundary& boundary,const Fixture& f,bool mixed=false)
     boundary.set(2,AffineRobin{});
 }
 
+/// @brief Checks nonorthogonal correction exactness, residual agreement and unchanged implicit coefficients.
 template<class Storage=double,class Layout=Kokkos::LayoutLeft>
 void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
 {
@@ -94,6 +102,8 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     for(std::size_t i=0;i<hr.extent(0);++i)test::near(hr(i),7.0,tolerance,"corrected affine residual or untouched tail");
     for(LocalIndex i=0;i<f.host.n_own;++i)local_error=std::max(local_error,std::abs(double(hu(i))));
     double global_error=0;mpi::check(MPI_Allreduce(&local_error,&global_error,1,MPI_DOUBLE,MPI_MAX,comm.native()),"uncorrected error");
+
+    // Require an observable uncorrected error so a zero correction cannot pass the skew test.
     if(skew)check(global_error>1e-3,"skew test did not exercise a nonzero correction");
     else check(global_error<tolerance,"zero correction changed orthogonal diffusion");
 
@@ -110,6 +120,8 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     x.copy_from_component_async(phi,exec);x.commit();matrix.apply(x,y);
     const auto ax=copy_view(y.read(exec),exec),b=copy_view(rhs.read(exec),exec);y.commit();rhs.commit();
     for(LocalIndex i=0;i<f.host.n_own;++i)test::near(b(i,0)-ax(i,0),hr(i)-7.0,tolerance,"assembled and matrix-free corrected residual disagree");
+
+    // A correction-only call may update the RHS while leaving the frozen matrix revision unchanged.
     const auto revision=base.revision();
     Kokkos::View<Real*,Space> extra("correction only",f.host.n_own);Kokkos::deep_copy(exec,extra,Real{0});
     status.begin_async();diffusion.add_correction_async(extra,boundary,status,law,correction);(void)status.check(comm);
@@ -118,6 +130,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     for(LocalIndex i=0;i<f.host.n_own;++i)test::near(bb(i,0)+delta(i),b(i,0),tolerance,"correction-only RHS disagrees with complete assembly");
     const auto balance=diffusion.balance(phi,boundary,law,ts::UniformSource<Real>{0},correction);
     test::near(balance.defect,0.0,tolerance*comm.size(),"corrected affine boundary balance");
+
     // The same increment provider must also work with the scalar boundary manager.
     krona::boundary::scalar::Status<Exec> boundary_status_1(exec);
     boundary_status_1.begin_async();
@@ -125,11 +138,19 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     boundary_status_1.check();
 }
 
+/// @brief Checks affine nonorthogonal correction with fixed-value boundaries.
 void corrected_linear(const Exec& exec){corrected_case(exec);}
+
+/// @brief Checks nonorthogonal correction with mixed gradient, flux and Robin boundaries.
 void corrected_mixed(const Exec& exec){corrected_case(exec,true);}
+
+/// @brief Checks corrected diffusion with float/AoS state and gradient storage.
 void corrected_float(const Exec& exec){corrected_case<float,Kokkos::LayoutRight>(exec);}
+
+/// @brief Checks that the same correction path reduces to zero on orthogonal geometry.
 void corrected_orthogonal(const Exec& exec){corrected_case(exec,false,false);}
 
+/// @brief Checks asymmetric gradient interpolation, conservative correction signs and BSR slices.
 void corrected_weights(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=skew_grid(comm);
@@ -183,6 +204,7 @@ void corrected_weights(const Exec& exec)
         test::near(bb(3*i+static_cast<std::size_t>(c),0),c==1?sb(i,0):7.0,1e-11,"corrected BSR RHS slice");
 }
 
+/// @brief Checks empty and zero correction updates preserve their targets.
 void corrected_empty(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();
@@ -213,6 +235,7 @@ void corrected_empty(const Exec& exec)
 
 // External orchestration: field publication -> owned gradients -> gradient publication -> RHS correction -> solve.
 // The immutable matrix and the same linear solver are retained across all outer iterations.
+/// @brief Checks externally orchestrated gradient/correction iterations with matrix and solver reuse.
 void corrected_iterations(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();const auto f=skew_grid(comm);
@@ -258,6 +281,7 @@ void corrected_iterations(const Exec& exec)
         check(matrix.revision()==revision,"outer correction iterations rebuilt the matrix");
     }
     check(iterations>1&&error<=2e-9,"nonorthogonal outer iterations did not converge to affine solution");
+
     // The convenience solver also accepts one frozen-gradient corrected solve.
     krona::boundary::scalar::Status<Exec> boundary_status_3(exec);
     boundary_status_3.begin_async();
@@ -268,6 +292,7 @@ void corrected_iterations(const Exec& exec)
     test::near(diffusion.balance(phi,boundary,law,ts::UniformSource<Real>{0},correction).defect,0.0,1e-7,"corrected rebuilt balance");
 }
 
+/// @brief Triggers missing/inconsistent metrics, invalid gradients or correction-dependent relations.
 template<int Which>
 void rejected_correction(const Exec& exec)
 {

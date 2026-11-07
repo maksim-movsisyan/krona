@@ -1,3 +1,4 @@
+# Temporal tests cover coefficients, additive updates, precision and empty ownership. 
 add_executable(krona_test_scalar_transient test_transient.cpp test_helpers.hpp)
 target_link_libraries(krona_test_scalar_transient PRIVATE krona_test_support krona::transport_scalar_transient)
 
@@ -20,6 +21,7 @@ foreach(ranks IN ITEMS 2 3)
         TIMEOUT 180 PROCESSORS "${ranks}" RUN_SERIAL TRUE)
 endforeach()
  
+# Reject invalid physical inputs, missing status setup and unrepresentable contributions.
 set(cases bad_mass bad_state bad_entry overflow not_started
     zero_step negative_previous_step coefficient_overflow invalid_product)
 set(diagnostics "cell mass must be finite and positive" "time-layer values must be finite"

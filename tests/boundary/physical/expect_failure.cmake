@@ -1,3 +1,4 @@
+# Run one expected physical-boundary failure and match its intended diagnostic.
 execute_process(
     COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1
             ${MPIEXEC_PREFLAGS} "${TEST_EXECUTABLE}" ${MPIEXEC_POSTFLAGS} "${TEST_CASE}"

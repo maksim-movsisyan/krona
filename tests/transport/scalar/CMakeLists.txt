@@ -1,7 +1,9 @@
+# Build independent operator suites first; algebra-based solve tests require Trilinos. 
 add_subdirectory(diffusion)
 add_subdirectory(convection/core)
 add_subdirectory(transient)
 
+# Keep native operator coverage available even when the algebra backend is disabled.
 if(NOT KRONA_ENABLE_TRILINOS)
     return()
 endif()

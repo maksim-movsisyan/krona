@@ -1,6 +1,7 @@
 #pragma once
 
 // Included inside each convection test translation unit's anonymous namespace.
+/// @brief Stores independent line-mesh metrics, incidence and global cell-range metadata.
 struct Fixture {
     mesh::host::MeshPart host;
     mesh::host::MeshAuxConnectivity connectivity;
@@ -8,6 +9,7 @@ struct Fixture {
     int first = 0, total = 0;
 };
 
+/// @brief Builds a distributed line mesh with optional duplicate faces and empty ownership.
 Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false, bool all_empty = false, int boundary_copies = 1)
 {
     Fixture f;
@@ -21,6 +23,8 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
     m.patches.resize(2); m.patches[0].name = "left"; m.patches[1].name = "right";
     m.n_bfaces_g = f.total == 0 ? 0 : static_cast<std::uint64_t>(2*boundary_copies); m.n_labeled_bfaces_g = m.n_bfaces_g;
     for (int i = 0; i < count; ++i) m.cell_centroid_x.push_back(static_cast<GeometryReal>(f.first+i)+GeometryReal{0.5});
+
+    // Append interface ghosts after owned cells and record the matching halo maps.
     for (int peer : {comm.rank()-1, comm.rank()+1}) {
         if (count == 0 || peer < 0 || peer >= active) continue;
         m.nb_ranks.push_back(peer);
@@ -57,6 +61,8 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
         if (count != 0 && comm.rank() == active-1) face(count-1, -1, static_cast<GeometryReal>(f.total), 1, GeometryReal{1}/static_cast<GeometryReal>(boundary_copies), 1);
     }
     m.n_faces = static_cast<LocalIndex>(m.face_owner.size());
+
+    // Build owned-cell face incidence directly from the synthetic face list.
     auto& c = f.connectivity;
     c.active_mask = mesh::AuxConnType::CellFaces; c.n_faces = m.n_faces; c.n_cells_own = m.n_own;
     c.cell_faces_offsets = {0};

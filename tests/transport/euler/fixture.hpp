@@ -21,11 +21,17 @@ using A=krona::AccumulationReal;
 using Gas=krona::thermodynamics::IdealGas<R>;
 using Model=ph::Compressible<Gas>;
 using Boundary=ph::Manager<Model,Exec,R>;
+
+/// @brief Creates the ideal gas used by references with unit gas constant.
 inline Gas gas(){Gas g;g.gas_constant=R{1};return g;}
+
+/// @brief Supplies a constant or affine pressure/velocity/temperature reference state.
 inline ph::Primitive<R,true> profile(double x,bool affine=false)
 {
     return {static_cast<R>(1.+(affine?0.1*x:0.)),{static_cast<R>(3.+(affine?0.2*x:0.)),0,0},static_cast<R>(1.+(affine?0.05*x:0.))};
 }
+
+/// @brief Builds a line of hexahedral cells with optional partitions, skew and unlabelled walls.
 inline krona::mesh::host::MeshPart mesh(krona::mpi::CommView comm,int start,int owned,int total,bool unlabelled=false,double ly=1.,double lz=1.,bool skew=false)
 {
     krona::mesh::host::MeshPart m;m.rank=comm.rank();m.nprocs=comm.size();m.n_own=owned;m.faces_grouped=true;
@@ -42,6 +48,8 @@ inline krona::mesh::host::MeshPart mesh(krona::mpi::CommView comm,int start,int 
         m.face_normal_x.push_back(static_cast<krona::GeometryReal>(nx));m.face_normal_y.push_back(static_cast<krona::GeometryReal>(ny));m.face_normal_z.push_back(static_cast<krona::GeometryReal>(nz));m.face_area.push_back(static_cast<krona::GeometryReal>(nx!=0.?ly*lz:ny!=0.?lz:ly));
     };
     for(int i=0;i+1<owned;++i)face(i,i+1,-1,start+i+1.,0,0,1,0,0);
+
+    // Keep owned-owned faces, partition interfaces and physical boundaries in separate ranges.
     m.n_internal_faces=static_cast<krona::LocalIndex>(m.face_owner.size());
     if(start>0)face(0,local(start-1),-1,start,0,0,-1,0,0);
     if(start+owned<total)face(owned-1,local(start+owned),-1,start+owned,0,0,1,0,0);
@@ -51,6 +59,8 @@ inline krona::mesh::host::MeshPart mesh(krona::mpi::CommView comm,int start,int 
     for(int i=0;i<owned;++i){const double x=start+i+0.5;
         face(i,-1,2,x,-0.5*ly,0,0,-1,0);face(i,-1,2,x,0.5*ly,0,0,1,0);
         face(i,-1,2,x,0,-0.5*lz,0,0,-1);face(i,-1,2,x,0,0.5*lz,0,0,1);}
+
+    // Transform face normals and areas consistently with the affine coordinate skew.
     if(skew){
         for(std::size_t i=0;i<m.cell_centroid_x.size();++i){m.cell_centroid_x[i]+=static_cast<krona::GeometryReal>(0.2)*m.cell_centroid_y[i];m.cell_centroid_y[i]+=static_cast<krona::GeometryReal>(0.3)*m.cell_centroid_z[i];}
         for(std::size_t f=0;f<m.face_owner.size();++f){
@@ -69,6 +79,8 @@ inline krona::mesh::host::MeshPart mesh(krona::mpi::CommView comm,int start,int 
     m.patches.resize(3);m.patches[0].name="left";m.patches[1].name="right";m.patches[2].name="sides";
     return m;
 }
+
+/// @brief Builds owned-cell face lists independently of the production connectivity builder.
 inline krona::mesh::host::MeshAuxConnectivity incidence(const krona::mesh::host::MeshPart& m)
 {
     krona::mesh::host::MeshAuxConnectivity c;c.active_mask=krona::mesh::AuxConnType::CellFaces;
@@ -79,6 +91,8 @@ inline krona::mesh::host::MeshAuxConnectivity incidence(const krona::mesh::host:
         c.cell_faces_offsets.push_back(c.cell_faces.size());
     }return c;
 }
+
+/// @brief Owns host/device geometry, incidence and the Euler plan sharing their lifetime.
 struct Grid {
     krona::mesh::host::MeshPart host;
     krona::mesh::host::MeshAuxConnectivity cache;
@@ -91,6 +105,7 @@ struct Grid {
         connectivity(cache,exec),plan(host,storage.view(),connectivity.view(),comm,exec) {}
 };
 
+/// @brief Owns extended primitive inputs and owned conservative residuals in a selectable layout.
 template<class Layout=Kokkos::LayoutLeft>
 struct Fields {
     krona::fields::FieldStorage<S,1,Exec,Layout> pressure,temperature;
@@ -104,6 +119,8 @@ struct Fields {
         energy("r_E",static_cast<std::size_t>(grid.host.n_own),krona::fields::FieldLocation::Custom,exec),
         momentum("r_m",static_cast<std::size_t>(grid.host.n_own),krona::fields::FieldLocation::Custom,exec) {}
     static std::size_t extended(const Grid& g){return static_cast<std::size_t>(g.host.n_cells+g.host.n_faces-g.host.n_inner_faces);}
+
+    // Adapters borrow primitive inputs; conservative outputs contain owned rows only.
     auto primitive()const{return eu::primitive_fields(pressure.view(),velocity.view(),temperature.view());}
     auto physical(){return ph::primitive_views(pressure.view(),velocity.view(),temperature.view());}
     auto output(){return eu::conservative_fields(mass.view(),momentum.view(),energy.view());}
@@ -117,6 +134,8 @@ struct Fields {
             p(i)=static_cast<S>(q.pressure);t(i)=static_cast<S>(q.temperature);u(i,0)=static_cast<S>(q.velocity.x);u(i,1)=0;u(i,2)=0;}
         krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,pressure.view().kokkos_view(),p);Kokkos::deep_copy(exec,temperature.view().kokkos_view(),t);Kokkos::deep_copy(exec,velocity.view().kokkos_view(),u);});zero(exec);
     }
+
+    // Collect all five conservative components in a common host comparison layout.
     auto snapshot()const{
         Kokkos::View<double*[5],Kokkos::HostSpace> result("snapshot",mass.size());
         const auto r=Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},mass.view().kokkos_view());
@@ -125,12 +144,16 @@ struct Fields {
         for(std::size_t i=0;i<mass.size();++i){result(i,0)=static_cast<double>(r(i));for(int c=0;c<3;++c)result(i,c+1)=static_cast<double>(m(i,c));result(i,4)=static_cast<double>(e(i));}return result;
     }
 };
+
+/// @brief Assigns an exact supersonic inlet, outlet and transverse symmetry walls.
 inline void open_boundaries(Boundary& boundary,bool affine=false)
 {
     const auto left=profile(0.,affine);
     boundary.set(0,ph::SupersonicInlet<R>{left.pressure,left.temperature,left.velocity});
     boundary.set(1,ph::SupersonicOutlet{});boundary.set(2,ph::Symmetry{});
 }
+
+/// @brief Finalizes registration and completes physical boundary publication with status checking.
 template<class B,class F,class... Args>
 void publish_boundary(B& boundary,F fields,Args... args)
 {
@@ -138,5 +161,7 @@ void publish_boundary(B& boundary,F fields,Args... args)
     ph::Status<Exec> status(boundary.execution_space());
     status.begin_async(); boundary.apply_async(fields,status,args...); status.check();
 }
+
+/// @brief Scales comparison tolerance with the configured computation precision.
 inline double tolerance(){return 1024.*static_cast<double>(Kokkos::epsilon_v<R>);}
 }

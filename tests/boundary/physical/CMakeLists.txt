@@ -1,3 +1,4 @@
+# Physical boundary suites cover models, characteristic closures, thermal laws and profiles.
 add_executable(krona_test_physical_boundary test_physical.cpp)
 target_link_libraries(krona_test_physical_boundary PRIVATE
     krona_test_support krona::boundary_physical)
@@ -9,7 +10,7 @@ if(NOT MPIEXEC_EXECUTABLE)
 endif()
 foreach(case IN ITEMS thermodynamics walls evaluate incompressible thermal_liquid extension characteristics relations
                       visitation configuration empty custom distributed)
-    set(ranks 1)
+    set(ranks 1) 
     if(case STREQUAL "distributed")
         set(ranks 2)
     endif() 
@@ -53,6 +54,7 @@ foreach(case IN ITEMS reverse supersonic direction choking no_temperature no_cha
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
 
+# Profile tests also verify unused thermal parameters stay unread in mechanical paths.
 add_executable(krona_test_physical_profiles test_profiles.cpp)
 target_link_libraries(krona_test_physical_profiles PRIVATE krona_test_support krona::boundary_physical)
 foreach(case IN ITEMS walls arrays heat_flux liquid factories shared lambda mechanical_projection once empty distributed)

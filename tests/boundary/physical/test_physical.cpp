@@ -22,16 +22,21 @@ using GasModel=ph::Compressible<Gas,ph::PerfectGasCharacteristics>;
 constexpr Real tolerance=Real{512}*(std::numeric_limits<Real>::epsilon()+
     static_cast<Real>(std::numeric_limits<krona::GeometryReal>::epsilon()));
 
+/// @brief Compares reference values using configured computation/geometry precision.
 template<class A,class B>
 void close(A actual,B expected,const char* message,Real factor=1)
 { near(static_cast<Real>(actual),static_cast<Real>(expected),factor*tolerance*
     std::max(Real{1},Kokkos::abs(static_cast<Real>(expected))),message); }
+
+/// @brief Returns completed host values from the selected execution instance.
 template<class View>
 auto snapshot(const Exec& exec,View v)
 {
     auto h=Kokkos::create_mirror(Kokkos::WithoutInitializing,v);
     Kokkos::deep_copy(exec,h,v);exec.fence();return h;
 }
+
+/// @brief Initializes a primitive component while retaining its host staging allocation.
 template<class V>
 void initialize_component(const Exec& exec,V v,Real value)
 {
@@ -40,6 +45,8 @@ void initialize_component(const Exec& exec,V v,Real value)
     if (v.extent(0)>=3) { h(0)=value;h(1)=value;h(2)=999; }
     Kokkos::deep_copy(exec,v,h);exec.fence();
 }
+
+/// @brief Initializes valid owned states, a distinct ghost and untouched boundary/tail sentinels.
 template<class Views>
 void initialize(const Exec& exec,Views fields)
 {
@@ -50,6 +57,7 @@ void initialize(const Exec& exec,Views fields)
     if constexpr (Views::thermal) initialize_component(exec,fields.temperature,Real{300});
 }
 
+/// @brief Builds physical wall/inlet/outlet ranges with an optional empty local partition.
 krona::mesh::host::MeshPart fixture(bool empty=false)
 {
     krona::mesh::host::MeshPart m;m.faces_grouped=true;
@@ -68,7 +76,11 @@ krona::mesh::host::MeshPart fixture(bool empty=false)
     return m;
 }
 constexpr auto selection=krona::mesh::device::MeshData::FaceCells|krona::mesh::device::MeshData::Geometry;
+
+/// @brief Builds the ideal-gas model and characteristic policy used by reference conditions.
 GasModel gas_model() { return {Gas{},ph::PerfectGasCharacteristics{}}; }
+
+/// @brief Assigns the representative wall, symmetry, inlet, outlet and unlabelled conditions.
 template<class Manager>
 void configure(Manager& manager)
 {
@@ -79,6 +91,7 @@ void configure(Manager& manager)
     manager.set(5,ph::Symmetry{});manager.set_unlabelled(ph::HeatFluxWall<Real>{10,{}});
 }
 
+/// @brief Checks EOS inversions, thermodynamic identities and primitive/conservative round trips.
 void thermodynamics_case(const Exec& exec)
 {
     auto gas=Gas{};gas.validate();
@@ -110,6 +123,7 @@ void thermodynamics_case(const Exec& exec)
     close(h(0,10),Real{100000},"Conservative/primitive round trip");close(h(0,11),Real{300},"Kinetic energy removed before EOS inversion");
 }
 
+/// @brief Checks physical boundary filling and preservation of owner, ghost and extra storage.
 template<class Layout>
 void wall_layout(const Exec& exec)
 {
@@ -146,8 +160,11 @@ void wall_layout(const Exec& exec)
     }
     status.check();
 }
+
+/// @brief Exercises representative physical conditions with both SoA and AoS fields.
 void walls_case(const Exec& exec) { wall_layout<Kokkos::LayoutLeft>(exec);wall_layout<Kokkos::LayoutRight>(exec); }
 
+/// @brief Stores physical and inviscid exterior traces without writing primitive field storage.
 struct Capture {
     Kokkos::View<Real*[10],Memory> result;
     KOKKOS_INLINE_FUNCTION void operator()(const krona::boundary::FaceContext<Real>& c,
@@ -160,6 +177,8 @@ struct Capture {
         result(i,7)=e.exterior.velocity.x;result(i,8)=e.exterior.velocity.y;result(i,9)=e.exterior.velocity.z;
     }
 };
+
+/// @brief Checks physical traces and inviscid exterior states without filling boundary fields.
 void evaluate_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -184,6 +203,8 @@ void evaluate_case(const Exec& exec)
 }
 
 template<class T> concept HasTemperature=requires(T s){s.temperature;};
+
+/// @brief Checks nonthermal incompressible conditions without requiring a temperature member.
 void incompressible_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -204,6 +225,7 @@ void incompressible_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks thermal incompressible walls, inlet temperature and outward heat-flux signs.
 void thermal_liquid_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -229,12 +251,15 @@ void thermal_liquid_case(const Exec& exec)
 }
 
 // Interface test: the boundary layer cannot access a gamma member on this EOS.
+/// @brief Hides gamma to test an EOS interface without direct ideal-gas member access.
 struct WrappedGasEOS {
     Gas implementation;
     [[maybe_unused]] void validate() const { implementation.validate(); }
     template<class S> KOKKOS_INLINE_FUNCTION auto from_pT(S p,S T) const { return implementation.from_pT(p,T); }
     template<class S> KOKKOS_INLINE_FUNCTION auto from_rhoe(S rho,S e) const { return implementation.from_rhoe(rho,e); }
 };
+
+/// @brief Adapts characteristic closures explicitly to the wrapped EOS type.
 struct WrappedCharacteristics {
     [[maybe_unused]] void validate(const WrappedGasEOS&) const {}
     template<class R>
@@ -246,6 +271,8 @@ struct WrappedCharacteristics {
         ph::Primitive<R,true> s,R p) const
     { return ph::PerfectGasCharacteristics{}.outlet(eos.implementation,c,s,p); }
 };
+
+/// @brief Selects material parameters by owner cell rather than requiring face-sized arrays.
 struct PerOwnerModel {
     static constexpr bool compressible=true,thermal=true,has_characteristics=true;
     Array gas_constants;
@@ -257,6 +284,8 @@ struct PerOwnerModel {
         return ph::Compressible{WrappedGasEOS{gas},WrappedCharacteristics{}};
     }
 };
+
+/// @brief Checks opaque EOS/characteristic policies and owner-dependent material selection.
 void extension_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -280,6 +309,7 @@ void extension_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks inlet/outlet invariants, sonic limits, oblique directions and explicit backflow modes.
 void characteristic_case(const Exec& exec)
 {
     Kokkos::View<Real*[22],Memory> result("characteristics",1);
@@ -288,6 +318,8 @@ void characteristic_case(const Exec& exec)
         krona::boundary::FaceContext<Real> c;c.nx=1;c.distance=1;
         const ph::Primitive<Real,true> inside{100000,{100,20,30},300};
         const auto qi=model.thermodynamic(inside);
+
+        // Subsonic outflow retains the outgoing entropy, acoustic invariant and tangential velocity.
         const auto out=ph::evaluate(ph::PressureOutlet<Real>{90000,{}},c,inside,model).face;
         const auto qo=model.thermodynamic(out);
         result(0,0)=out.pressure;result(0,1)=qo.entropy-qi.entropy;
@@ -299,6 +331,8 @@ void characteristic_case(const Exec& exec)
         result(0,6)=choked.pressure;
         auto sup=inside;sup.velocity.x=700;
         result(0,7)=ph::evaluate(ph::PressureOutlet<Real>{90000,{}},c,sup,model).face.pressure;
+
+        // Derive reservoir data from a known inlet state so recovered static values are independent references.
         const ph::Primitive<Real,true> input{100000,{-100,0,0},300};
         const Real T0=input.temperature+input.velocity.norm2()/(Real{2}*model.eos.cp());
         const Real p0=input.pressure*Kokkos::pow(T0/input.temperature,model.eos.gamma/(model.eos.gamma-Real{1}));
@@ -312,12 +346,16 @@ void characteristic_case(const Exec& exec)
         const auto oblique=ph::evaluate(specified,c,input,model).face;
         result(0,14)=oblique.velocity.x;
         c.nx=1;c.ny=0;c.nz=0;
+
+        // Exercise explicit reservoir backflow separately from the default reversal rejection.
         ph::PressureOutlet<Real> reverse{90000,{}};
         reverse.backflow.mode=ph::BackflowMode::TotalConditions;reverse.backflow.reservoir=specified;
         result(0,15)=ph::evaluate(reverse,c,input,model).face.velocity.x;
         const ph::Primitive<Real,true> cold{100000,{-100,0,0},100};
         const auto sonic=ph::evaluate(ph::TotalConditionsInlet<Real>{200000,1000,{-1,0,0},true},c,cold,model).face;
         result(0,16)=sonic.velocity.x/model.thermodynamic(sonic).sound_speed;
+
+        // The incompressible backflow mode preserves normal flow and prescribes direction/temperature.
         const ph::Incompressible<thermo::ThermalConstantDensity<Real>,true> liquid{{1000,4200,273}};
         ph::PressureOutlet<Real> pressure{-10,{}};pressure.backflow.mode=ph::BackflowMode::DirectionTemperature;
         const Real inv=Real{1}/Kokkos::sqrt(Real{2});pressure.backflow.direction={-inv,inv,0};pressure.backflow.temperature=290;
@@ -340,6 +378,7 @@ void characteristic_case(const Exec& exec)
     close(h(0,20),Real{-10},"Liquid backflow pressure");close(h(0,21),Real{-2},"Mach inlet conversion");
 }
 
+/// @brief Checks coupled velocity relations and correction-aware scalar thermal relations.
 void relations_case(const Exec& exec)
 {
     Kokkos::View<Real*[9],Memory> result("relations",1);
@@ -367,12 +406,15 @@ void relations_case(const Exec& exec)
     close(h(0,8),Real{-5},"Heat-flux relation gradient");
 }
 
+/// @brief Inspects registered condition alternatives without evaluating physical states.
 struct RawVisitor {
     Array result;
     template<class Condition>
     KOKKOS_INLINE_FUNCTION void operator()(const krona::boundary::FaceContext<Real>& c,const Condition&) const
     { result(c.boundary_index)=c.area+c.time+(std::is_same_v<Condition,ph::HeatFluxWall<Real>>?Real{10}:Real{0}); }
 };
+
+/// @brief Checks raw condition visitation independently of field values and constitutive laws.
 void visitation_case(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
@@ -385,6 +427,7 @@ void visitation_case(const Exec& exec)
     for (std::size_t i=0;i<6;++i) close(h(i),static_cast<Real>(i+5)+(i==5?Real{10}:Real{0}),"Raw visitation needs no state or flux law");
 }
 
+/// @brief Checks TOML parsing, ID/name binding, aliases and file-driven physical filling.
 void configuration_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -415,6 +458,7 @@ void configuration_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks valid bindings with no local dispatch or field storage.
 void empty_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -430,12 +474,15 @@ void empty_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Supplies a custom time-dependent wall condition for parameter-lifetime checks.
 struct TimedWall {
     template<class R,class Model,class Law,class Correction>
     KOKKOS_INLINE_FUNCTION auto operator()(const krona::boundary::FaceContext<R>& c,
         ph::Primitive<R,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction) const
     { return ph::evaluate(ph::AdiabaticWall<R>{{c.time,0,0}},c,inside,model,law,correction); }
 };
+
+/// @brief Checks custom time-dependent conditions and copied parameters across queued applications.
 void custom_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -455,6 +502,7 @@ void custom_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks a nonempty and an empty MPI rank finish their local boundary work.
 void distributed_case(const Exec& exec)
 {
     int rank=0,ranks=0;krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD,&rank),"rank");
@@ -463,6 +511,7 @@ void distributed_case(const Exec& exec)
     int one=1,total=0;krona::mpi::check(MPI_Allreduce(&one,&total,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD),"join");equal(total,2,"Empty rank joins normally");
 }
 
+/// @brief Constructs deliberately invalid characteristic cases inside a device kernel.
 template<int Which>
 struct RejectDevice {
     GasModel model;
@@ -479,16 +528,28 @@ struct RejectDevice {
         }
     }
 };
+
+/// @brief Launches and completes one deliberately invalid characteristic condition.
 template<int Which>
 void reject_device(const Exec& exec)
 {
     Kokkos::parallel_for("test/reject",Kokkos::RangePolicy<Exec>(exec,0,1),RejectDevice<Which>{gas_model()});
     exec.fence();
 }
+
+/// @brief Rejects outlet flow reversal without an enabled backflow model.
 void reject_reverse(const Exec& exec) { reject_device<0>(exec); }
+
+/// @brief Rejects a declared supersonic inlet whose prescribed velocity is subsonic.
 void reject_supersonic(const Exec& exec) { reject_device<1>(exec); }
+
+/// @brief Rejects a total-condition inlet direction pointing out of the domain.
 void reject_direction(const Exec& exec) { reject_device<2>(exec); }
+
+/// @brief Rejects a sonic inlet solution when choking is not enabled.
 void reject_choking(const Exec& exec) { reject_device<3>(exec); }
+
+/// @brief Rejects thermal wall conditions for a nonthermal model.
 void reject_no_temperature(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
@@ -496,6 +557,8 @@ void reject_no_temperature(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,Real> manager_layout(m,mesh.view(),exec);
     ph::Manager<decltype(model),Exec> manager(manager_layout,model);manager.set(0,ph::IsothermalWall<Real>{300,{}});
 }
+
+/// @brief Rejects characteristic outlet conditions without a compatible characteristic policy.
 void reject_no_characteristics(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
@@ -503,6 +566,8 @@ void reject_no_characteristics(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,Real> manager_layout(m,mesh.view(),exec);
     ph::Manager<decltype(model),Exec> manager(manager_layout,model);manager.set(0,ph::PressureOutlet<Real>{100000,{}});
 }
+
+/// @brief Rejects thermal-flux filling without a constitutive law.
 void reject_missing_law(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -515,6 +580,8 @@ void reject_missing_law(const Exec& exec)
     manager.apply_async(ph::primitive_views(p.view(),u.view(),T.view()),status);
     status.check();
 }
+
+/// @brief Rejects finalization with unassigned boundary ranges.
 void reject_missing_binding(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
@@ -523,16 +590,26 @@ void reject_missing_binding(const Exec& exec)
     manager.finalize();
     manager.for_each_patch([](krona::boundary::PatchRange,const auto&){});
 }
+
+/// @brief Rejects conflicting physical and scalar temperature specifications.
 void reject_conflict(const Exec&)
 { (void)ph::parse_config("[[boundary_condition]]\npatch_id=0\nname='a'\ntype='ADIABATIC_WALL'\n[boundary_condition.scalar.temperature]\ntype='ZERO_GRADIENT'\n"); }
+
+/// @brief Rejects an unknown physical condition type.
 void reject_unknown(const Exec&)
 { (void)ph::parse_config("[[boundary_condition]]\npatch_id=0\nname='a'\ntype='UNKNOWN'\n"); }
+
+/// @brief Rejects misspelled or extra physical-condition TOML keys.
 void reject_typo(const Exec&)
 { (void)ph::parse_config("[[boundary_condition]]\npatch_id=0\nname='a'\ntype='ISOTHERMAL_WALL'\ntemperature=300\ntemperatur=300\n"); }
+
+/// @brief Rejects duplicate physical patch entries.
 void reject_duplicate(const Exec&)
 {
     const std::string t="[[boundary_condition]]\npatch_id=0\nname='a'\ntype='SYMMETRY'\n";(void)ph::parse_config(t+t);
 }
+
+/// @brief Rejects configured patch names inconsistent with mesh IDs.
 void reject_name(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
@@ -541,6 +618,7 @@ void reject_name(const Exec& exec)
     ph::Manager<GasModel,Exec> manager(manager_layout,gas_model(),config); manager.finalize();
 }
 
+/// @brief Rejects one primitive component shorter than the extended field range.
 void reject_short_field(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -552,6 +630,8 @@ void reject_short_field(const Exec& exec)
     manager.apply_async(ph::primitive_components(p,u,v,w,T),status,krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<Real>{2}});
     status.check();
 }
+
+/// @brief Rejects thermal correction gradients shorter than the owned-cell range.
 void reject_short_correction(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
@@ -567,6 +647,7 @@ void reject_short_correction(const Exec& exec)
 }
 }
 
+/// @brief Runs physical boundary cases or one explicitly selected contract failure.
 int main(int argc,char** argv)
 {
     const std::array cases{Case{"thermodynamics",thermodynamics_case},Case{"walls",walls_case},Case{"evaluate",evaluate_case},

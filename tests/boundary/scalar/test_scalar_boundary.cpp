@@ -24,6 +24,7 @@ using Real = krona::ComputeReal;
 using Memory = typename Exec::memory_space;
 using Array = Kokkos::View<Real*, Memory>;
 
+/// @brief Builds labelled, empty and unlabelled ranges with owned cells and one MPI ghost.
 krona::mesh::host::MeshPart fixture()
 {
     krona::mesh::host::MeshPart m;
@@ -49,6 +50,7 @@ krona::mesh::host::MeshPart fixture()
     return m;
 }
 
+/// @brief Assigns fixed-value/gradient conditions and optional unlabelled fixed flux.
 template<class Manager>
 void configure(Manager& manager, bool flux)
 {
@@ -63,6 +65,7 @@ constexpr Real tolerance = Real{128} *
     (std::numeric_limits<Real>::epsilon() +
      static_cast<Real>(std::numeric_limits<krona::GeometryReal>::epsilon()));
 
+/// @brief Counts owner-based material queries to detect evaluation by unrelated conditions.
 struct CountingCoefficient {
     Array values;
     Kokkos::View<int*, Memory> calls;
@@ -73,6 +76,7 @@ struct CountingCoefficient {
     }
 };
 
+/// @brief Stores affine value/gradient coefficients for independent reference checks.
 struct CaptureRelation {
     Kokkos::View<Real*[4], Memory> values;
     KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<Real>& c,
@@ -85,6 +89,7 @@ struct CaptureRelation {
     }
 };
 
+/// @brief Checks corrected boundary values, affine relations and selective coefficient access.
 void reconstruction_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -137,6 +142,7 @@ void reconstruction_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Assembles a prescribed outward flux directly without constitutive conversion.
 struct PrescribedFluxSink {
     Array integrated;
     template<class C>
@@ -148,6 +154,7 @@ struct PrescribedFluxSink {
     }
 };
 
+/// @brief Checks typed/raw visitation, empty-range skipping and direct prescribed-flux assembly.
 void visitation_case(const Exec& exec)
 {
     const auto m = fixture();
@@ -164,6 +171,7 @@ void visitation_case(const Exec& exec)
     equal(patches, 3, "Empty labelled patches do not dispatch");
     equal(faces, 4, "Labelled and unlabelled ranges cover the boundary");
     Array flux("integrated_flux", 4);
+
     // Raw visitation intentionally needs no transport law, even with FixedFlux.
     manager.for_each_face_async(PrescribedFluxSink{flux});
     auto host = Kokkos::create_mirror(flux); Kokkos::deep_copy(exec, host, flux); exec.fence();
@@ -171,11 +179,13 @@ void visitation_case(const Exec& exec)
     equal(host(3), Real{40}, "Prescribed flux is assembled directly with area and sign");
 }
 
+/// @brief Supplies a custom condition depending on face coordinates and evaluation time.
 struct TimeValue {
     KOKKOS_INLINE_FUNCTION scalar::Relation<Real> operator()(const bc::FaceContext<Real>& c, Real t) const
     { return scalar::FixedValue<Real>{c.x + Real{2}*c.time}(c, t); }
 };
 
+/// @brief Checks custom space/time conditions and parameter snapshots across queued submissions.
 void custom_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -207,6 +217,7 @@ void custom_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks flux-to-gradient signs, constitutive round trips and correction-aware relations.
 void relations_case(const Exec& exec)
 {
     Kokkos::View<Real*[5], Memory> result("relations", 1);
@@ -230,6 +241,7 @@ void relations_case(const Exec& exec)
     near(host(0, 4), Real{-2}, tolerance, "Integer arguments preserve floating coefficient arithmetic");
 }
 
+/// @brief Checks empty partition registration, dispatch and required field extent.
 void empty_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -248,6 +260,7 @@ void empty_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks prescribed values/derivatives ignore unavailable owner values and unused data.
 void independent_value_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -272,6 +285,7 @@ void independent_value_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Changes only the normal gradient component and preserves owner tangential components.
 template<class Q, class X, class Y, class Z>
 struct ReconstructBoundaryGradient {
     Q q;
@@ -288,6 +302,8 @@ struct ReconstructBoundaryGradient {
         const Real pz = static_cast<Real>(gz(p));
         const Real owner_value = r.gradient_owner == Real{0} ? Real{0} : static_cast<Real>(q(p));
         const Real normal = r.normal_gradient(owner_value);
+
+        // Replace the owner normal derivative while retaining both tangential components.
         const Real delta = normal - (c.nx*px + c.ny*py + c.nz*pz);
         gx(c.extended_index) = static_cast<typename X::non_const_value_type>(px + c.nx*delta);
         gy(c.extended_index) = static_cast<typename Y::non_const_value_type>(py + c.ny*delta);
@@ -295,6 +311,7 @@ struct ReconstructBoundaryGradient {
     }
 };
 
+/// @brief Reconstructs boundary gradients with the prescribed normal and preserved owner tangents.
 void boundary_gradients_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -309,6 +326,8 @@ void boundary_gradients_case(const Exec& exec)
     bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
     scalar::Manager<Exec, Real> manager(manager_layout);
     configure(manager, true);
+
+    // Keep the scalar field independent: relation evaluation writes only boundary-gradient outputs.
     Array q("q", 7), coefficient("coefficient", 2);
     auto hq = Kokkos::create_mirror(q);
     Kokkos::deep_copy(hq, Real{-777});
@@ -344,6 +363,7 @@ void boundary_gradients_case(const Exec& exec)
 }
 
 // Matches data/bc.toml: two owned cells, one MPI ghost and three labelled patches.
+/// @brief Builds the mesh matching the TOML fixture with optional skew, unlabelled or empty ranges.
 krona::mesh::host::MeshPart file_fixture(bool skew = false, bool unlabelled = false, bool empty = false)
 {
     using G = krona::GeometryReal;
@@ -384,9 +404,11 @@ krona::mesh::host::MeshPart file_fixture(bool skew = false, bool unlabelled = fa
 constexpr auto selection = krona::mesh::device::MeshData::FaceCells |
                            krona::mesh::device::MeshData::Geometry;
 
+/// @brief Reads the scalar conditions corresponding to the shared TOML mesh fixture.
 scalar::Configuration file_configuration()
 { return scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "temperature"); }
 
+/// @brief Completes an independent host snapshot on the supplied execution instance.
 template<class View>
 auto snapshot(const Exec& exec, View view)
 {
@@ -396,6 +418,7 @@ auto snapshot(const Exec& exec, View view)
     return host;
 }
 
+/// @brief Initializes reference cell values while retaining the staging buffer until completion.
 template<class View>
 void initialize_component(const Exec& exec, View view)
 {
@@ -403,10 +426,12 @@ void initialize_component(const Exec& exec, View view)
     Kokkos::deep_copy(host, Real{-99});
     if (host.extent(0) >= 3) { host(0) = 7; host(1) = 11; host(2) = 42; }
     Kokkos::deep_copy(exec, view, host);
+
     // The host staging allocation is local to this helper.
     exec.fence();
 }
 
+/// @brief Checks text/file parsing, scalar-specific data and patch binding by both ID and name.
 void config_case(const Exec& exec)
 {
     std::ifstream file(KRONA_BOUNDARY_TEST_DATA);
@@ -444,6 +469,7 @@ void config_case(const Exec& exec)
     equal(empty.patches.size(), std::size_t{0}, "Explicit empty patch array is accepted");
 }
 
+/// @brief Checks file-driven filling, later condition updates and independent scalar configurations.
 void file_fill_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -482,6 +508,7 @@ void file_fill_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks one selected field component while preserving other components and trailing storage.
 template<class Layout>
 void layout_case(const Exec& exec)
 {
@@ -507,9 +534,11 @@ void layout_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Exercises boundary filling with both SoA and AoS field layouts.
 void layouts_case(const Exec& exec)
 { layout_case<Kokkos::LayoutLeft>(exec); layout_case<Kokkos::LayoutRight>(exec); }
 
+/// @brief Supplies exact face values from the manufactured affine field.
 struct AffineValue {
     KOKKOS_INLINE_FUNCTION scalar::Relation<Real> operator()(const bc::FaceContext<Real>& c, Real increment) const
     {
@@ -518,6 +547,7 @@ struct AffineValue {
     }
 };
 
+/// @brief Converts evaluated normal-gradient relations into physical flux references.
 template<class Values, class Law>
 struct CapturePhysicalFlux {
     Values owner_values;
@@ -531,6 +561,7 @@ struct CapturePhysicalFlux {
     }
 };
 
+/// @brief Checks exact affine face values and physical fluxes on skew geometry.
 void affine_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -570,6 +601,7 @@ void affine_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Adds local boundary contributions through evaluated affine relations.
 template<class Law>
 struct AddDiffusionBoundary {
     Array diagonal, rhs;
@@ -585,12 +617,14 @@ struct AddDiffusionBoundary {
 };
 
 // A test-local provider demonstrates that face-indexed data remain usable through the generic law.
+/// @brief Supplies face-indexed material values through the generic transport-law contract.
 struct FaceCoefficient {
     Array values;
     KOKKOS_INLINE_FUNCTION Real operator()(const bc::FaceContext<Real>& c) const
     { return values(static_cast<std::size_t>(c.face)); }
 };
 
+/// @brief Checks boundary matrix/RHS signs, area scaling and face-dependent coefficients.
 void assembly_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -630,6 +664,7 @@ void assembly_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks globally required bindings when a rank has no local labelled faces.
 void empty_labels_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -652,6 +687,7 @@ void empty_labels_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Checks local boundary work completes while another MPI rank has no local faces.
 void distributed_case(const Exec& exec)
 {
     int rank = 0, ranks = 0;
@@ -664,6 +700,7 @@ void distributed_case(const Exec& exec)
     equal(total, 2, "Rank with no local boundary faces finishes independently");
 }
 
+/// @brief Mutates one mesh/configuration contract before constructing and finalizing a manager.
 template<class Mutation>
 void reject_with_manager(const Exec& exec, Mutation mutation)
 {
@@ -676,15 +713,19 @@ void reject_with_manager(const Exec& exec, Mutation mutation)
     manager.finalize();
 }
 
+/// @brief Rejects a configured patch name that disagrees with its mesh ID.
 void wrong_name_case(const Exec& exec)
 { reject_with_manager(exec, [](auto&, auto& c) { c.patches[0].name = "wrong"; }); }
 
+/// @brief Rejects patch faces that violate the contiguous grouped-range contract.
 void scattered_case(const Exec& exec)
 { reject_with_manager(exec, [](auto& m, auto&) { m.face_patch = {-1, 0, 1, 0, 2}; }); }
 
+/// @brief Rejects a boundary normal giving invalid owner-to-face geometry.
 void invalid_geometry_case(const Exec& exec)
 { reject_with_manager(exec, [](auto& m, auto&) { m.face_normal_x[1] = -1; }); }
 
+/// @brief Rejects missing configuration for an existing unlabelled boundary range.
 void unlabelled_case(const Exec& exec)
 {
     auto m = file_fixture(false, true);
@@ -695,21 +736,26 @@ void unlabelled_case(const Exec& exec)
     manager.finalize();
 }
 
+/// @brief Rejects an unsupported scalar condition type.
 void unknown_type_case(const Exec&)
 { (void)scalar::parse_config("[[boundary_condition]]\npatch_id=0\nname='fixed'\n[boundary_condition.scalar.phi]\ntype='INLET_TOTAL_TP'\n", "phi"); }
 
+/// @brief Rejects unknown TOML keys instead of silently ignoring misspelled parameters.
 void typo_case(const Exec&)
 { (void)scalar::parse_config("[[boundary_condition]]\npatch_id=0\nname='fixed'\n[boundary_condition.scalar.phi]\ntype='FIXED_VALUE'\nvalue=3\nvlaue=4\n", "phi"); }
 
+/// @brief Rejects duplicate patch entries in a scalar configuration.
 void duplicate_case(const Exec&)
 {
     const std::string entry = "[[boundary_condition]]\npatch_id=0\nname='fixed'\n[boundary_condition.scalar.phi]\ntype='ZERO_GRADIENT'\n";
     (void)scalar::parse_config(entry + entry, "phi");
 }
 
+/// @brief Rejects a patch entry lacking the specifically requested scalar configuration.
 void missing_scalar_case(const Exec&)
 { (void)scalar::parse_config("[[boundary_condition]]\npatch_id=0\nname='fixed'\n[boundary_condition.scalar.other]\ntype='ZERO_GRADIENT'\n", "phi"); }
 
+/// @brief Rejects storage shorter than the required extended field range.
 void short_field_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -723,6 +769,7 @@ void short_field_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Rejects correction gradients shorter than the owned-cell range.
 void short_correction_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -738,6 +785,7 @@ void short_correction_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Rejects fixed-flux configuration without a law even when local ranges are empty.
 void missing_law_empty_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -746,10 +794,13 @@ void missing_law_empty_case(const Exec& exec)
     bc::BoundaryLayout<Exec, Real> manager_layout(m, mesh.view(), exec);
     scalar::Manager<Exec, Real> manager(manager_layout, file_configuration());
     manager.finalize();
+
+    // Missing constitutive capability is a configuration error even without a local kernel launch.
     manager.apply_component_async(Array("empty", 0), status);
     status.check();
 }
 
+/// @brief Checks zero-coefficient rejection when Kokkos runtime assertions are enabled.
 void zero_coefficient_case(const Exec& exec)
 {
     // Probe the actual assertion macro rather than assuming a particular Kokkos build configuration.
@@ -769,6 +820,7 @@ void zero_coefficient_case(const Exec& exec)
     exec.fence();
 }
 
+/// @brief Rejects fixed-flux application without a constitutive transport law.
 void missing_law_case(const Exec& exec)
 {
     scalar::Status<Exec> status(exec); status.begin_async();
@@ -783,6 +835,7 @@ void missing_law_case(const Exec& exec)
     status.check();
 }
 
+/// @brief Rejects an unassigned labelled patch even when its local range is empty.
 void missing_binding_case(const Exec& exec)
 {
     const auto m = fixture();
@@ -792,6 +845,7 @@ void missing_binding_case(const Exec& exec)
     manager.set(0, scalar::FixedValue<Real>{7});
     manager.set(1, scalar::NormalGradient<Real>{0});
     manager.set_unlabelled(scalar::NormalGradient<Real>{0});
+
     // Label 2 is locally empty, but still needs an explicit binding.
     manager.finalize();
     manager.for_each_patch([](bc::PatchRange, const auto&) {});
@@ -799,6 +853,7 @@ void missing_binding_case(const Exec& exec)
 
 } // namespace
 
+/// @brief Runs scalar boundary cases and explicitly selected validation failures.
 int main(int argc, char** argv)
 {
     constexpr std::array cases{Case{"reconstruction", reconstruction_case}, Case{"visitation", visitation_case},

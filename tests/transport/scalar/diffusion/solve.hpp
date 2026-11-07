@@ -2,6 +2,7 @@
 
 // Test-only functions, included inside test_diffusion.cpp's anonymous namespace.
 // Matrices/vectors are supplied by the caller when testing graph reuse.
+/// @brief Adds diffusion and sources to reusable native algebra storage and commits the result.
 template<class Matrix, class BoundaryType, class Law,
          class Source = ts::UniformSource<Real>, class Correction = numerics::gradient::NoCorrection>
 void assemble_equation(const Attached& a, Matrix& matrix,
@@ -13,6 +14,8 @@ void assemble_equation(const Attached& a, Matrix& matrix,
     const td::DiffusionOperator<Exec, Real> diffusion(a.plan);
     ts::SourceOperator<Exec, Real> sources(a.mesh.view(), exec);
     ts::AssemblyStatus<Exec> status(exec);
+
+    // Open native write views and zero the system before adding independent operators.
     const auto values = matrix.overwrite_values(exec);
     const auto right = rhs.overwrite(exec);
     const ts::SystemView target{values, Kokkos::subview(right, Kokkos::ALL(), 0), a.assembly.entry_map()};
@@ -21,6 +24,7 @@ void assemble_equation(const Attached& a, Matrix& matrix,
     status.begin_async();
     diffusion.add_system_async(target, boundary, status, law, correction);
     sources.add_async(target.rhs, status, source);
+
     // This fixture solves pure steady diffusion; positive diagonals are its own policy.
     const auto flags = status.device_flags(exec);
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
@@ -31,11 +35,14 @@ void assemble_equation(const Attached& a, Matrix& matrix,
                 ts::detail::flag(flags, ts::detail::BadSystem);
         });
     const auto report = status.check(a.plan.communicator());
+
+    // Close algebra access states before solve; require a boundary anchor for steady diffusion.
     matrix.commit(); rhs.commit();
     mpi::require(matrix.distribution().global_size() == 0 || report.has_diffusion_anchor,
                  "Diffusion test: pure Neumann problem requires an explicit reference");
 }
 
+/// @brief Copies back the owned solution only after convergence, preserving the field on failure.
 template<class Scalar, class PrecScalar, class Component>
 linalg::SolveResult solve_and_publish(linalg::Solver<linalg::CsrMatrix<Scalar, Exec>, PrecScalar>& solver,
     const linalg::Vector<Scalar, Exec>& rhs, linalg::Vector<Scalar, Exec>& solution,
@@ -48,6 +55,7 @@ linalg::SolveResult solve_and_publish(linalg::Solver<linalg::CsrMatrix<Scalar, E
     return result;
 }
 
+/// @brief Builds a scalar test system and solves/publishes through the shared assembly helpers.
 template<class Scalar = SolverReal, class PrecScalar = PreconditionerReal,
          class Component, class BoundaryType,
          class Law = transport::IsotropicDiffusion<transport::UniformCoefficient<Real>>,

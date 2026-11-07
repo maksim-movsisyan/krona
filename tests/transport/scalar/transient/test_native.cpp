@@ -13,6 +13,7 @@ namespace tt = transport::scalar::transient;
 namespace ts = transport::scalar;
 namespace nt = numerics::time;
 
+/// @brief Checks temporal assembly into native CSR and selected BSR coefficient/RHS views.
 void native(const Exec& exec)
 {
     Tpetra::ScopeGuard tpetra(nullptr, nullptr);
@@ -27,6 +28,8 @@ void native(const Exec& exec)
     tt::TransientOperator<Exec, double> op(2, exec);
     ts::AssemblyStatus<Exec> status(exec);
     using NativeScalar = SolverReal;
+
+    // Assemble into native CSR write views, then commit before inspecting coefficients.
     linalg::CsrMatrix<NativeScalar, Exec> csr(pattern);
     linalg::Vector<NativeScalar, Exec> csr_rhs(distribution);
     const auto cv = csr.edit_values(exec);
@@ -41,6 +44,8 @@ void native(const Exec& exec)
         test::equal(ca(i), 4.0, "Native CSR temporal diagonal");
         test::equal(cb(i), 12.0*static_cast<double>(i+1), "Native CSR temporal RHS");
     }
+
+    // Select one block component and preserve all other matrix and RHS entries.
     linalg::BsrMatrix<NativeScalar, Exec> bsr(pattern, 3);
     linalg::Vector<NativeScalar, Exec> bsr_rhs(bsr.distribution());
     const auto blocks = bsr.edit_blocks(exec);
@@ -63,11 +68,14 @@ void native(const Exec& exec)
     }
 }
 
+/// @brief Guards native integration while the shared harness owns MPI and Kokkos.
 void run_native(const Exec& exec)
 {
     mpi::guarded([&] { test::complete(exec, [&] { native(exec); }); });
 }
 } // namespace
+
+/// @brief Runs the native temporal-assembly integration case.
 int main(int argc, char** argv)
 {
     const std::array cases{test::Case{"native", run_native}};

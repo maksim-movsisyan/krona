@@ -1,3 +1,4 @@
+# Algebra integration checks convection entries, deferred corrections and composed solves. 
 add_executable(krona_test_scalar_convection test_convection.cpp)
 target_link_libraries(krona_test_scalar_convection PRIVATE krona_test_support krona::transport_scalar)
 if(NOT MPIEXEC_EXECUTABLE)

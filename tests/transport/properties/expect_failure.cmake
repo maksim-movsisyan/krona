@@ -1,3 +1,4 @@
+# Require the expected fatal validation message, not merely an arbitrary child failure.
 foreach(required IN ITEMS PROGRAM CASE EXPECT MPIEXEC_EXECUTABLE MPIEXEC_NUMPROC_FLAG)
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "Missing ${required}")

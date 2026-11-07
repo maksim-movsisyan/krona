@@ -1,6 +1,7 @@
 #pragma once
 
 // Shared analytical fixtures; included inside the tests' anonymous namespace.
+/// @brief Stores analytic host metrics and auxiliary data independently of production mesh generation.
 struct Fixture {
     mesh::host::MeshPart host;
     mesh::host::MeshAuxConnectivity connectivity;
@@ -8,6 +9,7 @@ struct Fixture {
     int first = 0, total = 0;
 };
 
+/// @brief Builds an analytic line mesh with optional duplicate faces and empty ranks.
 Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false, bool all_empty = false)
 { 
     Fixture f;
@@ -21,6 +23,8 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
     m.patches.resize(2); m.patches[0].name = "left"; m.patches[1].name = "right";
     m.n_bfaces_g = f.total == 0 ? 0 : 2; m.n_labeled_bfaces_g = m.n_bfaces_g;
     for (int i = 0; i < count; ++i) m.cell_centroid_x.push_back(static_cast<GeometryReal>(f.first+i)+GeometryReal{0.5});
+
+    // Append neighbouring-rank ghost cells and record one-cell halo segments.
     for (int peer : {comm.rank()-1, comm.rank()+1}) {
         if (count == 0 || peer < 0 || peer >= active) continue;
         m.nb_ranks.push_back(peer); 
@@ -70,6 +74,7 @@ Fixture bar(mpi::CommView comm, bool duplicate = false, bool empty_last = false,
 }
 
 // Stretched/sheared parallelepipeds with independently computed face metrics.
+/// @brief Builds stretched/sheared cells with independently computed face metrics.
 Fixture skew_grid(mpi::CommView comm, bool skew = true)
 {
     Fixture f; 

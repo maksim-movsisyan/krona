@@ -1,3 +1,4 @@
+# Scalar boundary suites cover affine relations, extended storage and profile providers. 
 add_executable(krona_test_scalar_boundary test_scalar_boundary.cpp)
 target_link_libraries(krona_test_scalar_boundary PRIVATE
     krona_test_support krona::boundary_scalar)
@@ -64,6 +65,7 @@ foreach(case IN ITEMS missing_law missing_binding wrong_name scattered unlabelle
     endif()
 endforeach()
 
+# Profiles have separate lifecycle, stride, range and sampling-count checks.
 add_executable(krona_test_scalar_profiles test_profiles.cpp)
 target_link_libraries(krona_test_scalar_profiles PRIVATE krona_test_support krona::boundary_scalar)
 foreach(case IN ITEMS relations analytic arrays array_kinds independent shared vectors once lambda distributed)

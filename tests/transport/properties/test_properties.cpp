@@ -12,13 +12,18 @@ using krona::test::Exec;
 using krona::test::check;
 using krona::test::near;
 
+/// @brief Provides only the temperature member needed by thermal coefficient laws.
 template<class R> struct Temperature { R temperature; };
+
+/// @brief Proves that constant coefficient laws require no temperature member.
 struct ColdState {};
 
+/// @brief Compares a coefficient using a tolerance scaled by the reference magnitude.
 template<class R>
 void relative(R actual, R expected, R tolerance, std::string_view message)
 { near(actual, expected, tolerance*std::abs(expected), message); }
  
+/// @brief Checks constant coefficients without thermal state access, including zero values.
 void constants(const Exec&)
 {
     const auto model = p::TransportProperties{p::ConstantViscosity{0.001}, p::ConstantConductivity{0.6}};
@@ -30,10 +35,13 @@ void constants(const Exec&)
     const auto zero = p::TransportProperties{p::ConstantViscosity{0.}, p::ConstantConductivity{0.}};
     zero.validate();
     check(zero(ColdState{}).valid(), "zero constant coefficients allowed");
+
+    // Unused thermal data must not invalidate a constant-coefficient model.
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     check(model(Temperature<double>{nan}).valid(), "constants do not inspect unused temperature");
 }
  
+/// @brief Checks the viscosity curve, reference value and large-temperature arithmetic.
 void sutherland(const Exec&)
 {
     const auto law = p::SutherlandViscosity{1.716e-5, 273.15, 110.4};
@@ -51,12 +59,15 @@ void sutherland(const Exec&)
     const auto no_shift = p::SutherlandViscosity{2., 4., 0.};
     no_shift.validate();
     near(no_shift.evaluate<double>(Temperature<double>{16.}), 4., 0., "S=0 gives square-root law");
+
+    // A representable large-temperature result must survive intermediate arithmetic.
     const float high = law.evaluate<float>(Temperature<float>{1.e30f});
     const double expected = 1.716e-5*std::pow(1.e30/273.15, 1.5)*(273.15+110.4)/(1.e30+110.4);
     check(std::isfinite(high), "avoid overflow in T^(3/2) at representable high temperature");
     relative(static_cast<double>(high), expected, 5.e-7, "high-temperature arithmetic");
 }
 
+/// @brief Checks conductivity derived from viscosity, heat capacity and constant Prandtl number.
 void prandtl(const Exec&)
 {
     const auto cp = p::ConstantHeatCapacity{1005.};
@@ -71,21 +82,26 @@ void prandtl(const Exec&)
     near(combined.evaluate<double>(ColdState{}).thermal_conductivity, conductivity, 0., "same combined result");
 }
 
+/// @brief Supplies an independent temperature-dependent heat-capacity policy.
 struct LinearHeatCapacity {
     template<class R, class State>
     KOKKOS_INLINE_FUNCTION R evaluate(const State& state) const
     { return R{1000} + static_cast<R>(0.1)*(static_cast<R>(state.temperature)-R{300}); }
 };
 
+/// @brief Counts viscosity evaluations to detect duplicate policy calls.
 struct CountViscosity {
     int* calls;
     template<class R, class State> KOKKOS_INLINE_FUNCTION R evaluate(const State&) const { ++*calls; return static_cast<R>(0.002); }
 };
+
+/// @brief Counts heat-capacity evaluations used by the conductivity policy.
 struct CountHeatCapacity {
     int* calls;
     template<class R, class State> KOKKOS_INLINE_FUNCTION R evaluate(const State&) const { ++*calls; return R{1200}; }
 };
 
+/// @brief Checks custom heat-capacity policies and exactly one evaluation of each coefficient.
 void custom(const Exec&)
 {
     const auto law = p::TransportProperties{p::ConstantViscosity{2.e-5},
@@ -93,6 +109,8 @@ void custom(const Exec&)
     law.validate(); // Custom policy intentionally has no validate(): no configurable parameters.
     const auto result = law.evaluate<double>(Temperature<double>{500.});
     relative(result.thermal_conductivity, 2.e-5*1020./0.8, 2.e-15, "state-dependent cp policy");
+
+    // Reuse the computed viscosity when evaluating conductivity, rather than calling it twice.
     int viscosity_calls = 0, cp_calls = 0;
     const auto counted = p::TransportProperties{CountViscosity{&viscosity_calls},
         p::ConstantPrandtl{0.75, CountHeatCapacity{&cp_calls}}};
@@ -102,6 +120,7 @@ void custom(const Exec&)
     relative(counted_result.thermal_conductivity, 3.2, 2.e-15, "computed viscosity passed to conductivity");
 }
 
+/// @brief Checks explicit arithmetic types, promotion and the default ComputeReal selection.
 void precision(const Exec&)
 {
     const auto law = p::TransportProperties{p::SutherlandViscosity{1.716e-5, 273.15, 110.4},
@@ -119,16 +138,21 @@ void precision(const Exec&)
     check(default_value.valid() && promoted.valid(), "default and promoted precision");
 }
 
+/// @brief Supplies prescribed invalid values for runtime result validation.
 struct InvalidHeatCapacity {
     double value;
     template<class R, class State> KOKKOS_INLINE_FUNCTION R evaluate(const State&) const { return static_cast<R>(value); }
 };
+
+/// @brief Checks invalid temperatures, heat capacities and nonfinite or negative coefficients.
 void invalid_states(const Exec&)
 {
     const auto law = p::TransportProperties{p::SutherlandViscosity{1.716e-5, 273.15, 110.4},
         p::ConstantPrandtl{0.72, p::ConstantHeatCapacity{1005.}}};
     for (double t : {0., -1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
         check(!law.evaluate<double>(Temperature<double>{t}).valid(), "invalid temperature propagates");
+
+    // Zero viscosity must not mask an invalid heat-capacity result.
     for (double cp : {0., -1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
         const auto bad = p::TransportProperties{p::ConstantViscosity{0.}, p::ConstantPrandtl{1., InvalidHeatCapacity{cp}}};
         check(!bad.evaluate<double>(ColdState{}).valid(), "invalid cp cannot hide behind zero viscosity");
@@ -138,6 +162,7 @@ void invalid_states(const Exec&)
     check(!p::Coefficients<double>{std::numeric_limits<double>::infinity(), 1.}.valid(), "nonfinite coefficient");
 }
 
+/// @brief Checks transport properties using a thermodynamic state and explicitly supplied EOS heat capacity.
 void eos(const Exec&)
 {
     const krona::thermodynamics::IdealGas<double> gas{};
@@ -151,6 +176,7 @@ void eos(const Exec&)
     relative(result.dynamic_viscosity*gas.cp()/result.thermal_conductivity, 0.72, 2.e-15, "EOS cp used explicitly");
 }
 
+/// @brief Evaluates transport coefficients at a different temperature in each kernel entry.
 template<class R, class Model, class Output>
 struct EvaluateBatch {
     Model model;
@@ -159,6 +185,7 @@ struct EvaluateBatch {
     { output(i) = model.template evaluate<R>(Temperature<R>{R{250} + R{10}*static_cast<R>(i)}); }
 };
 
+/// @brief Checks completed device coefficients against independent viscosity and conductivity formulas.
 template<class R, class Model>
 void batch(const Exec& exec, Model model)
 {
@@ -180,6 +207,8 @@ void batch(const Exec& exec, Model model)
         relative(static_cast<double>(host(i).thermal_conductivity), mu*cp/0.72, tolerance, "device conductivity");
     }
 }
+
+/// @brief Exercises custom transport-property policies in float and double device kernels.
 void device(const Exec& exec)
 {
     const auto model = p::TransportProperties{p::SutherlandViscosity{1.716e-5, 273.15, 110.4},
@@ -189,20 +218,35 @@ void device(const Exec& exec)
     batch<double>(exec, model);
 }
 
+/// @brief Rejects a negative configured viscosity.
 void reject_mu(const Exec&) { p::ConstantViscosity{-1.}.validate(); }
+
+/// @brief Rejects a negative configured conductivity.
 void reject_k(const Exec&) { p::ConstantConductivity{-1.}.validate(); }
+
+/// @brief Rejects zero configured heat capacity.
 void reject_cp(const Exec&) { p::ConstantHeatCapacity{0.}.validate(); }
+
+/// @brief Rejects zero configured Prandtl number.
 void reject_pr(const Exec&) { p::ConstantPrandtl{0., p::ConstantHeatCapacity{1005.}}.validate(); }
+
+/// @brief Rejects a nonpositive reference viscosity.
 void reject_sutherland_mu(const Exec&) { p::SutherlandViscosity{0., 273.15, 110.4}.validate(); }
+
+/// @brief Rejects a nonpositive reference temperature.
 void reject_sutherland_temperature(const Exec&) { p::SutherlandViscosity{1.716e-5, 0., 110.4}.validate(); }
+
+/// @brief Rejects a negative Sutherland shift.
 void reject_sutherland_shift(const Exec&) { p::SutherlandViscosity{1.716e-5, 273.15, -1.}.validate(); }
 
 // Simulate validation in an external/user policy which throws instead of using MPI helpers.
+/// @brief Emulates an external policy whose validator throws instead of using MPI helpers.
 struct ThrowingValidation {
     const char* message;
     void validate() const { throw std::runtime_error(message); }
 };
 
+/// @brief Checks that an exception from custom viscosity validation becomes a fatal diagnostic.
 void reject_custom_viscosity(const Exec&)
 {
     const auto model = p::TransportProperties{
@@ -212,6 +256,7 @@ void reject_custom_viscosity(const Exec&)
     check(false, "throwing viscosity validator unexpectedly returned");
 }
  
+/// @brief Checks that an exception from custom heat-capacity validation becomes a fatal diagnostic.
 void reject_custom_cp(const Exec&)
 {
     const auto model = p::ConstantPrandtl{0.72, ThrowingValidation{"custom heat capacity validation failed"}};
@@ -220,6 +265,7 @@ void reject_custom_cp(const Exec&)
     check(false, "throwing heat-capacity validator unexpectedly returned");
 }
 
+/// @brief Runs property cases or one isolated configuration-rejection case.
 int main(int argc, char** argv)
 {
     const std::array cases{

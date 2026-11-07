@@ -23,8 +23,11 @@ using Model=ph::Compressible<thermo::IdealGas<R>,ph::PerfectGasCharacteristics>;
 constexpr auto mesh_data=krona::mesh::device::MeshData::FaceCells|krona::mesh::device::MeshData::Geometry;
 constexpr R tol=static_cast<R>(1e-5);
 
+/// @brief Returns completed host values from the supplied execution-space instance.
 template<class View> auto snapshot(const Exec& exec,View view)
 { auto host=Kokkos::create_mirror(Kokkos::WithoutInitializing,view); Kokkos::deep_copy(exec,host,view);exec.fence();return host; }
+
+/// @brief Builds a mixed boundary catalog with an optional empty local partition.
 krona::mesh::host::MeshPart fixture(bool empty=false)
 {
     krona::mesh::host::MeshPart m;m.faces_grouped=true;
@@ -37,6 +40,8 @@ krona::mesh::host::MeshPart fixture(bool empty=false)
     m.face_normal_x={1,1,1,1};m.face_normal_y=m.face_normal_z={0,0,0,0};m.face_area={2,3,4,5};
     return m;
 }
+
+/// @brief Owns primitive component arrays initialized to a valid reference state.
 struct Fields {
     Array p,u,v,w,T;
     Fields(const Exec& exec,std::size_t n):p("p",n),u("u",n),v("v",n),w("w",n),T("T",n)
@@ -46,26 +51,38 @@ struct Fields {
     }
     auto views() const { return ph::primitive_components(p,u,v,w,T); }
 };
+
+/// @brief Binds the remaining labelled and unlabelled ranges for each profile test.
 template<class B> void rest(B& boundary)
 {
     boundary.set(1,ph::Symmetry{});boundary.set(2,ph::Symmetry{});boundary.set_unlabelled(ph::AdiabaticWall<R>{});
 }
+
+/// @brief Supplies wall temperature varying with tangential position and time.
 struct Temperature {
     template<class C>KOKKOS_INLINE_FUNCTION auto operator()(const C& c)const
     { using T=std::remove_cvref_t<decltype(c.time)>;return T{350}+T{10}*c.y+T{5}*c.time; }
 };
+
+/// @brief Supplies a wall velocity varying with time and face position.
 struct Velocity {
     template<class C>KOKKOS_INLINE_FUNCTION auto operator()(const C& c)const
     { using T=std::remove_cvref_t<decltype(c.time)>;return ph::Vector<T>{T{0},c.time,c.y}; }
 };
+
+/// @brief Supplies an outward thermal flux varying with evaluation time.
 struct Flux {
     template<class C>KOKKOS_INLINE_FUNCTION auto operator()(const C& c)const
     { using T=std::remove_cvref_t<decltype(c.time)>;return T{8}+T{2}*c.time; }
 };
+
+/// @brief Aborts if isothermal filling reads an irrelevant temperature correction.
 struct NoTemperatureOnFirstPatch {
     KOKKOS_INLINE_FUNCTION R operator()(const bc::FaceContext<R>& c)const
     { if(c.face<2)Kokkos::abort("Isothermal filling must not read temperature correction");return 0; }
 };
+
+/// @brief Stores physical face and inviscid exterior states for independent wall comparisons.
 struct Capture {
     Kokkos::View<R*[10],Space> values;
     KOKKOS_INLINE_FUNCTION void operator()(const bc::FaceContext<R>& c,const ph::Evaluation<ph::Primitive<R,true>>& s)const
@@ -77,6 +94,8 @@ struct Capture {
         values(b,8)=s.exterior.velocity.z;values(b,9)=s.exterior.temperature;
     }
 };
+
+/// @brief Checks moving isothermal wall profiles and distinct physical/inviscid exterior states.
 void walls_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -96,6 +115,8 @@ void walls_case(const Exec& exec)
     near(q(0,6),R{-100},tol,"Inviscid mirror reverses relative normal velocity");
     near(q(0,7),R{20},tol,"Inviscid tangential velocity stays interior");near(q(0,9),R{300},tol,"Wall temperature does not alter inviscid thermal state");
 }
+
+/// @brief Checks borrowed strided wall-temperature profiles and live buffer updates.
 void arrays_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -117,6 +138,8 @@ void arrays_case(const Exec& exec)
     check(boundary.finalized(),"Content update needs no refinalization");
     near(snapshot(exec,temperature)(0,0),-77.0f,1e-6f,"Unselected input component preserved");
 }
+
+/// @brief Checks outward heat-flux conversion and face-specific tangential temperature correction.
 void heat_flux_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -125,6 +148,8 @@ void heat_flux_case(const Exec& exec)
     boundary.set(0,wall);boundary.set_unlabelled(wall);boundary.finalize();
     Fields fields(exec,layout.required_field_size());Array gx("gx",2),gy("gy",2),gz("gz",2);
     Kokkos::deep_copy(exec,gx,R{0});Kokkos::deep_copy(exec,gy,R{4});Kokkos::deep_copy(exec,gz,R{0});
+
+    // Only the temperature correction is active; the supplied law converts outward flux to gradient.
     const ph::Corrections correction{grad::NoCorrection{},ph::ZeroVelocityIncrement{},grad::GradientCorrection{grad::cell_gradients(gx,gy,gz)}};
     const auto law=krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<R>{2}};
     ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status,law,correction,R{2});status.check();
@@ -132,9 +157,13 @@ void heat_flux_case(const Exec& exec)
     near(T(3),R{296},tol,"Flux-to-gradient conversion plus tangential correction");near(T(4),R{292},tol,"Face-specific tangential offset");
     near(T(6),R{291},tol,"Unlabelled heat-flux profile");
 }
+
+/// @brief Supplies a known inward velocity profile for incompressible inlet checks.
 struct InletVelocity {
     KOKKOS_INLINE_FUNCTION ph::Vector<R> operator()(const bc::FaceContext<R>& c)const { return {-10,c.time,1}; }
 };
+
+/// @brief Checks profiled incompressible velocity/temperature with admissible negative gauge pressure.
 void liquid_case(const Exec& exec)
 {
     using Liquid=ph::Incompressible<thermo::ThermalConstantDensity<R>,true>;
@@ -147,6 +176,7 @@ void liquid_case(const Exec& exec)
     near(snapshot(exec,fields.u)(3),R{-10},tol,"Velocity inlet profile");near(snapshot(exec,fields.T)(3),R{365},tol,"Velocity inlet temperature profile");
 }
 
+/// @brief Compares profiled characteristic factories against equivalent numeric conditions in a kernel.
 template<class T>
 void direct_factories(const Exec& exec)
 {
@@ -180,8 +210,11 @@ void direct_factories(const Exec& exec)
     const auto h=snapshot(exec,difference);
     for(int c=0;c<8;++c)near(h(0,c),T{0},static_cast<T>(1e-3),"Profiled and numeric characteristic closures agree");
 }
+
+/// @brief Runs characteristic-factory equivalence checks in float and double.
 void factories_case(const Exec& exec){direct_factories<float>(exec);direct_factories<double>(exec);}
 
+/// @brief Checks scalar and physical managers share one catalog but retain independent fields.
 void shared_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -189,12 +222,16 @@ void shared_case(const Exec& exec)
     sc::Manager<Exec,R> scalar(layout);
     for(krona::mesh::PatchId p=0;p<3;++p){physical.set(p,ph::IsothermalWall<R>{350,{}});scalar.set(p,sc::FixedValue<R>{500});}
     physical.set_unlabelled(ph::AdiabaticWall<R>{});scalar.set_unlabelled(sc::NormalGradient<R>{0});physical.finalize();scalar.finalize();
+
+    // Shared geometry/catalog ownership must not couple condition registration or field values.
     check(&physical.catalog()==&scalar.catalog(),"Scalar and physical managers share one catalog");
     Fields fields(exec,layout.required_field_size());Array q("scalar",layout.required_field_size());Kokkos::deep_copy(exec,q,R{20});
     ph::Status<Exec> ps(exec);sc::Status<Exec> ss(exec);ps.begin_async();ss.begin_async();
     physical.apply_async(fields.views(),ps);scalar.apply_component_async(q,ss);ps.check();ss.check();
     near(snapshot(exec,fields.T)(3),R{350},tol,"Independent physical field");near(snapshot(exec,q)(3),R{500},tol,"Independent scalar field");
 }
+
+/// @brief Checks captured wall-profile lambdas through rebinding and numeric/configuration replacement.
 void lambda_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -214,10 +251,14 @@ void lambda_case(const Exec& exec)
     config.unlabelled=ph::AdiabaticWall<double>{};boundary.configure(config);boundary.finalize();
     status.begin_async();boundary.apply_async(fields.views(),status);status.check();near(snapshot(exec,fields.T)(3),R{370},tol,"Configuration assignment works with a nonassignable lambda alternative");
 }
+
+/// @brief Aborts if a mechanical-only Euler path evaluates a thermal wall parameter.
 struct UnusedThermal {
     template<class C>KOKKOS_INLINE_FUNCTION R operator()(const C&)const
     { Kokkos::abort("Inviscid mechanical mirror must not sample thermal parameters"); return 0; }
 };
+
+/// @brief Checks inviscid mechanical mirrors never sample unused wall thermal profiles.
 void mechanical_projection_case(const Exec& exec)
 {
     Array output("mirror",2);
@@ -232,10 +273,14 @@ void mechanical_projection_case(const Exec& exec)
     });
     const auto h=snapshot(exec,output);near(h(0),R{-100},tol,"Prepared mirror bypasses wall heat flux");near(h(1),R{-100},tol,"Evaluated mirror bypasses wall temperature");
 }
+
+/// @brief Counts wall-temperature samples for active and inactive condition alternatives.
 struct Counter {
     Kokkos::View<int*,Space> calls;
     KOKKOS_INLINE_FUNCTION R operator()(const bc::FaceContext<R>& c)const {++calls(c.boundary_index);return 350;}
 };
+
+/// @brief Checks each active wall parameter is sampled exactly once per face.
 void once_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -245,6 +290,8 @@ void once_case(const Exec& exec)
     ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
     const auto h=snapshot(exec,calls);equal(h(0),1,"One parameter sample per first face");equal(h(1),1,"One sample per second face");equal(h(2),0,"Unassigned alternative is not sampled");
 }
+
+/// @brief Checks empty patch arrays and field views on an empty partition.
 void empty_case(const Exec& exec)
 {
     const auto host=fixture(true);krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);
@@ -253,21 +300,30 @@ void empty_case(const Exec& exec)
     ph::Manager<Model,Exec,R,decltype(wall)> boundary(layout,Model{});rest(boundary);boundary.set(0,wall);boundary.finalize();
     Fields fields(exec,0);ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
+
+/// @brief Checks one rank with profile faces while another rank has no local boundary work.
 void distributed_case(const Exec& exec)
 {
     int rank=0; krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD,&rank),"rank");
+
+    // Each rank performs only its local boundary work; the empty rank has no profile entries.
     if(rank==0)arrays_case(exec);else empty_case(exec);
 }
 
+/// @brief Supplies a nonfinite physical parameter profile.
 struct Invalid {
     KOKKOS_INLINE_FUNCTION R operator()(const bc::FaceContext<R>&)const{return Kokkos::quiet_NaN_v<R>;}
 };
+
+/// @brief Rejects a nonfinite sampled wall-temperature profile.
 void invalid_profile_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     const auto wall=ph::isothermal_wall<R>(Invalid{});ph::Manager<Model,Exec,R,decltype(wall)> boundary(layout,Model{});rest(boundary);boundary.set(0,wall);boundary.finalize();
     Fields fields(exec,layout.required_field_size());ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
+
+/// @brief Rejects a zero inlet-direction profile.
 void invalid_direction_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
@@ -275,44 +331,60 @@ void invalid_direction_case(const Exec& exec)
     ph::Manager<Model,Exec,R,decltype(inlet)> boundary(layout,Model{});rest(boundary);boundary.set(0,inlet);boundary.finalize();
     Fields fields(exec,layout.required_field_size());ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
+
+/// @brief Rejects visitation after a boundary assignment invalidates finalization.
 void dirty_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     ph::Manager<Model,Exec,R> boundary(layout,Model{});rest(boundary);boundary.set(0,ph::IsothermalWall<R>{350,{}});boundary.finalize();
     boundary.set(0,ph::IsothermalWall<R>{360,{}});boundary.for_each_patch([](bc::PatchRange,const auto&){});
 }
+
+/// @brief Rejects a wall-profile array shorter than its patch range.
 void short_array_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);Array data("short",1);
     const auto wall=ph::isothermal_wall<R>(pr::patch_values(layout.catalog().patches()[0].range,data));
     ph::Manager<Model,Exec,R,decltype(wall)> boundary(layout,Model{});boundary.set(0,wall);
 }
+
+/// @brief Rejects a wall profile attached to a different boundary range.
 void wrong_range_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);Array data("one",1);
     const auto wall=ph::isothermal_wall<R>(pr::patch_values(layout.catalog().unlabelled(),data));
     ph::Manager<Model,Exec,R,decltype(wall)> boundary(layout,Model{});boundary.set(1,wall);
 }
+
+/// @brief Rejects heat-flux walls without a constitutive law even on an empty partition.
 void missing_law_case(const Exec& exec)
 {
     const auto host=fixture(true);krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     const auto wall=ph::heat_flux_wall<R>(Flux{});ph::Manager<Model,Exec,R,decltype(wall)> boundary(layout,Model{});rest(boundary);boundary.set(0,wall);boundary.finalize();
     Fields fields(exec,0);ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);
 }
+
+/// @brief Rejects an incompressible velocity-inlet condition in a compressible manager.
 void incompatible_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     const auto inlet=ph::velocity_inlet<R>(InletVelocity{},Temperature{});ph::Manager<Model,Exec,R,decltype(inlet)> boundary(layout,Model{});boundary.set(0,inlet);
 }
+
+/// @brief Rejects a nonphysical owner state before constructing boundary values.
 void interior_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     ph::Manager<Model,Exec,R> boundary(layout,Model{});rest(boundary);boundary.set(0,ph::Symmetry{});boundary.finalize();Fields fields(exec,layout.required_field_size());
     Kokkos::deep_copy(exec,fields.p,R{-1});ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
+
+/// @brief Produces a finite double correction unrepresentable in float destination storage.
 struct HugeCorrection {
     KOKKOS_INLINE_FUNCTION double operator()(const bc::FaceContext<double>&)const{return 1e100;}
 };
+
+/// @brief Checks that an unrepresentable output component prevents all writes for its face.
 void output_case(const Exec& exec)
 {
     using Liquid=ph::Incompressible<thermo::ConstantDensity<double>,false>;
@@ -321,20 +393,28 @@ void output_case(const Exec& exec)
     Kokkos::View<float*,Space> p("p",7),u("u",7),v("v",7),w("w",7);Kokkos::deep_copy(exec,p,100.0f);Kokkos::deep_copy(exec,u,1.0f);Kokkos::deep_copy(exec,v,2.0f);Kokkos::deep_copy(exec,w,3.0f);
     const ph::Corrections correction{HugeCorrection{},ph::ZeroVelocityIncrement{},grad::NoCorrection{}};
     ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(ph::primitive_components(p,u,v,w),status,sc::NoFluxLaw{},correction);
+
+    // Inspect the untouched face before the expected fatal status check.
     exec.fence();equal(snapshot(exec,u)(3),1.0f,"An unrepresentable component skips the whole face write");status.check();
 }
+
+/// @brief Reports an explicit state error through the manager-provided error sink.
 struct CheckedCustom {
     template<class Real,class M,class L,class C,class E>
     KOKKOS_INLINE_FUNCTION auto operator()(const bc::FaceContext<Real>&,ph::Primitive<Real,M::thermal> inside,
         const M&,const L&,const C&,const E& errors)const
     { errors.fail(ph::Error::State,"Custom boundary rejected its state");return ph::Evaluation{inside,inside}; }
 };
+
+/// @brief Checks error reporting from a custom boundary with an explicit error sink.
 void checked_custom_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
     ph::Manager<Model,Exec,R,CheckedCustom> boundary(layout,Model{});rest(boundary);boundary.set(0,CheckedCustom{});boundary.finalize();
     Fields fields(exec,layout.required_field_size());ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
+
+/// @brief Rejects reversed outlet flow without an enabled backflow model.
 void backflow_case(const Exec& exec)
 {
     const auto host=fixture();krona::mesh::device::MeshStorage<Exec> mesh(host,{.data=mesh_data},exec);bc::BoundaryLayout<Exec,R> layout(host,mesh.view(),exec);
@@ -342,6 +422,8 @@ void backflow_case(const Exec& exec)
     Fields fields(exec,layout.required_field_size());Kokkos::deep_copy(exec,fields.u,R{-10});ph::Status<Exec> status(exec);status.begin_async();boundary.apply_async(fields.views(),status);status.check();
 }
 } // namespace
+
+/// @brief Runs physical-profile cases or a selected validation failure.
 int main(int argc,char**argv)
 {
     constexpr std::array cases{Case{"walls",walls_case},Case{"arrays",arrays_case},Case{"heat_flux",heat_flux_case},Case{"liquid",liquid_case},
