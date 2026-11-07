@@ -1,0 +1,47 @@
+[mesh]
+name = "Two-block channel"
+vertices = [
+    [0.0, 0.0, 0.0], # 0
+    [1.0, 0.0, 0.0], # 1
+    [1.0, 1.0, 0.0], # 2
+    [0.0, 1.0, 0.0], # 3
+    [0.0, 0.0, 1.0], # 4
+    [1.0, 0.0, 1.0], # 5
+    [1.0, 1.0, 1.0], # 6
+    [0.0, 1.0, 1.0], # 7
+    [2.0, 0.0, 0.0], # 8
+    [2.0, 1.0, 0.0], # 9
+    [2.0, 1.0, 1.0], # 10
+    [2.0, 0.0, 1.0], # 11
+]
+
+[[blocks]]
+name = "left"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [8, 12, 6]
+
+[[blocks]]
+name = "right"
+vertices = [1, 8, 9, 2, 5, 11, 10, 6]
+cells = [10, 12, 6]
+
+[[boundaries]]
+name = "inlet"
+faces = [[3, 0, 4, 7]]
+
+[[boundaries]]
+name = "outlet"
+faces = [[8, 9, 10, 11]]
+
+[[boundaries]]
+name = "walls"
+faces = [
+    [0, 3, 2, 1],   # Left block: bottom.
+    [1, 2, 9, 8],   # Right block: bottom.
+    [4, 5, 6, 7],   # Left block: top.
+    [5, 11, 10, 6], # Right block: top.
+    [0, 1, 5, 4],   # Left block: front.
+    [1, 8, 11, 5],  # Right block: front.
+    [2, 3, 7, 6],   # Left block: back.
+    [9, 2, 6, 10],  # Right block: back.
+]

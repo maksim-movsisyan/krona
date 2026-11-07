@@ -1,0 +1,46 @@
+# Channel: geometric spacing along x, symmetric clustering toward y walls.
+# Geometric grading = last-cell width / first-cell width; tanh grading = strength.
+# Run: mpirun -np 4 krona_mesh_generator graded_channel.toml graded_channel.cgns -v
+# Vertex indices are zero-based; each block follows HEXA_8 order.
+
+[mesh]
+name = "Graded channel"
+scale = 1.0
+vertices = [
+  [0, 0, 0.0], # 0
+  [4, 0, 0.0], # 1
+  [4, 1, 0.0], # 2
+  [0, 1, 0.0], # 3
+  [0, 0, 0.2], # 4
+  [4, 0, 0.2], # 5
+  [4, 1, 0.2], # 6
+  [0, 1, 0.2], # 7
+]
+
+[[blocks]]
+name = "channel"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [48, 32, 8]
+grading_type = ["geometric", "tanh_both", "uniform"]
+grading = [2.0, 2.5, 1.0]
+
+[[boundaries]]
+name = "inlet"
+faces = [
+  [3, 0, 4, 7],
+]
+
+[[boundaries]]
+name = "outlet"
+faces = [
+  [1, 2, 6, 5],
+]
+
+[[boundaries]]
+name = "walls"
+faces = [
+  [0, 3, 2, 1],
+  [0, 1, 5, 4],
+  [2, 3, 7, 6],
+  [4, 5, 6, 7],
+]

@@ -539,17 +539,18 @@ endif()
     #=======================
     #=== MESH GENERATION ===
     #=======================
-#if(KRONA_ENABLE_CGNS)
-#    add_library(krona_mesh_generation STATIC
-#        src/mesh/generation/config.cpp
-#        src/mesh/generation/topology.cpp
-#        src/mesh/generation/writer.cpp)
-#    add_library(krona::mesh_generation ALIAS krona_mesh_generation)
-#    krona_public_headers(krona_mesh_generation PUBLIC)
-#    target_link_libraries(krona_mesh_generation
-#        PUBLIC krona::build_config krona::mpi
-#        PRIVATE krona::warnings krona::tomlplusplus krona::cgns)
-#endif()
+if(KRONA_ENABLE_CGNS)
+    add_library(krona_mesh_generation STATIC
+        src/mesh/generation/config.cpp
+        src/mesh/generation/topology.cpp
+        src/mesh/generation/writer.cpp
+        src/mesh/generation/validation.cpp)
+    add_library(krona::mesh_generation ALIAS krona_mesh_generation)
+    krona_public_headers(krona_mesh_generation PUBLIC)
+    target_link_libraries(krona_mesh_generation
+        PUBLIC krona::build_config krona::mpi
+        PRIVATE krona::warnings krona::toml_config krona::cgns)
+endif()
 
 
 #==================================================================
@@ -559,11 +560,9 @@ if(KRONA_BUILD_APPLICATIONS)
     #======================
     #=== MESH GENERATOR ===
     #======================
-#    if(KRONA_ENABLE_CGNS)
-#        add_executable(krona_mesh_generator apps/mesh_generator.cpp)
-#        target_link_libraries(krona_mesh_generator PRIVATE
-#            krona::mesh_generation krona::warnings) #krona::build_config krona::mpi
-#    endif()
+    if(KRONA_ENABLE_CGNS)
+        add_subdirectory(apps/mesh_generator)
+    endif()
 
 endif()
     
@@ -572,7 +571,7 @@ endif()
 #==== ADD BUILDING TESTING ========================================
 #==================================================================
 if(BUILD_TESTING)
-#    add_subdirectory(tests)
+    add_subdirectory(tests)
 endif()
 
 
