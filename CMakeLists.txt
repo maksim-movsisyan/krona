@@ -639,6 +639,11 @@ krona_interface(mesh_device krona::mesh_types krona::execution krona::mpi)
 krona_interface(fields krona::execution krona::mpi)
 
 
+    #=====================
+    #=== HALO EXHANGER ===
+    #=====================
+krona_interface(halo krona::execution krona::mpi krona::mesh_device krona::fields)
+
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================
