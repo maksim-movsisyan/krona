@@ -11,12 +11,18 @@ target_compile_features(krona_test_support_host_only INTERFACE cxx_std_20)
 target_link_libraries(krona_test_support_host_only INTERFACE krona::mpi krona::warnings)
 
 add_subdirectory(math)
-if(KRONA_ENABLE_CGNS)
-    add_subdirectory(mesh/generation)
-endif()
 add_subdirectory(mesh)
 add_subdirectory(fields)
 add_subdirectory(halo)
 if(KRONA_ENABLE_TRILINOS)
     add_subdirectory(linalg)
 endif() 
+
+add_subdirectory(numerics)
+
+add_subdirectory(boundary/scalar)
+add_subdirectory(boundary/physical)
+
+add_subdirectory(transport/properties)
+add_subdirectory(transport/scalar)
+add_subdirectory(transport/euler)

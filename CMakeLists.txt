@@ -657,6 +657,75 @@ if(KRONA_ENABLE_TRILINOS)
         PRIVATE krona::warnings)
 endif()
 
+
+    #======================
+    #=== THERMODYNAMICS ===
+    #======================   
+krona_interface(thermodynamics krona::execution krona::mpi)
+
+
+    #================
+    #=== NUMERICS ===
+    #================
+krona_interface(gradient krona::mesh_device krona::fields krona::math)
+krona_interface(reconstruction krona::math krona::fields)
+krona_interface(reconstruction_mesh krona::reconstruction krona::mesh_device)
+krona_interface(riemann krona::execution krona::mpi krona::thermodynamics)
+krona_interface(viscous krona::execution)
+krona_interface(time_derivative krona::execution krona::mpi)
+
+
+    #========================
+    #=== SCALAR TRANSPORT ===
+    #========================   
+# Molecular transport properties; independent of EOS, mesh and transport operators.
+krona_interface(transport_properties krona::execution krona::mpi)
+krona_interface(transport_diffusion krona::execution)
+
+
+    #==================================
+    #=== SCALAR BOUNDARY CONDITIONS ===
+    #==================================
+add_library(krona_boundary_scalar STATIC src/boundary/scalar/config.cpp)
+add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
+target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
+krona_public_headers(krona_boundary_scalar PUBLIC)
+target_link_libraries(krona_boundary_scalar
+    PUBLIC krona::mesh_device krona::fields krona::mpi krona::gradient krona::math
+    PRIVATE krona::warnings krona::tomlplusplus)
+
+    
+    #====================================
+    #=== PHYSICAL BOUNDARY CONDITIONS ===
+    #====================================
+add_library(krona_boundary_physical STATIC src/boundary/physical/config.cpp)
+add_library(krona::boundary_physical ALIAS krona_boundary_physical)
+target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
+krona_public_headers(krona_boundary_physical PUBLIC)
+target_link_libraries(krona_boundary_physical
+    PUBLIC krona::boundary_scalar krona::gradient krona::math
+    PRIVATE krona::warnings krona::tomlplusplus)
+
+
+    #========================
+    #=== SCALAR TRANSPORT ===
+    #========================
+add_library(krona_transport_scalar_config STATIC src/transport/scalar/config.cpp)
+add_library(krona::transport_scalar_config ALIAS krona_transport_scalar_config)
+krona_public_headers(krona_transport_scalar_config PUBLIC)
+target_compile_features(krona_transport_scalar_config PUBLIC cxx_std_20)
+target_link_libraries(krona_transport_scalar_config
+    PUBLIC krona::gradient krona::mpi
+    PRIVATE krona::warnings krona::tomlplusplus)
+
+krona_interface(transport_scalar_diffusion krona::transport_diffusion krona::mesh_device krona::boundary_scalar krona::gradient krona::mpi)
+krona_interface(transport_scalar_convection krona::mesh_device krona::boundary_scalar krona::reconstruction_mesh krona::fields krona::mpi)
+krona_interface(transport_scalar_transient krona::execution krona::mpi)
+krona_interface(transport_scalar krona::transport_scalar_config krona::transport_scalar_diffusion 
+                krona::transport_scalar_convection krona::transport_scalar_transient
+                krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+
+                
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================

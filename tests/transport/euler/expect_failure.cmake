@@ -1,0 +1,20 @@
+foreach(required IN ITEMS PROGRAM CASE EXPECT MPIEXEC_EXECUTABLE MPIEXEC_NUMPROC_FLAG)
+    if(NOT DEFINED ${required})
+        message(FATAL_ERROR "Missing ${required}")
+    endif()
+endforeach()
+execute_process(
+    COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS}
+        "${PROGRAM}" ${MPIEXEC_POSTFLAGS} "${CASE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 60)
+if("${result}" STREQUAL "0")
+    message(FATAL_ERROR "${CASE} unexpectedly succeeded")
+endif()
+if(NOT "${result}" MATCHES "^-?[0-9]+$")
+    message(FATAL_ERROR "${CASE} did not terminate normally: ${result}\n${output}\n${error}")
+endif()
+set(log "${output}\n${error}")
+string(FIND "${log}" "${EXPECT}" match)
+if(match EQUAL -1)
+    message(FATAL_ERROR "${CASE} failed for the wrong reason: ${result}; expected '${EXPECT}'\n${log}")
+endif()
