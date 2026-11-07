@@ -1,3 +1,4 @@
+# All exchange cases use the common MPI/Kokkos test harness.
 add_executable(krona_test_halo test_halo.cpp)
 target_link_libraries(krona_test_halo PRIVATE krona_test_support krona::halo)
 
@@ -6,11 +7,12 @@ if(NOT MPIEXEC_EXECUTABLE)
 endif()
 
 foreach(case IN ITEMS loopback roundtrip multi_peer one_way isolated integer selected)
+    # Loopback needs one rank; multi-peer and isolated cases need three; others need two.
     set(ranks 2)
     if(case STREQUAL "loopback")
         set(ranks 1)
     elseif(case STREQUAL "multi_peer" OR case STREQUAL "isolated")
-        set(ranks 3)
+        set(ranks 3) 
     endif()
     add_test(NAME "halo.${case}"
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
