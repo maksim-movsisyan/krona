@@ -56,8 +56,7 @@ struct Metrics {
           geometry{g.n_faces, g.has_face_cell_dist_vector(), g.has_face_interp_weights(),
                    g.face_cell_dist_x, g.face_cell_dist_y, g.face_cell_dist_z, g.face_interp_weight}, options(o) {}
 
-    KOKKOS_INLINE_FUNCTION std::size_t sample(LocalIndex cell, LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION std::size_t sample(LocalIndex cell, LocalIndex face) const {
         const std::size_t f = static_cast<std::size_t>(face);
         if (face >= mesh.sizes.n_inner_faces)
             return static_cast<std::size_t>(mesh.sizes.n_cells) + static_cast<std::size_t>(face - mesh.sizes.n_inner_faces);
@@ -66,8 +65,7 @@ struct Metrics {
     }
 
     template<class Real>
-    KOKKOS_INLINE_FUNCTION void displacement(LocalIndex cell, LocalIndex face, Real d[3]) const
-    {
+    KOKKOS_INLINE_FUNCTION void displacement(LocalIndex cell, LocalIndex face, Real d[3]) const {
         const std::size_t i = static_cast<std::size_t>(cell), f = static_cast<std::size_t>(face);
         const bool boundary = face >= mesh.sizes.n_inner_faces;
         if (geometry.has_face_cell_dist_vector()) {
@@ -88,8 +86,7 @@ struct Metrics {
     }
 
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Real owner_weight(std::size_t face) const
-    {
+    KOKKOS_INLINE_FUNCTION Real owner_weight(std::size_t face) const {
         return options.interpolation == Interpolation::AuxiliaryWeights ? static_cast<Real>(geometry.face_interp_weight(face)) : Real{0.5};
     }
 };

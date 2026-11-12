@@ -9,7 +9,7 @@
 
 namespace krona::mesh::host {
 
-/// @brief Owns migration payloads with arbitrary contiguous cell and coordinate ownership.
+/// @brief Owns migration payloads with arbitrary contiguous cell and coordinate ownership. 
 struct MigrationSource {
     ElementTable cells;
     Coordinates coordinates;

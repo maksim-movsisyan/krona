@@ -22,8 +22,7 @@ The module does not depend on a mesh object. It does not perform MPI communicati
 #include <Kokkos_Core.hpp>
 #include <cstddef>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     krona::mpi::Runtime runtime{argc, argv};
     return krona::mpi::guarded([&] {
         Kokkos::ScopeGuard kokkos{argc, argv};

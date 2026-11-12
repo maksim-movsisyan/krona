@@ -17,15 +17,13 @@ struct MonotonizedCentral {
     { return Kokkos::max(R{0}, Kokkos::min(R{2}, Kokkos::min(R{2}*r, (R{1}+r)/R{2}))); }
 };
 struct VanLeer {
-    template<class R> KOKKOS_INLINE_FUNCTION R operator()(R r) const
-    {
+    template<class R> KOKKOS_INLINE_FUNCTION R operator()(R r) const {
         if (!(r > R{0})) return R{0};
         return r <= R{1} ? R{2}*r/(R{1}+r) : R{2}/(R{1}+R{1}/r);
     }
 };
 struct VanAlbada {
-    template<class R> KOKKOS_INLINE_FUNCTION R operator()(R r) const
-    {
+    template<class R> KOKKOS_INLINE_FUNCTION R operator()(R r) const {
         if (!(r > R{0})) return R{0};
         if (r > R{1}) { const R inv = R{1}/r; return (R{1}+inv)/(R{1}+inv*inv); }
         return r*(r+R{1})/(r*r+R{1});
@@ -39,8 +37,7 @@ struct Koren {
 
 struct BarthJespersen {
     template<class R>
-    KOKKOS_INLINE_FUNCTION R operator()(const LimiterContext<R>& c) const
-    {
+    KOKKOS_INLINE_FUNCTION R operator()(const LimiterContext<R>& c) const {
         if (c.increment == R{0}) return R{1};
         const R allowed = c.increment > R{0} ? c.maximum-c.value : c.minimum-c.value;
         return Kokkos::max(R{0}, Kokkos::min(R{1}, allowed/c.increment));
@@ -64,8 +61,7 @@ template<class Regularization = ZeroRegularization>
 struct Venkatakrishnan {
     Regularization regularization{};
     template<class R>
-    KOKKOS_INLINE_FUNCTION R operator()(const LimiterContext<R>& c) const
-    {
+    KOKKOS_INLINE_FUNCTION R operator()(const LimiterContext<R>& c) const {
         if (c.increment == R{0}) return R{1};
         const R a = Kokkos::abs(c.increment);
         const R b = Kokkos::max(R{0}, c.increment > R{0} ? c.maximum-c.value : c.value-c.minimum);

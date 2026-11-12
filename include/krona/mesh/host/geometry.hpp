@@ -8,7 +8,7 @@
 
 namespace krona::mesh::host {
 
-/// @brief Geometry statistics; cell volumes count owned cells, face extrema include local copies.
+/// @brief Geometry statistics; cell volumes count owned cells, face extrema include local copies. 
 struct GeometryStats {
     double total_volume = 0;
     double min_cell_volume = std::numeric_limits<double>::infinity();

@@ -35,8 +35,7 @@ static_assert(std::is_same_v<GeometryReal, float> || std::is_same_v<GeometryReal
 
 /// @brief Reports a failed CGNS call without allocating an error string.
 void check_cgns(int code, const char* operation,
-                std::source_location where = std::source_location::current()) noexcept
-{
+                std::source_location where = std::source_location::current()) noexcept {
     if (code == CG_OK) return;
     // Preserve the library's explanation before terminating WORLD.
     char message[1024]{};
@@ -46,8 +45,7 @@ void check_cgns(int code, const char* operation,
 
 /// @brief Reports a failed low-level CGIO operation.
 void check_cgio(int code, const char* operation,
-                std::source_location where = std::source_location::current()) noexcept
-{
+                std::source_location where = std::source_location::current()) noexcept {
     if (code == 0) return;
     // CGIO has its own error reporting API.
     char error[81]{}, message[1024]{};
@@ -57,8 +55,7 @@ void check_cgio(int code, const char* operation,
 }
 
 /// @brief Converts a source count or ID to the project's global index type.
-[[nodiscard]] GlobalIndex global_index(cgsize_t value)
-{
+[[nodiscard]] GlobalIndex global_index(cgsize_t value) {
     // Narrow global indices remain an explicit project configuration choice.
     mpi::require(value >= 0 && std::in_range<GlobalIndex>(value),
            "CGNS index exceeds GlobalIndex; use 64-bit global indices");
@@ -66,23 +63,20 @@ void check_cgio(int code, const char* operation,
 }
 
 /// @brief Converts an allocation size without wrapping size_t.
-[[nodiscard]] std::size_t host_size(std::int64_t value)
-{
+[[nodiscard]] std::size_t host_size(std::int64_t value) {
     mpi::require(value >= 0 && std::in_range<std::size_t>(value), "Import size exceeds host address space");
     return static_cast<std::size_t>(value);
 }
 
 /// @brief Checks that owned entity ordinals fit LocalIndex.
-void check_local_size(GlobalIndex count)
-{
+void check_local_size(GlobalIndex count) {
     // Check once at a distribution boundary, not in element loops.
     mpi::require(std::in_range<LocalIndex>(count),
            "Owned entity count exceeds LocalIndex; use more ranks or 64-bit local indices");
 }
 
 /// @brief Checks legacy section types without reading their connectivity.
-void check_legacy_sections(int file, double parent, int version, std::size_t level = 0)
-{
+void check_legacy_sections(int file, double parent, int version, std::size_t level = 0) {
     constexpr std::array<std::string_view, 3> labels{"CGNSBase_t", "Zone_t", "Elements_t"};
     int children = 0;
     check_cgio(cgio_number_children(file, parent, &children), "Count CGNS probe children");
@@ -126,8 +120,7 @@ void check_legacy_sections(int file, double parent, int version, std::size_t lev
 }
 
 /// @brief Probes the file version and rejects only legacy bulk-conversion paths.
-void check_source_format(const std::string& path)
-{
+void check_source_format(const std::string& path) {
     // Read the version first; inspect section headers only for legacy formats.
     int probe = -1;
     double root = 0, version_id = 0;
@@ -154,15 +147,13 @@ void check_source_format(const std::string& path)
 }
 
 /// @brief Owns the open file until its explicit collective close.
-struct File final 
-{
+struct File final {
     mpi::CommView comm;
     int id = -1;
     int cgio = -1;
 
     /// @brief Opens an HDF5-backed CGNS file on the supplied communicator.
-    File(const std::string& path, mpi::CommView view, const ReaderOptions& options) : comm(view)
-    {
+    File(const std::string& path, mpi::CommView view, const ReaderOptions& options) : comm(view) {
         check_source_format(path);
         // CGIO typed reads below inherit this parallel transfer mode.
         check_cgns(cgp_mpi_comm(comm.native()), "cgp_mpi_comm");
@@ -176,8 +167,7 @@ struct File final
     }
 
     /// @brief Prevents accidental implicit collective close during exception unwinding.
-    ~File() noexcept
-    {
+    ~File() noexcept {
         // read_parallel catches exceptions while this file is still alive.
         if (id >= 0) mpi::fatal("CGNS file escaped its explicit collective close");
     }
@@ -187,8 +177,7 @@ struct File final
     File& operator=(const File&) = delete;
 
     /// @brief Closes the file collectively and releases borrowed CGNS configuration.
-    void close()
-    {
+    void close() {
         check_cgns(cgp_close(id), "cgp_close");
         id = -1;
         // Do not leave process-global CGNS state referring to a borrowed communicator/info.
@@ -198,16 +187,14 @@ struct File final
     }
 
     /// @brief Resolves one named child in the file's CGIO tree.
-    [[nodiscard]] double child(double parent, const char* name) const
-    {
+    [[nodiscard]] double child(double parent, const char* name) const {
         double node = 0;
         check_cgio(cgio_get_node_id(cgio, parent, name, &node), name);
         return node;
     }
 };
 
-struct IntegerArray 
-{
+struct IntegerArray {
     double id = 0;
     int dimensions = 0;
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> shape{};
@@ -215,8 +202,7 @@ struct IntegerArray
 
 /// @brief Resolves an I4/I8 connectivity, offset or point-set array.
 [[nodiscard]] IntegerArray integer_array(
-    const File& file, double parent, const char* name, int dimensions)
-{
+    const File& file, double parent, const char* name, int dimensions) {
     IntegerArray array;
     array.id = file.child(parent, name);
     check_cgio(cgio_get_dimensions(file.cgio, array.id, &array.dimensions, array.shape.data()),
@@ -234,8 +220,7 @@ struct IntegerArray
 /// @brief Reads a distributed integer hyperslab with explicit memory-type conversion.
 template<class Index>
 void read_integer(const File& file, const IntegerArray& array, std::int64_t first,
-                  std::span<Index> output)
-{
+                  std::span<Index> output) {
     static_assert(std::is_signed_v<Index> && (sizeof(Index) == 4 || sizeof(Index) == 8));
     Index dummy{};
     if (output.empty()) {
@@ -258,23 +243,21 @@ void read_integer(const File& file, const IntegerArray& array, std::int64_t firs
 }
 
 /// @brief Maps the supported linear CGNS types to mesh topology types.
-[[nodiscard]] mesh::CellType cell_type(ElementType type)
-{
+[[nodiscard]] mesh::CellType cell_type(ElementType type) {
     switch (type) {
     case CGNS_ENUMV(TETRA_4): return mesh::CellType::TET;
-    case CGNS_ENUMV(PYRA_5):  return mesh::CellType::PYRA;
+    case CGNS_ENUMV(PYRA_5): return mesh::CellType::PYRA;
     case CGNS_ENUMV(PENTA_6): return mesh::CellType::PRISM;
-    case CGNS_ENUMV(HEXA_8):  return mesh::CellType::HEXA;
-    case CGNS_ENUMV(TRI_3):   return mesh::CellType::TRI;
-    case CGNS_ENUMV(QUAD_4):  return mesh::CellType::QUAD;
-    case CGNS_ENUMV(BAR_2):   return mesh::CellType::BAR;
-    case CGNS_ENUMV(NODE):   return mesh::CellType::NODE;
+    case CGNS_ENUMV(HEXA_8): return mesh::CellType::HEXA;
+    case CGNS_ENUMV(TRI_3): return mesh::CellType::TRI;
+    case CGNS_ENUMV(QUAD_4): return mesh::CellType::QUAD;
+    case CGNS_ENUMV(BAR_2): return mesh::CellType::BAR;
+    case CGNS_ENUMV(NODE): return mesh::CellType::NODE;
     default: mpi::fatal("Unsupported CGNS element: require linear fixed-arity types");
     }
 }
 
-struct Section 
-{
+struct Section {
     GlobalIndex begin = 0, end = 0;
     GlobalIndex source_begin = 0, source_end = 0;
     ElementType type{};
@@ -282,23 +265,20 @@ struct Section
     bool volume = false, boundary = false;
     GlobalIndex boundary_offset = 0;
 };
-struct BoundaryCondition 
-{
+struct BoundaryCondition {
     IntegerArray points;
     PointSetType type{};
     std::int64_t count = 0;
     mesh::PatchId patch = mesh::invalid_patch_id;
 };
-struct Metadata 
-{
+struct Metadata {
     std::vector<Section> sections;
     std::vector<BoundaryCondition> bcs;
     std::array<int, 3> coordinate_indices{};
 };
+
 /// @brief Resolves section arrays and establishes cell and dense boundary ownership.
-void read_sections(const File& file, const ReaderOptions& options, ReadResult& result,
-                   Metadata& metadata)
-{
+void read_sections(const File& file, const ReaderOptions& options, ReadResult& result, Metadata& metadata) {
     // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
     
@@ -316,27 +296,26 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
     metadata.sections.reserve(static_cast<std::size_t>(sections) * 2);
 
     // loop over all sections
-    for (int s = 1; s <= sections; ++s)
-    {
+    for (int s = 1; s <= sections; ++s) {
         // read section metadata
         Section section;
         cgsize_t first = 0, last = 0;
-        int boundary_count = 0, parent_data = 0;
+        int boundary_count = 0, parent_data = 0; // not used later
         check_cgns(cg_section_read(f, b, z, s, name, 
                                         &section.type, &first, &last, &boundary_count,
                                         &parent_data), "cg_section_read");
 
         // fill section metadata
         mpi::require(first >= 1 && last >= first, "Invalid CGNS section range");
-        section.begin = global_index(first - 1);
+        section.begin = global_index(first - 1); // 0-based
         section.end = global_index(last);
-        section.source_begin = section.begin;
+        section.source_begin = section.begin;          // 1-based
         section.source_end = section.end;
         section.volume = section.end <= cells;
 
         // mixed section can contain elements of different dims (volume + boundary) ???
         mpi::require(section.volume || section.begin >= cells || section.type == CGNS_ENUMV(MIXED),
-               "A section crosses the volume/boundary ID boundary");
+                     "A section crosses the volume/boundary ID boundary");
 
         if (section.type == CGNS_ENUMV(MIXED)) {
             section.boundary = !section.volume; // pre-flag
@@ -418,8 +397,7 @@ void read_sections(const File& file, const ReaderOptions& options, ReadResult& r
 
 /// @brief Reads patch labels and resolves supported boundary point-set arrays.
 void read_patch_metadata(const File& file, const ReaderOptions& options, ReadResult& result,
-                         Metadata& metadata)
-{
+                         Metadata& metadata) {
     // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
 
@@ -434,8 +412,7 @@ void read_patch_metadata(const File& file, const ReaderOptions& options, ReadRes
     result.source.ignored_boundary_conditions.reserve(static_cast<std::size_t>(bcs));
 
     // loop over all boundary zones
-    for (int bc = 1; bc <= bcs; ++bc)
-    {
+    for (int bc = 1; bc <= bcs; ++bc) {
         // read boundary zone metadata
         BoundaryCondition condition;
         CGNS_ENUMT(BCType_t) type{};
@@ -497,8 +474,7 @@ void read_patch_metadata(const File& file, const ReaderOptions& options, ReadRes
 }
 
 /// @brief Reads small replicated metadata and establishes contiguous import ownership.
-void read_metadata(const File &file, const ReaderOptions &options, ReadResult &result, Metadata &metadata)
-{
+void read_metadata(const File &file, const ReaderOptions &options, ReadResult &result, Metadata &metadata) {
     // get file index, base index and zone index
     const int f = file.id, b = options.base_index, z = options.zone_index;
 
@@ -531,7 +507,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
     const GlobalIndex nodes = global_index(zone_size[0]), cells = global_index(zone_size[1]);
     mpi::require(nodes > 0 && cells > 0, "Empty CGNS zones are not supported");
 
-    // create contiguous nodes and cells distributions
+    // create contiguous nodes and cells distributions, boundary patches are pluged
     mesh.distribution = {
         Block{cells, file.comm.size()}, 
         Block{nodes, file.comm.size()}, 
@@ -546,12 +522,10 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
     constexpr std::array<std::string_view, 3> names{"CoordinateX", "CoordinateY", "CoordinateZ"};
 
     // loop over all coordinate axes
-    for (int c = 1; c <= coordinates; ++c)
-    {
+    for (int c = 1; c <= coordinates; ++c) {
         DataType type{};
         check_cgns(cg_coord_info(f, b, z, c, &type, name), "cg_coord_info");
-        for (std::size_t axis = 0; axis < names.size(); ++axis)
-        {
+        for (std::size_t axis = 0; axis < names.size(); ++axis) {
             if (name != names[axis])
             {
                 continue;
@@ -562,8 +536,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
         }
     }
 
-    for (int axis = 0; axis < mesh.physical_dimension; ++axis)
-    {
+    for (int axis = 0; axis < mesh.physical_dimension; ++axis) {
         mpi::require(metadata.coordinate_indices[static_cast<std::size_t>(axis)] != 0, "Missing named Cartesian coordinate array, SEE IMPLEMENTATION");
     }
 
@@ -573,8 +546,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
 
 /// @brief Maps a section's owned dense boundary interval back to source IDs.
 [[nodiscard]] std::pair<GlobalIndex, GlobalIndex> owned_boundary_range(
-    const mesh::host::RawMesh& mesh, const Section& section)
-{
+    const mesh::host::RawMesh& mesh, const Section& section) {
     const auto& distribution = mesh.distribution.boundary_ordinals;
     const auto first = std::max(section.boundary_offset, distribution.begin(mesh.distribution.rank));
     const auto last = std::min(section.boundary_offset + section.end - section.begin,
@@ -586,15 +558,13 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
 }
 
 /// @brief Converts a section source ID to its dense boundary ordinal.
-[[nodiscard]] GlobalIndex boundary_ordinal(const Section& section, GlobalIndex source_id) noexcept
-{
+[[nodiscard]] GlobalIndex boundary_ordinal(const Section& section, GlobalIndex source_id) noexcept {
     return section.boundary_offset + source_id - section.begin;
 }
 
 /// @brief Computes the exact largest rank intersection from replicated block metadata.
 [[nodiscard]] GlobalIndex maximum_overlap(const Block& distribution,
-                                         GlobalIndex first, GlobalIndex last)
-{
+                                         GlobalIndex first, GlobalIndex last) {
     if (first == last) return 0;
     const int left = distribution.owner(first), right = distribution.owner(last - 1);
     if (left == right) return last - first;
@@ -606,8 +576,7 @@ void read_metadata(const File &file, const ReaderOptions &options, ReadResult &r
 
 /// @brief Reads each Cartesian coordinate directly into its final owned array.
 void read_coordinates(const File& file, const ReaderOptions& options,
-                      const Metadata& metadata, mesh::host::RawMesh& mesh)
-{
+                      const Metadata& metadata, mesh::host::RawMesh& mesh) {
     const auto first = mesh.distribution.nodes.begin(file.comm.rank());
     const std::size_t n = host_size(mesh.distribution.nodes.local_size(file.comm.rank()));
     mesh.coordinates.x.resize(n);
@@ -637,8 +606,7 @@ struct LocalSection {
 
 /// @brief Plans exact local connectivity storage using only MIXED offset endpoints.
 [[nodiscard]] std::vector<LocalSection> plan_elements(
-    const File& file, const Metadata& metadata, const mesh::host::RawMesh& mesh)
-{
+    const File& file, const Metadata& metadata, const mesh::host::RawMesh& mesh) {
     std::vector<LocalSection> slices;
     slices.reserve(metadata.sections.size());
     std::array<std::size_t, 2> elements{}, nodes{};
@@ -695,8 +663,7 @@ struct LocalSection {
 
 /// @brief Reads owned element batches directly into preallocated final CSR storage.
 void read_elements(const File& file, const ReaderOptions& options,
-                   const Metadata& metadata, mesh::host::RawMesh& mesh)
-{
+                   const Metadata& metadata, mesh::host::RawMesh& mesh) {
     const auto slices = plan_elements(file, metadata, mesh);
     const auto allocate = [&](mesh::host::ElementTable& table, bool volume) {
         std::size_t count = 0, nodes = 0;
@@ -798,8 +765,7 @@ void read_elements(const File& file, const ReaderOptions& options,
 }
 
 /// @brief Finds the boundary section containing a zero-based source element ID.
-[[nodiscard]] const Section& boundary_section(const Metadata& metadata, GlobalIndex id)
-{
+[[nodiscard]] const Section& boundary_section(const Metadata& metadata, GlobalIndex id) {
     const auto found = std::upper_bound(metadata.sections.begin(), metadata.sections.end(), id,
         [](GlobalIndex value, const Section& section) { return value < section.begin; });
     mpi::require(found != metadata.sections.begin(), "BC references a missing boundary element");
@@ -809,8 +775,7 @@ void read_elements(const File& file, const ReaderOptions& options,
 }
 
 /// @brief Assigns a patch while rejecting conflicting source BC definitions.
-void assign_patch(mesh::host::RawMesh& mesh, std::size_t local, mesh::PatchId patch)
-{
+void assign_patch(mesh::host::RawMesh& mesh, std::size_t local, mesh::PatchId patch) {
     assert(local < mesh.boundary.size());
     auto& current = mesh.boundary.patch_ids[local];
     mpi::require(current == mesh::invalid_patch_id || current == patch,
@@ -820,8 +785,7 @@ void assign_patch(mesh::host::RawMesh& mesh, std::size_t local, mesh::PatchId pa
 
 /// @brief Applies ranges locally and routes distributed BC lists to boundary owners.
 void read_boundaries(const File& file, const ReaderOptions& options,
-                     const Metadata& metadata, mesh::host::RawMesh& mesh)
-{
+                     const Metadata& metadata, mesh::host::RawMesh& mesh) {
     const auto comm = file.comm;
     const auto& ownership = mesh.distribution.boundary_ordinals;
     mpi::AlltoallvWorkspace workspace;
@@ -895,8 +859,7 @@ void read_boundaries(const File& file, const ReaderOptions& options,
 } // namespace
 
 /// @brief Reads owned source slices and automatically extrudes planar 2D imports.
-ReadResult read_parallel(const std::string& path, mpi::CommView comm, const ReaderOptions& options)
-{
+ReadResult read_parallel(const std::string& path, mpi::CommView comm, const ReaderOptions& options) {
     // check if MPI context is active and communicator is not MPI_COMM_NULL
     mpi::require(!comm.is_null() && mpi::is_active(), "CGNS import requires active MPI and a live communicator");
 

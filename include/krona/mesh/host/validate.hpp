@@ -8,7 +8,7 @@
 
 namespace krona::mesh::host {
 
-/// @brief Replicated final counts, load extrema and labelled-boundary flux areas.
+/// @brief Replicated final counts, load extrema and labelled-boundary flux areas. 
 struct MeshStatistics {
     std::uint64_t owned_cells = 0, ghost_copies = 0;
     std::uint64_t interior_faces = 0, cut_faces = 0, boundary_faces = 0, labelled_faces = 0;

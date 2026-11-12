@@ -5,7 +5,7 @@
 
 namespace krona::apps::mesh_partitioner {
 
-/// @brief Prints help without reading or creating mesh files.
+/// @brief Prints help without reading or creating mesh files. 
 void usage(std::FILE* stream) noexcept {
     std::fputs("KRONA distributed mesh partitioner\n"
                "\n"
@@ -14,16 +14,17 @@ void usage(std::FILE* stream) noexcept {
                "  krona_mesh_partitioner --help\n"
                "\n"
                "Options:\n"
-               "  --bc <bc.toml>       Write a boundary-condition template (optional).\n"
-               "  --vtu <dir>         Write VTU visualization files (optional).\n"
-               "  --reorder <TYPE>    Local reordering: NONE, SFC, RCM (default: NONE).\n"
-               "  -v, --verbose      Summary diagnostics.\n"
-               "  -vv                Detailed diagnostics.\n"
-               "  -h, --help         Show this help.\n"
-               "  --                 End options; remaining arguments are paths.\n"
+               "  --bc=<bc.toml>             Write a boundary-condition template (optional).\n"
+               "  --vtu=<dir>                Write VTU visualization files (optional).\n"
+               "  --bc-profile=<dir>         Write a boundary-patch csv table for profiled bc (optional).\n"
+               "  --reorder=<TYPE>           Local reordering: NONE, SFC, RCM (default: NONE).\n"
+               "  -v, --verbose              Summary diagnostics.\n"
+               "  -vv                        Detailed diagnostics.\n"
+               "  -h, --help                 Show this help.\n"
+               "  --                         End options; remaining arguments are paths.\n"
                "\n"
                "Without --bc, no boundary-condition template is requested.\n"
-               "Named options also accept --option=value.\n"
+               "Named options also accept --option value.\n"
                "\n"
                "Examples:\n"
                "  mpirun -np 4 krona_mesh_partitioner mesh.cgns mesh.h5\n"
@@ -82,14 +83,15 @@ void usage(std::FILE* stream) noexcept {
             const auto equal = token.find('=');
             const auto name = token.substr(0, equal);
 
-            if (name != "--bc" && name != "--vtu" && name != "--reorder") {
+            if (name != "--bc" && name != "--vtu" && name != "--reorder" && name != "--bc-profile") {
                 fail("Unknown option", token);
                 return result;
             }
 
             if ((name == "--bc" && !result.options.boundary_output.empty()) ||
                 (name == "--vtu" && !result.options.vtu_directory.empty()) ||
-                (name == "--reorder" && reorder_seen)) {
+                (name == "--reorder" && reorder_seen) ||
+                (name == "--bc-profile" && !result.options.patches_template_directory.empty())) {
                 fail("Duplicate option", name);
                 return result;
             }
@@ -114,6 +116,8 @@ void usage(std::FILE* stream) noexcept {
                 result.options.boundary_output = value;
             } else if (name == "--vtu") {
                 result.options.vtu_directory = value;
+            } else if (name == "--bc-profile") {
+                result.options.patches_template_directory = value;
             } else {
                 reorder_seen = true;
                 if (value == "NONE")

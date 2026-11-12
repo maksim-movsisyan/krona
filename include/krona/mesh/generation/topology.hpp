@@ -11,7 +11,7 @@
 
 namespace krona::mesh::generation {
 
-/// @brief Identifies a node in one block's integer lattice.
+/// @brief Identifies a node in one block's integer lattice. 
 struct NodeSource {
     std::size_t block_idx{0};
     std::size_t i{0};

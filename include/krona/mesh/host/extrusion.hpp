@@ -10,7 +10,7 @@
 
 namespace krona::mesh::host {
 
-/// @brief Configures a single extrusion layer and bounded communication buffers.
+/// @brief Configures a single extrusion layer and bounded communication buffers. 
 struct ExtrusionOptions {
     double thickness_fraction = 0.1;
     double planarity_tolerance =

@@ -58,7 +58,7 @@ void MacroTopology::build_blocks(const GeneratorConfig &config) {
     const std::size_t num_blocks = config.blocks.size();
     const std::size_t num_macro_vertices = config.vertices.size();
 
-    // build() may be called more than once on the same object.
+    // build() may be called more than once on the same object so clear all data first.
     edges_.clear();
     faces_.clear();
     boundary_patches_.clear();
@@ -68,68 +68,92 @@ void MacroTopology::build_blocks(const GeneratorConfig &config) {
     blocks_.resize(num_blocks);
     cell_offsets_.assign(num_blocks + 1, 0);
 
+    // count total number of cells and create offsets (global numeration)
     total_cells_ = 0;
     for (std::size_t b = 0; b < num_blocks; ++b) {
         cell_offsets_[b] = total_cells_;
         const auto &blk = config.blocks[b];
         total_cells_ =
-            add(total_cells_,
-                product(static_cast<std::size_t>(product(blk.cells[0], blk.cells[1])), blk.cells[2]));
-    }
+            add(total_cells_, product(static_cast<std::size_t>(product(blk.cells[0], blk.cells[1])), blk.cells[2]));
+    } // end loop over all blocks
     cell_offsets_[num_blocks] = total_cells_;
 
+    // build macro block topology 
     for (std::size_t b = 0; b < num_blocks; ++b) {
         const auto &blk = config.blocks[b];
         auto &bt = blocks_[b];
         bt.vertices = blk.vertices;
 
+        // loop over all block edges
         for (std::size_t e = 0; e < 12; ++e) {
+            // get edge vertices (directed) and number of cells among each edge
             const std::size_t u = blk.vertices[hex::edges[e].first];
             const std::size_t v = blk.vertices[hex::edges[e].second];
             const std::size_t cells = (e < 4) ? blk.cells[0] : ((e < 8) ? blk.cells[1] : blk.cells[2]);
 
             const std::size_t edge_idx = find_or_add_edge(u, v, cells);
-            bt.edges[e] = {edge_idx, (u > v)};
-        }
 
+            // write edge index and weather edge is reversed 
+            bt.edges[e] = {edge_idx, (u > v)};
+        } // end loop over all block edges
+
+        // loop over all block faces
         for (std::size_t f = 0; f < 6; ++f) {
+            // get vertices forming a face and face layout
             const auto q_verts = hex::face_vertices(blk.vertices, f);
             const auto &layout = hex::layouts[f];
+
+            // get number of cells along local 2-d axes
             const auto cu = blk.cells[layout.u];
             const auto cv = blk.cells[layout.v];
 
             auto &ref = bt.faces[f];
             ref.index = find_or_add_face(q_verts, cu, cv);
+
+            // get face by its index (new if it was just add)
             const auto &canonical = faces_[ref.index];
+
+            // find position of 0 and 1 vertices of curent face in canonical face
             const auto a = static_cast<std::size_t>(
-                std::find(canonical.vertices.begin(), canonical.vertices.end(), q_verts[0]) -
-                canonical.vertices.begin());
+                std::find(canonical.vertices.begin(), canonical.vertices.end(), q_verts[0]) - canonical.vertices.begin());
             const auto b1 = static_cast<std::size_t>(
-                std::find(canonical.vertices.begin(), canonical.vertices.end(), q_verts[1]) -
-                canonical.vertices.begin());
+                std::find(canonical.vertices.begin(), canonical.vertices.end(), q_verts[1]) - canonical.vertices.begin());
+
+            // The canonical u-axis runs from corner 0 to corner 1.
+            // If the current face's local u-axis runs along canonical edge
+            // 1 <-> 2 or 0 <-> 3, it follows the canonical v-axis, so swap u and v.
             const bool a_u = a == 1 || a == 2;
             const bool b_u = b1 == 1 || b1 == 2;
             ref.swap_uv = a_u == b_u;
+
+            // If the starting corner is on the canonical u = 1 side,
+            // count canonical u in the reverse direction after swapping axes.
             ref.reverse_u = a_u;
+
+            // Likewise, corners 2 and 3 lie on the canonical v = 1 side.
             ref.reverse_v = a >= 2;
+
             mpi::require(canonical.cells_u == (ref.swap_uv ? cv : cu) &&
                              canonical.cells_v == (ref.swap_uv ? cu : cv),
                          "Shared face cell counts disagree after axis mapping");
-        }
+        } // end loop over all block faces
 
+        // get number of INNER nodes (witout cells, located on block vertices/edges/faces)
         bt.vol_count = static_cast<std::size_t>(
             product(static_cast<std::size_t>(product(blk.cells[0] - 1, blk.cells[1] - 1)), blk.cells[2] - 1));
+
+        // creating distributions along edges
         bt.dist_x = Grading::compute_distribution(blk.cells[0], blk.grading_type[0], blk.grading[0]);
         bt.dist_y = Grading::compute_distribution(blk.cells[1], blk.grading_type[1], blk.grading[1]);
         bt.dist_z = Grading::compute_distribution(blk.cells[2], blk.grading_type[2], blk.grading[2]);
-    }
+    } // end loop over all macro blocks
 }
 
 /// @brief Numbers vertices, edge interiors, face interiors and block interiors.
 void MacroTopology::assign_node_ids(std::size_t num_macro_vertices) {
     const auto num_blocks = blocks_.size();
 
-    // Allocate 1-based unique IDs
+    // Allocate 1-based (!!) unique IDs
     std::uint64_t current_id = 1;
 
     // Strata 0: Macro-vertices [1, num_macro_vertices]
@@ -137,15 +161,17 @@ void MacroTopology::assign_node_ids(std::size_t num_macro_vertices) {
 
     // Strata 1: Unique Edges
     for (auto &edge : edges_) {
+        // get number of inner nodes, except forming vertices
         const std::size_t count = (edge.num_cells > 1) ? (edge.num_cells - 1) : 0;
         if (count > 0) {
             edge.global_start_id = current_id;
             current_id = add(current_id, count);
         }
-    }
+    } // end loop over all edges
 
     // Strata 2: Unique Faces
     for (auto &face : faces_) {
+        // get number of inner nodes, except forming vertices and edges
         const std::size_t count = (face.cells_u > 1 && face.cells_v > 1)
                                       ? static_cast<std::size_t>(product(face.cells_u - 1, face.cells_v - 1))
                                       : 0;
@@ -153,7 +179,7 @@ void MacroTopology::assign_node_ids(std::size_t num_macro_vertices) {
             face.global_start_id = current_id;
             current_id = add(current_id, count);
         }
-    }
+    } // end loop over all faces
 
     // Strata 3: Block Volumes
     for (std::size_t b = 0; b < num_blocks; ++b) {
@@ -161,7 +187,7 @@ void MacroTopology::assign_node_ids(std::size_t num_macro_vertices) {
             blocks_[b].vol_start_id = current_id;
             current_id = add(current_id, blocks_[b].vol_count);
         }
-    }
+    } // end loop over all blocks
 
     total_nodes_ = current_id - 1;
 }
@@ -169,36 +195,51 @@ void MacroTopology::assign_node_ids(std::size_t num_macro_vertices) {
 /// @brief Builds compact coordinate ranges and checks shared edge distributions.
 void MacroTopology::build_node_sources(const GeneratorConfig &config) {
     const auto num_blocks = config.blocks.size();
+
     // Construct compact coordinate sources; shared edges/faces keep their
     // first owner, which defines canonical node ordering.
     std::vector<NodeRange> edge_sources(edges_.size());
     std::vector<NodeRange> face_sources(faces_.size());
     node_ranges_.reserve(edges_.size() + faces_.size() + num_blocks);
 
+    // loop over all blocks
     for (std::size_t b = 0; b < num_blocks; ++b) {
+        // get block references (from topology and config)
         const auto &blk = config.blocks[b];
         const auto &bt = blocks_[b];
         const std::array<std::size_t, 3> n = {blk.cells[0], blk.cells[1], blk.cells[2]};
+
+        // loop over all block vertices
         for (std::size_t c = 0; c < 8; ++c) {
+            // Shared vertices are overwritten by later blocks.
+            // Keep one block-local source for evaluating each macro vertex's coordinates.
             vertex_sources_[blk.vertices[c]] = {b, hex::corners[c][0] * n[0], hex::corners[c][1] * n[1],
                                                 hex::corners[c][2] * n[2]};
-        }
+        } // end loop over all block vertices
+
+        // loop over all block edges
         for (std::size_t e = 0; e < 12; ++e) {
             const auto [idx, reversed] = bt.edges[e];
-            if (edges_[idx].num_cells <= 1)
-                continue;
+            if (edges_[idx].num_cells <= 1) continue;
+
             NodeRange r;
             r.first = edges_[idx].global_start_id;
             r.count = edges_[idx].num_cells - 1;
             r.block_idx = b;
             r.reversed = reversed;
             r.axis = e / 4;
+
+            // Locate the edge's starting corner in the block's (i,j,k) node lattice.
             const auto &corner = hex::corners[hex::edges[e].first];
             for (std::size_t d = 0; d < 3; ++d)
                 r.origin[d] = corner[d] * n[d];
+
+            // Skip the corner: the range contains only interior edge nodes.
             const std::size_t axis = e / 4;
             r.origin[axis] = 1;
             r.shape[axis] = n[axis] - 1;
+
+            // Add node range or check consistency with already existed
             if (edge_sources[idx].count == 0) {
                 edge_sources[idx] = r;
             } else {
@@ -214,26 +255,33 @@ void MacroTopology::build_node_sources(const GeneratorConfig &config) {
                         fail("Shared edge has incompatible grading (accounting for reversed orientation)");
                 }
             }
-        }
+        } // end loop over all block edges
+
+        // loop over all block ffaces
         for (std::size_t f = 0; f < 6; ++f) {
+            // get macro face reference
             const auto idx = bt.faces[f].index;
             const auto &face = faces_[idx];
-            if (face.cells_u <= 1 || face.cells_v <= 1)
-                continue;
+
+            if (face.cells_u <= 1 || face.cells_v <= 1) continue;
+
             NodeRange r;
             r.first = face.global_start_id;
             r.count = (face.cells_u - 1) * (face.cells_v - 1);
             r.block_idx = b;
             r.origin = {1, 1, 1};
             r.shape = {n[0] - 1, n[1] - 1, n[2] - 1};
+
             const auto normal = hex::layouts[f].normal;
             const bool upper = hex::layouts[f].upper;
             r.origin[normal] = upper ? n[normal] : 0;
             r.shape[normal] = 1;
+
             // The first block defines canonical face axes and ID ordering.
             if (face_sources[idx].count == 0)
                 face_sources[idx] = r;
-        }
+        } // end loop over all block faces
+
         if (bt.vol_count > 0) {
             NodeRange r;
             r.first = bt.vol_start_id;
@@ -243,13 +291,16 @@ void MacroTopology::build_node_sources(const GeneratorConfig &config) {
             r.shape = {n[0] - 1, n[1] - 1, n[2] - 1};
             node_ranges_.push_back(r);
         }
-    }
+    } // end loop over all blocks
+
+    // add sources to node_ranges_
     for (const auto &r : edge_sources)
-        if (r.count > 0)
-            node_ranges_.push_back(r);
+        if (r.count > 0) node_ranges_.push_back(r);
+
     for (const auto &r : face_sources)
-        if (r.count > 0)
-            node_ranges_.push_back(r);
+        if (r.count > 0) node_ranges_.push_back(r);
+    
+    // sort by global node indices
     std::sort(node_ranges_.begin(), node_ranges_.end(),
               [](const NodeRange &a, const NodeRange &b) { return a.first < b.first; });
 }
@@ -260,6 +311,8 @@ void MacroTopology::build_boundary_patches(const GeneratorConfig &config, mpi::C
     std::map<hex::FaceKey, const MacroFaceDesc *> lookup;
     for (const auto &face : faces_)
         lookup.emplace(hex::face_key(face.vertices), &face);
+
+    // check if all faces was assigned
     std::set<hex::FaceKey> assigned;
     for (const auto &patch : config.boundaries) {
         for (const auto &mf : patch.faces) {
@@ -310,41 +363,49 @@ void MacroTopology::build_boundary_patches(const GeneratorConfig &config, mpi::C
     }
 }
 
-/// @brief Finds a shared edge and requires a matching subdivision.
+/// @brief Finds a shared edge and requires a matching subdivision (u,v is vertices).
 std::size_t MacroTopology::find_or_add_edge(std::size_t u, std::size_t v, std::size_t cells) {
+    // canonical orientation
     const std::size_t v_min = std::min(u, v);
     const std::size_t v_max = std::max(u, v);
 
+    // loop over all existing edges
     for (std::size_t i = 0; i < edges_.size(); ++i) {
         if (edges_[i].v0 == v_min && edges_[i].v1 == v_max) {
+            // check if number of cells are coincidence
             if (edges_[i].num_cells != cells) {
                 fail("Shared edge (" + std::to_string(v_min) + "," + std::to_string(v_max) +
                      ") cell count mismatch: " + std::to_string(edges_[i].num_cells) + " vs " +
                      std::to_string(cells));
             }
+
+            // return index of found edge
             return i;
         }
-    }
+    } // end loop over all existing edges
 
+    // if edge not found: add it and return index, global_start_id is pluged
     edges_.push_back({v_min, v_max, cells, 0});
     return edges_.size() - 1;
 }
 
-/// @brief Finds a shared face and checks its perimeter and incidence.
-std::size_t MacroTopology::find_or_add_face(const std::array<std::size_t, 4> &q_verts, std::size_t cu,
-                                            std::size_t cv) {
+/// @brief Finds a shared face and checks its perimeter and incidence (cu and cv is number of cells along u,v axes).
+std::size_t MacroTopology::find_or_add_face(const std::array<std::size_t, 4> &q_verts, std::size_t cu, std::size_t cv) {
     const auto sorted_q = hex::face_key(q_verts);
 
+    // loop over all existing macro faces
     for (std::size_t i = 0; i < faces_.size(); ++i) {
         const auto existing = hex::face_key(faces_[i].vertices);
         if (existing == sorted_q) {
             mpi::require(++faces_[i].incident_blocks <= 2, "More than two blocks share a face");
             mpi::require(hex::same_perimeter(q_verts, faces_[i].vertices),
                          "Shared faces have different edge connectivity");
+            // if face already exist return it index
             return i;
         }
-    }
+    } // end loop over all existing macro faces
 
+    // add new face, incident_block and global_start_id is pluged
     faces_.push_back({q_verts, 1, cu, cv, 0});
     return faces_.size() - 1;
 }
@@ -356,14 +417,18 @@ std::uint64_t MacroTopology::get_node_id(std::size_t b, std::size_t i, std::size
     const auto &bt = blocks_[b];
     mpi::require(i < bt.dist_x.size() && j < bt.dist_y.size() && k < bt.dist_z.size(),
                  "Block node index is out of bounds");
+
+    // get total number of cells along each axis
     const std::size_t Nx = bt.dist_x.size() - 1;
     const std::size_t Ny = bt.dist_y.size() - 1;
     const std::size_t Nz = bt.dist_z.size() - 1;
 
+    // check if node lying on block marko vertex/edge/face
     const bool on_x0 = (i == 0), on_x1 = (i == Nx);
     const bool on_y0 = (j == 0), on_y1 = (j == Ny);
     const bool on_z0 = (k == 0), on_z1 = (k == Nz);
 
+    // check "boundary" factor of node
     const int bnd_count = (on_x0 || on_x1 ? 1 : 0) + (on_y0 || on_y1 ? 1 : 0) + (on_z0 || on_z1 ? 1 : 0);
 
     // 1. Macro-vertex
@@ -593,13 +658,14 @@ void MacroTopology::get_cell_block_and_ijk(std::uint64_t global_cell_id, std::si
     i = static_cast<std::size_t>(local_c % Nx);
 }
 
-/// @brief Returns one block cell in CGNS HEXA_8 corner order.
+/// @brief Returns one block cell in CGNS HEXA_8 corner order (ijk - cell indices).
 std::array<std::uint64_t, 8> MacroTopology::get_block_cell_nodes(std::size_t b, std::size_t i, std::size_t j,
                                                                  std::size_t k) const noexcept {
     mpi::require(b < blocks_.size(), "Block index is out of bounds");
     const auto &bt = blocks_[b];
     mpi::require(i < bt.dist_x.size() - 1 && j < bt.dist_y.size() - 1 && k < bt.dist_z.size() - 1,
                  "Block cell index is out of bounds");
+                 
     // Apply the common HEXA_8 corner offsets to the cell origin.
     std::array<std::uint64_t, 8> nodes{};
     for (std::size_t corner = 0; corner < nodes.size(); ++corner) {

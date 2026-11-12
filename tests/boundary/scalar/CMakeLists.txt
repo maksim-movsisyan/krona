@@ -80,6 +80,14 @@ foreach(case IN ITEMS relations analytic arrays array_kinds independent shared v
         LABELS "boundary;scalar;profiles;numerical" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
+foreach(ranks IN ITEMS 1 2)
+    add_test(NAME "boundary.scalar.profiles.tabulated.np${ranks}"
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:krona_test_scalar_profiles> ${MPIEXEC_POSTFLAGS} tabulated)
+    set_tests_properties("boundary.scalar.profiles.tabulated.np${ranks}" PROPERTIES
+        LABELS "boundary;scalar;profiles;numerical" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endforeach() 
 set(expected_dirty "call finalize()")
 set(expected_short_array "extent must equal the local patch face count")
 set(expected_wrong_range "patch range mismatch")

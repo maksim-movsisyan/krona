@@ -1,6 +1,6 @@
 #include "common/test_support.hpp"
 
-#include <krona/boundary/scalar/manager.hpp>
+#include <krona/boundary/scalar/tabulated_config.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
 
@@ -283,6 +283,38 @@ void distributed_case(const Exec& exec)
     for (auto f = range.begin; f < range.end; ++f) near(h(static_cast<std::size_t>(f)+2), 100.0+rank, 1e-12, "Rank-local patch order");
 }
 
+/// @brief Loads CSV conditions collectively and applies them on labelled and unlabelled faces.
+void tabulated_case(const Exec& exec)
+{
+    const auto comm = krona::mpi::CommView::world();
+    const auto path = comm.rank() == 0 ? std::filesystem::path{"data/tabulated.toml"} : std::filesystem::path{};
+    const auto config = sc::read_config(path, "phi", comm);
+    auto host = fixture();
+    host.rank = comm.rank();
+    host.nprocs = comm.size();
+    host.n_bfaces_g = 4 * static_cast<std::uint64_t>(comm.size());
+    host.n_labeled_bfaces_g = 3 * static_cast<std::uint64_t>(comm.size());
+    if (comm.rank() != 0) host.face_patch = {1, 1, 1, -1};
+    krona::mesh::device::MeshStorage<Exec> mesh(host, {}, exec);
+    bc::BoundaryLayout<Exec, double> layout(host, mesh.view(), exec);
+    sc::TabulatedManager<Exec, double> manager(layout);
+    sc::configure_tabulated(manager, config, host, comm);
+    manager.finalize();
+
+    Array field("field", manager.required_field_size());
+    Kokkos::deep_copy(exec, field, 20.0);
+    sc::Status<Exec> status(exec);
+    status.begin_async();
+    manager.apply_component_async(field, status, Law{});
+    status.check();
+    const auto values = snapshot(exec, field);
+    const bool first_patch_present = comm.rank() == 0;
+    near(values(2), first_patch_present ? 2.0 : 22.0, 1e-12, "First local face profile");
+    near(values(3), first_patch_present ? 6.0 : 26.0, 1e-12, "Second local face profile");
+    near(values(4), 28.0, 1e-12, "Tabulated outward normal gradient");
+    near(values(5), 12.0, 1e-12, "Tabulated unlabelled outward flux");
+}
+
 /// @brief Checks captured device-lambda providers through rebinding and configuration reset.
 void lambda_case(const Exec& exec)
 {
@@ -409,6 +441,7 @@ int main(int argc, char** argv)
     constexpr std::array cases{Case{"relations", relations_case}, Case{"analytic", analytic_case},
         Case{"arrays", arrays_case}, Case{"array_kinds", array_kinds_case}, Case{"independent", independent_case},
         Case{"shared", shared_case}, Case{"lambda", lambda_case}, Case{"vectors", vectors_case}, Case{"once", once_case}, Case{"distributed", distributed_case},
+        Case{"tabulated", tabulated_case},
         Case{"dirty", dirty_case}, Case{"short_array", short_array_case}, Case{"wrong_range", wrong_range_case},
         Case{"nonfinite", nonfinite_case}, Case{"nonfinite_flux", nonfinite_flux_case}, Case{"overflow", overflow_case}, Case{"status_not_begun", status_not_begun_case},
         Case{"profile_flux_without_law", profile_flux_without_law_case}};

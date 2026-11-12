@@ -1,6 +1,6 @@
 #pragma once
 
-#include <krona/mpi/collectives.hpp>
+#include <krona/mpi/collectives.hpp> 
 #include <krona/mpi/error.hpp>
 #include <krona/mpi/runtime.hpp>
 

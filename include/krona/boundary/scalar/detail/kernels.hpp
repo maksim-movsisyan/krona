@@ -13,8 +13,7 @@ struct FillBoundary {
     Flags flags;
 
     template<class Condition>
-    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c, const Condition& condition) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c, const Condition& condition) const {
         using Value = typename ComponentView::non_const_value_type;
         Real next;
         if constexpr (is_fixed_value<Condition>) {
@@ -41,8 +40,7 @@ struct EvaluateBoundary {
     Flags flags;
 
     template<class Condition>
-    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c, const Condition& condition) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c, const Condition& condition) const {
         const Real increment = static_cast<Real>(correction(c));
         const auto relation = make_relation(condition, c, increment, law);
         if (!Kokkos::isfinite(increment) || !finite(relation)) { flag(flags, BadRelation); return; }

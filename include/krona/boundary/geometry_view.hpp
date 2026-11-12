@@ -20,8 +20,7 @@ struct GeometryView {
     RealArray normal_x, normal_y, normal_z, face_area;
 
     template<class Real>
-    KOKKOS_INLINE_FUNCTION FaceContext<Real> context(LocalIndex face, Real time = 0) const
-    {
+    KOKKOS_INLINE_FUNCTION FaceContext<Real> context(LocalIndex face, Real time = 0) const {
         const std::size_t f = static_cast<std::size_t>(face);
         FaceContext<Real> c;
         c.face = face;

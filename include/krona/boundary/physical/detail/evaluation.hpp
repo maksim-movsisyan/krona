@@ -8,8 +8,8 @@ namespace krona::boundary::physical::detail {
 
 template<class C,class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto no_slip(C wall,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model&,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model&,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     auto face = inside;
     face.pressure += static_cast<Real>(correction.pressure(c));
     face.velocity = wall.velocity;
@@ -37,15 +37,13 @@ KOKKOS_INLINE_FUNCTION auto no_slip(C wall,const FaceContext<Real>& c,
 template<class Real,class Model,class Errors>
 KOKKOS_INLINE_FUNCTION Primitive<Real,Model::thermal> inlet(
     TotalConditionsInlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,[[maybe_unused]] const Errors& errors)
-{
-    if constexpr (Model::compressible && Model::has_characteristics)
-    {
+    Primitive<Real,Model::thermal> inside,const Model& model,[[maybe_unused]] const Errors& errors) {
+
+    if constexpr (Model::compressible && Model::has_characteristics) {
         if constexpr (requires { model.characteristics.inlet(model.eos,c,inside,specified,errors); })
             return model.characteristics.inlet(model.eos,c,inside,specified,errors);
         else return model.characteristics.inlet(model.eos,c,inside,specified);
-    }
-    else {
+    } else {
         errors.fail(Error::Unsupported,"Physical boundary: total inlet requires a compatible characteristic policy");
         return inside;
     }
@@ -54,8 +52,7 @@ KOKKOS_INLINE_FUNCTION Primitive<Real,Model::thermal> inlet(
 template<class Real,class Model,class Errors>
 KOKKOS_INLINE_FUNCTION Primitive<Real,Model::thermal> backflow(
     PressureOutlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,[[maybe_unused]] const Errors& errors) {
     if (specified.backflow.mode == BackflowMode::Reject) {
         errors.fail(Error::Characteristics,"Physical boundary: reverse flow requires explicit backflow data"); return inside;
     }
@@ -77,8 +74,8 @@ KOKKOS_INLINE_FUNCTION Primitive<Real,Model::thermal> backflow(
 /// Custom extension point. The callable receives typed context/state/model and explicit helpers.
 template<class Condition,class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(Condition condition,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     if constexpr (requires { condition(c,inside,model,law,correction,errors); })
         return condition(c,inside,model,law,correction,errors);
     else return condition(c,inside,model,law,correction);
@@ -86,8 +83,8 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(Condition condition,const FaceConte
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(Symmetry,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model&,const Law&,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model&,const Law&,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     const auto n = normal(c);
     auto face = inside;
     const auto reconstructed = inside.velocity+correction.velocity(c);
@@ -102,8 +99,8 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(Symmetry,const FaceContext<Real>& c
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(SlipWall<Real> wall,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     auto result = evaluate_numeric(Symmetry{},c,inside,model,law,correction,errors);
     const auto n = normal(c);
     result.face.velocity = result.face.velocity+n*wall.velocity.dot(n);
@@ -113,32 +110,35 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(SlipWall<Real> wall,const FaceConte
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(AdiabaticWall<Real> wall,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors)
 { return no_slip(wall,c,inside,model,law,correction,errors); }
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(IsothermalWall<Real> wall,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors)
 { return no_slip(wall,c,inside,model,law,correction,errors); }
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(HeatFluxWall<Real> wall,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,[[maybe_unused]] const Errors& errors)
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,
+    const Correction& correction,[[maybe_unused]] const Errors& errors)
 { return no_slip(wall,c,inside,model,law,correction,errors); }
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(TotalConditionsInlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,const Correction&,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,
+    const Correction&,[[maybe_unused]] const Errors& errors) {
+
     const auto face = inlet(specified,c,inside,model,errors);
-    
     return Evaluation{face,face};
 }
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(PressureOutlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     auto face = inside;
     const Real un = inside.velocity.dot(normal(c));
     if constexpr (Model::compressible) {
@@ -167,8 +167,8 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(PressureOutlet<Real> specified,cons
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(VelocityInlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model&,const Law&,const Correction& correction,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model&,const Law&,
+    const Correction& correction,[[maybe_unused]] const Errors& errors) {
     if constexpr (Model::compressible)
         errors.fail(Error::Unsupported,"Physical boundary: VelocityInlet currently targets incompressible flow");
     auto face = inside;
@@ -181,8 +181,8 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(VelocityInlet<Real> specified,const
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(SupersonicInlet<Real> specified,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,const Correction&,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,
+    const Correction&,[[maybe_unused]] const Errors& errors) {
     auto face = inside;
     if constexpr (Model::compressible) {
         face = {specified.pressure,specified.velocity,specified.temperature};
@@ -196,8 +196,8 @@ KOKKOS_INLINE_FUNCTION auto evaluate_numeric(SupersonicInlet<Real> specified,con
 
 template<class Real,class Model,class Law,class Correction,class Errors>
 KOKKOS_INLINE_FUNCTION auto evaluate_numeric(SupersonicOutlet,const FaceContext<Real>& c,
-    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,const Correction&,[[maybe_unused]] const Errors& errors)
-{
+    Primitive<Real,Model::thermal> inside,const Model& model,const Law&,
+    const Correction&,[[maybe_unused]] const Errors& errors) {
     if constexpr (Model::compressible) {
         if (!(inside.velocity.dot(normal(c)) >= model.thermodynamic(inside).sound_speed))
             errors.fail(Error::Characteristics,"Physical boundary: supersonic outlet has an incoming characteristic");

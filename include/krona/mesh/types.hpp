@@ -3,7 +3,7 @@
 #include <krona/config.hpp>
 #include <cstdint>
 
-namespace krona::mesh {
+namespace krona::mesh { 
 
 /// @brief Identifies a source patch independently of cell and node index widths.
 using PatchId = std::int32_t;

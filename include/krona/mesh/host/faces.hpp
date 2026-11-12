@@ -49,7 +49,7 @@ inline constexpr std::uint8_t invalid_local_face = 255;
 
 /// @brief One unique face, stored on the rank owning its smaller cell ID.
 struct FaceRecord {
-    FaceKey key; // Matching key; oriented nodes come from cell_a and local_face_a.
+    FaceKey key; // Sorted key for matching only. Recover the outward node order from cell_a and local_face_a.
     GlobalIndex cell_a = invalid_cell_id;
     GlobalIndex cell_b = invalid_cell_id; // No neighbour on a boundary face.
     PatchId patch = invalid_patch_id;

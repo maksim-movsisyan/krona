@@ -1,7 +1,8 @@
 #pragma once
 
 #include <cstdio>
-#include <string>
+#include <string> 
+#include <string_view> 
 
 namespace krona::apps::mesh_generator {
 
@@ -22,8 +23,8 @@ struct Options {
 struct ParseResult {
     Options options;
     CliAction action = CliAction::run;
-    std::string error;
-    std::string argument;
+    std::string_view error;
+    std::string_view argument;
 };
 
 /// @brief Parses CLI syntax locally without MPI or file access.

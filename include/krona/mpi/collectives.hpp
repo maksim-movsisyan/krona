@@ -37,23 +37,20 @@ enum class Reduction {
 namespace detail {
 
 /// @brief Rejects an empty communicator without querying MPI state.
-inline void collective_comm(CommView comm, std::source_location where) noexcept
-{
+inline void collective_comm(CommView comm, std::source_location where) noexcept {
     // The caller guarantees that the borrowed handle remains live.
     require(!comm.is_null(),"Collective requires a live communicator", where);
 }
 
 /// @brief Checks the communicator and asserts the root locally in debug builds.
-inline void collective_root(CommView comm, [[maybe_unused]] int root, std::source_location where) noexcept
-{
+inline void collective_root(CommView comm, [[maybe_unused]] int root, std::source_location where) noexcept {
     collective_comm(comm, where);
     // Root agreement across ranks is the caller's responsibility.
     assert(root >= 0 && root < comm.size());
 }
 
 /// @brief Converts an element count to int without silent truncation.
-[[nodiscard]] inline int collective_count(std::size_t count, std::source_location where) noexcept
-{
+[[nodiscard]] inline int collective_count(std::size_t count, std::source_location where) noexcept {
     // MPI 3.1 cannot represent larger per-call counts.
     if (count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         fatal("Collective element count exceeds MPI 3.1 INT_MAX", where);
@@ -62,8 +59,7 @@ inline void collective_root(CommView comm, [[maybe_unused]] int root, std::sourc
 }
 
 /// @brief Computes an expected buffer size for debug assertions without overflow.
-[[nodiscard]] inline std::size_t collective_product(CommView comm, std::size_t count, std::source_location where) noexcept
-{
+[[nodiscard]] inline std::size_t collective_product(CommView comm, std::size_t count, std::source_location where) noexcept {
     // collective_comm() has already ensured a nonempty communicator.
     const std::size_t peers = static_cast<std::size_t>(comm.size());
     if (count > std::numeric_limits<std::size_t>::max() / peers) {
@@ -74,8 +70,7 @@ inline void collective_root(CommView comm, [[maybe_unused]] int root, std::sourc
 
 /// @brief Tests buffer overlap for local debug assertions.
 template<class S, std::size_t NS, class R, std::size_t NR>
-[[nodiscard]] bool buffers_overlap(std::span<S, NS> send, std::span<R, NR> recv) noexcept
-{
+[[nodiscard]] bool buffers_overlap(std::span<S, NS> send, std::span<R, NR> recv) noexcept {
     // Empty buffers do not occupy memory.
     if (send.empty() || recv.empty()) return false;
     const std::less<const void*> before;
@@ -130,8 +125,7 @@ inline constexpr bool reduction_supported = [] {
 
 /// @brief Maps a compile-time reduction choice to its MPI operation.
 template<Reduction Op>
-[[nodiscard]] MPI_Op reduction_operation() noexcept
-{
+[[nodiscard]] MPI_Op reduction_operation() noexcept {
     // Only the selected operation is compiled into the wrapper.
     if constexpr (Op == Reduction::sum) return MPI_SUM;
     else if constexpr (Op == Reduction::product) return MPI_PROD;
@@ -151,8 +145,7 @@ inline void alltoallv_buffers(
     std::span<const int> send_counts, std::span<const int> send_displacements,
     void* recv, std::size_t recv_size,
     std::span<const int> recv_counts, std::span<const int> recv_displacements,
-    MPI_Datatype type, std::source_location where) noexcept
-{
+    MPI_Datatype type, std::source_location where) noexcept {
     // Layout validation is debug-only; no status collective is inserted.
     collective_layout(comm, send_counts, send_displacements, send_size);
     collective_layout(comm, recv_counts, recv_displacements, recv_size);
@@ -168,8 +161,7 @@ concept MpiReduction = MpiDatatype<T> && detail::reduction_supported<Op, T>;
 
 /// @brief Synchronizes all participants with one MPI_Barrier.
 inline void barrier(
-    CommView comm, std::source_location where = std::source_location::current()) noexcept
-{
+    CommView comm, std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     // No extra synchronization is added around the requested barrier.
     check(MPI_Barrier(comm.native()), "MPI_Barrier", where);
@@ -179,8 +171,7 @@ inline void barrier(
 template<MpiDatatype T, std::size_t N> requires (!std::is_const_v<T>)
 void broadcast(
     CommView comm, std::span<T, N> buffer, int root = 0,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_root(comm, root, where);
     const int count = detail::collective_count(buffer.size(), where);
     // Zero-count buffers may be empty.
@@ -192,8 +183,7 @@ void broadcast(
 template<MpiDatatype T> requires (!std::is_const_v<T>)
 void broadcast(
     CommView comm, T& value, int root = 0,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     // Reuse the buffer wrapper without allocating memory.
     broadcast(comm, std::span<T>{&value, 1}, root, where);
 }
@@ -203,8 +193,7 @@ template<Reduction Op, MpiDatatype T, std::size_t NS, std::size_t NR>
     requires MpiReduction<Op, T>
 void allreduce(
     CommView comm, std::span<T, NS> send, std::span<std::remove_const_t<T>, NR> recv,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int count = detail::collective_count(send.size(), where);
     // Aliasing requires the explicit in-place wrapper.
@@ -219,8 +208,7 @@ void allreduce(
 template<Reduction Op, MpiDatatype T> requires MpiReduction<Op, T>
 [[nodiscard]] T allreduce(
     CommView comm, T value,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     // Stack storage keeps the scalar path allocation-free.
     T result{};
     allreduce<Op>(comm, std::span<const T>{&value, 1}, std::span<T>{&result, 1}, where);
@@ -232,8 +220,7 @@ template<Reduction Op, MpiDatatype T, std::size_t N>
     requires MpiReduction<Op, T> && (!std::is_const_v<T>)
 void allreduce_in_place(
     CommView comm, std::span<T, N> buffer,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int count = detail::collective_count(buffer.size(), where);
     // MPI_IN_PLACE explicitly permits the shared input/output buffer.
@@ -247,8 +234,7 @@ template<Reduction Op, MpiDatatype T, std::size_t NS, std::size_t NR>
     requires MpiReduction<Op, T>
 void reduce(
     CommView comm, std::span<T, NS> send, std::span<std::remove_const_t<T>, NR> recv,
-    int root = 0, std::source_location where = std::source_location::current()) noexcept
-{
+    int root = 0, std::source_location where = std::source_location::current()) noexcept {
     detail::collective_root(comm, root, where);
     const int count = detail::collective_count(send.size(), where);
     // The receive buffer is significant only on root.
@@ -265,8 +251,7 @@ void reduce(
 template<Reduction Op, MpiDatatype T> requires MpiReduction<Op, T>
 [[nodiscard]] std::optional<T> reduce(
     CommView comm, T value, int root = 0,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     // All participants still call the same buffer reduction.
     T result{};
     reduce<Op>(comm, std::span<const T>{&value, 1}, std::span<T>{&result, 1}, root, where);
@@ -278,8 +263,7 @@ template<Reduction Op, MpiDatatype T> requires MpiReduction<Op, T>
 template<MpiDatatype T, std::size_t NS, std::size_t NR>
 void allgather(
     CommView comm, std::span<T, NS> send, std::span<std::remove_const_t<T>, NR> recv,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int count = detail::collective_count(send.size(), where);
     // Every rank receives one block from every participant.
@@ -294,8 +278,7 @@ template<MpiDatatype T, std::size_t NS, std::size_t NR>
 void allgatherv(
     CommView comm, std::span<T, NS> send, std::span<std::remove_const_t<T>, NR> recv,
     std::span<const int> recv_counts, std::span<const int> recv_displacements,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int count = detail::collective_count(send.size(), where);
     // Pairwise type/count agreement remains the caller's responsibility.
@@ -311,8 +294,7 @@ void allgatherv(
 template<MpiDatatype T, std::size_t NS, std::size_t NR>
 void alltoall(
     CommView comm, std::span<T, NS> send, std::span<std::remove_const_t<T>, NR> recv,
-    std::size_t count = 1, std::source_location where = std::source_location::current()) noexcept
-{
+    std::size_t count = 1, std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int mpi_count = detail::collective_count(count, where);
     // Input and output contain one equally sized block per peer.
@@ -327,8 +309,7 @@ void alltoall(
 template<MpiDatatype T, std::size_t N> requires (!std::is_const_v<T>)
 void alltoall_in_place(
     CommView comm, std::span<T, N> buffer, std::size_t count = 1,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     const int mpi_count = detail::collective_count(count, where);
     assert(buffer.size() == detail::collective_product(comm, count, where));
@@ -344,8 +325,7 @@ void alltoallv(
     std::span<const int> send_counts, std::span<const int> send_displacements,
     std::span<std::remove_const_t<T>, NR> recv,
     std::span<const int> recv_counts, std::span<const int> recv_displacements,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     // This wrapper issues exactly one data collective.
     assert(!detail::buffers_overlap(send, recv));
@@ -359,8 +339,7 @@ template<MpiDatatype T, std::size_t N> requires (!std::is_const_v<T>)
 void alltoallv_in_place(
     CommView comm, std::span<T, N> buffer,
     std::span<const int> counts, std::span<const int> displacements,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     detail::collective_layout(comm, counts, displacements, buffer.size());
     // Receive layout describes both directions of the in-place exchange.
@@ -377,13 +356,11 @@ concept RawRecord = std::is_class_v<T> && std::is_trivially_copyable_v<T> &&
 /// @brief Owns a reusable byte datatype for a raw record; creation and freeing are local.
 /// The datatype must be destroyed before MPI_Finalize.
 template<RawRecord T>
-class RecordDatatype final 
-{
+class RecordDatatype final {
 public:
     /// @brief Creates a committed datatype covering exactly sizeof(T) bytes.
     explicit RecordDatatype(
-        std::source_location where = std::source_location::current()) noexcept
-    {
+        std::source_location where = std::source_location::current()) noexcept {
         // Datatypes are local MPI resources and need no communicator.
         if (!is_active()) fatal("Record datatype requires active MPI", where);
         static_assert(sizeof(T) <= static_cast<std::size_t>(std::numeric_limits<int>::max()));
@@ -393,8 +370,7 @@ public:
     }
 
     /// @brief Frees the owned datatype locally.
-    ~RecordDatatype() noexcept
-    {
+    ~RecordDatatype() noexcept {
         // Empty and moved-from objects do not enter MPI.
         close();
     }
@@ -407,8 +383,7 @@ public:
 
     /// @brief Transfers ownership locally and leaves the source empty.
     RecordDatatype(RecordDatatype&& other) noexcept
-        : type_(std::exchange(other.type_, MPI_DATATYPE_NULL))
-    {
+        : type_(std::exchange(other.type_, MPI_DATATYPE_NULL)) {
         // The committed MPI datatype itself remains unchanged.
     }
 
@@ -417,8 +392,7 @@ public:
 
     /// @brief Borrows the committed datatype handle.
     [[nodiscard]] MPI_Datatype native(
-        std::source_location where = std::source_location::current()) const & noexcept
-    {
+        std::source_location where = std::source_location::current()) const & noexcept {
         // Reject use of an empty or moved-from owner.
         if (type_ == MPI_DATATYPE_NULL) fatal("Record datatype is empty", where);
         return type_;
@@ -428,8 +402,7 @@ public:
     MPI_Datatype native(std::source_location = std::source_location::current()) const && = delete;
 
     /// @brief Frees the datatype locally; an empty owner is a no-op.
-    void close(std::source_location where = std::source_location::current()) noexcept
-    {
+    void close(std::source_location where = std::source_location::current()) noexcept  {
         if (type_ == MPI_DATATYPE_NULL) return;
         // Do not free a datatype after MPI has shut down.
         if (!is_active()) fatal("Record datatype outlived MPI", where);
@@ -448,8 +421,7 @@ void alltoallv(
     std::span<std::remove_const_t<T>, NR> recv,
     std::span<const int> recv_counts, std::span<const int> recv_displacements,
     const RecordDatatype<std::remove_const_t<T>>& record_type,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     detail::collective_comm(comm, where);
     // Counts and displacements are measured in records, not bytes.
     assert(!detail::buffers_overlap(send, recv));
@@ -484,8 +456,7 @@ namespace detail {
 /// @brief Builds packed offsets and returns the total number of elements.
 inline std::size_t packed_offsets(
     std::span<const int> counts, std::span<int> displacements,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     assert(displacements.size() == counts.size());
     std::size_t total = 0;
     // Offsets are computed once as part of building the actual exchange layout.
@@ -513,8 +484,7 @@ template<class T, class Allocator, std::size_t N>
 void packed_exchange(
     CommView comm, std::span<const int> counts, std::span<T, N> send,
     std::vector<std::remove_const_t<T>, Allocator>& recv, AlltoallvWorkspace& workspace,
-    MPI_Datatype type, std::source_location where) noexcept
-{
+    MPI_Datatype type, std::source_location where) noexcept {
     collective_comm(comm, where);
     const std::size_t peers = static_cast<std::size_t>(comm.size());
     assert(counts.size() == peers);
@@ -564,8 +534,7 @@ template<MpiDatatype T, class Allocator, std::size_t N> requires (!std::same_as<
 void alltoallv_packed(
     CommView comm, std::span<const int> counts, std::span<T, N> send,
     std::vector<std::remove_const_t<T>, Allocator>& recv, AlltoallvWorkspace& workspace,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     // Reuse workspace capacity across repeated exchanges.
     detail::packed_exchange(comm, counts, send, recv, workspace, datatype<T>(), where);
 }
@@ -576,8 +545,7 @@ void alltoallv_packed(
     CommView comm, std::span<const int> counts, std::span<T, N> send,
     std::vector<std::remove_const_t<T>, Allocator>& recv, AlltoallvWorkspace& workspace,
     const RecordDatatype<std::remove_const_t<T>>& record_type,
-    std::source_location where = std::source_location::current()) noexcept
-{
+    std::source_location where = std::source_location::current()) noexcept {
     // Record counts use the datatype extent of sizeof(T).
     detail::packed_exchange(comm, counts, send, recv, workspace, record_type.native(where), where);
 }

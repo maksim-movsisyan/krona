@@ -8,8 +8,7 @@
 namespace krona::mpi {
 
 /// @brief Borrows a handle and queries its rank and size once.
-CommView::CommView(MPI_Comm comm, std::source_location where) noexcept : comm_(comm)
-{
+CommView::CommView(MPI_Comm comm, std::source_location where) noexcept : comm_(comm) {
     // Empty views are valid even outside MPI's active lifetime.
     if (is_null()) return;
      
@@ -21,22 +20,19 @@ CommView::CommView(MPI_Comm comm, std::source_location where) noexcept : comm_(c
 }
 
 /// @brief Creates a borrowed view of the world communicator.
-CommView CommView::world(std::source_location where) noexcept
-{
+CommView CommView::world(std::source_location where) noexcept {
     // WORLD remains owned by MPI.
     return CommView{MPI_COMM_WORLD, where};
 }
 
 /// @brief Creates a borrowed view of the single-process communicator.
-CommView CommView::self(std::source_location where) noexcept
-{
+CommView CommView::self(std::source_location where) noexcept {
     // SELF remains owned by MPI.
     return CommView{MPI_COMM_SELF, where};
 }
 
 /// @brief Initializes an owned handle and its error handler.
-Comm::Comm(MPI_Comm comm, std::source_location where) noexcept : view_(comm, where)
-{
+Comm::Comm(MPI_Comm comm, std::source_location where) noexcept : view_(comm, where) {
     // Only owned communicators have their error handler changed.
     if (!is_null()) {
         check(MPI_Comm_set_errhandler(comm, MPI_ERRORS_RETURN),
@@ -45,21 +41,18 @@ Comm::Comm(MPI_Comm comm, std::source_location where) noexcept : view_(comm, whe
 }
 
 /// @brief Releases ownership through the normal collective close path.
-Comm::~Comm() noexcept
-{
+Comm::~Comm() noexcept {
     // Empty and moved-from objects do not call MPI.
     close();
 }
 
 /// @brief Transfers ownership without creating or freeing a communicator.
-Comm::Comm(Comm&& other) noexcept : view_(std::exchange(other.view_, CommView{}))
-{
+Comm::Comm(Comm&& other) noexcept : view_(std::exchange(other.view_, CommView{})) {
     // Existing views still refer to the same live MPI handle.
 }
 
 /// @brief Closes the destination and transfers ownership from the source.
-Comm& Comm::operator=(Comm&& other) noexcept
-{
+Comm& Comm::operator=(Comm&& other) noexcept {
     if (this != &other) {
         // Closing a nonempty destination is collective.
         close();
@@ -69,8 +62,7 @@ Comm& Comm::operator=(Comm&& other) noexcept
 }
 
 /// @brief Creates an owned duplicate of a live parent communicator.
-Comm Comm::duplicate(CommView parent, std::source_location where) noexcept
-{
+Comm Comm::duplicate(CommView parent, std::source_location where) noexcept {
     // Check the lifetime boundary before entering the collective operation.
     require(!parent.is_null() && is_active(),"Duplicating a communicator requires a live parent and active MPI", where);
 
@@ -84,8 +76,7 @@ Comm Comm::split(
     CommView parent,
     int color,
     int key,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     // Every parent rank participates, including excluded ranks.
     require(!parent.is_null() && is_active(),"Splitting a communicator requires a live parent and active MPI", where);
     require(color >= 0 || color == MPI_UNDEFINED, "Split color must be nonnegative or MPI_UNDEFINED", where);
@@ -96,8 +87,7 @@ Comm Comm::split(
 }
 
 /// @brief Takes responsibility for freeing a uniquely owned raw communicator.
-Comm Comm::adopt(MPI_Comm& comm, std::source_location where) noexcept
-{
+Comm Comm::adopt(MPI_Comm& comm, std::source_location where) noexcept {
     // Predefined handles are borrowed and must never be freed by an owner.
     require(comm != MPI_COMM_WORLD && comm != MPI_COMM_SELF,"Predefined communicators cannot be adopted", where);
 
@@ -109,8 +99,7 @@ Comm Comm::adopt(MPI_Comm& comm, std::source_location where) noexcept
 
 
 /// @brief Frees a live owned communicator and clears cached metadata.
-void Comm::close(std::source_location where) noexcept
-{
+void Comm::close(std::source_location where) noexcept {
     if (is_null()) {
         return;
     }
@@ -125,8 +114,7 @@ void Comm::close(std::source_location where) noexcept
 }
 
 /// @brief Releases the raw handle without freeing it.
-MPI_Comm Comm::release() noexcept
-{
+MPI_Comm Comm::release() noexcept {
     // The caller now owns the handle; existing views remain borrowed from it.
     const MPI_Comm comm = view_.native();
     view_ = CommView{};
@@ -134,8 +122,7 @@ MPI_Comm Comm::release() noexcept
 }
 
 /// @brief Exchanges owners without any MPI communication.
-void Comm::swap(Comm& other) noexcept
-{
+void Comm::swap(Comm& other) noexcept {
     // Metadata and the handle move together.
     std::swap(view_, other.view_);
 }

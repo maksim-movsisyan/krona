@@ -27,8 +27,7 @@ struct SymmetricTensor3 {
 
 private:
     template<class Self>
-    KOKKOS_INLINE_FUNCTION static constexpr decltype(auto) entry(Self& a, std::size_t row, std::size_t col) noexcept
-    {
+    KOKKOS_INLINE_FUNCTION static constexpr decltype(auto) entry(Self& a, std::size_t row, std::size_t col) noexcept {
         KOKKOS_ASSERT(row < 3 && col < 3);
         if (row > col) { const auto tmp = row; row = col; col = tmp; }
         if (row == 0) return (col == 0 ? a.xx : col == 1 ? a.xy : a.xz);
@@ -43,14 +42,12 @@ KOKKOS_INLINE_FUNCTION constexpr SymmetricTensor3<To> cast(SymmetricTensor3<From
           static_cast<To>(a.xy), static_cast<To>(a.xz), static_cast<To>(a.yz)}; }
 
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto operator+(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator+(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     auto result = cast<R>(a); result += cast<R>(b); return result;
 }
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto operator-(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator-(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     auto result = cast<R>(a); result -= cast<R>(b); return result;
 }
@@ -58,16 +55,14 @@ template<class R>
 KOKKOS_INLINE_FUNCTION constexpr SymmetricTensor3<R> operator-(SymmetricTensor3<R> a) noexcept
 { a *= R{-1}; return a; }
 template<class A, class S> requires std::is_arithmetic_v<S>
-KOKKOS_INLINE_FUNCTION constexpr auto operator*(SymmetricTensor3<A> a, S s) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator*(SymmetricTensor3<A> a, S s) noexcept {
     using R = std::common_type_t<A, S>;
     auto result = cast<R>(a); result *= static_cast<R>(s); return result;
 }
 template<class S, class A> requires std::is_arithmetic_v<S>
 KOKKOS_INLINE_FUNCTION constexpr auto operator*(S s, SymmetricTensor3<A> a) noexcept { return a*s; }
 template<class A, class S> requires std::is_arithmetic_v<S>
-KOKKOS_INLINE_FUNCTION constexpr auto operator/(SymmetricTensor3<A> a, S s) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator/(SymmetricTensor3<A> a, S s) noexcept {
     using R = std::common_type_t<A, S>;
     auto result = cast<R>(a); result /= static_cast<R>(s); return result;
 }
@@ -77,8 +72,7 @@ KOKKOS_INLINE_FUNCTION constexpr Matrix3<R> to_matrix(SymmetricTensor3<R> a) noe
 { return {{{a.xx, a.xy, a.xz}, {a.xy, a.yy, a.yz}, {a.xz, a.yz, a.zz}}}; }
 
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto operator*(SymmetricTensor3<A> a, Vector3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator*(SymmetricTensor3<A> a, Vector3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     const auto s = cast<R>(a); const auto v = cast<R>(b);
     return Vector3<R>{s.xx*v.x+s.xy*v.y+s.xz*v.z,
@@ -93,8 +87,7 @@ KOKKOS_INLINE_FUNCTION constexpr SymmetricTensor3<R> symmetric_outer(Vector3<R> 
 
 /// @brief Full Frobenius contraction sum_ij(a_ij*b_ij); off-diagonal products occur twice.
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto double_contract(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto double_contract(SymmetricTensor3<A> a, SymmetricTensor3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     const auto x = cast<R>(a), y = cast<R>(b);
     return x.xx*y.xx+x.yy*y.yy+x.zz*y.zz+R{2}*(x.xy*y.xy+x.xz*y.xz+x.yz*y.yz);
@@ -103,8 +96,7 @@ template<class A, class B>
 KOKKOS_INLINE_FUNCTION constexpr auto quadratic_form(SymmetricTensor3<A> a, Vector3<B> v) noexcept
 { return dot(v, a*v); }
 template<class R>
-KOKKOS_INLINE_FUNCTION bool isfinite(SymmetricTensor3<R> a) noexcept
-{
+KOKKOS_INLINE_FUNCTION bool isfinite(SymmetricTensor3<R> a) noexcept {
     return Kokkos::isfinite(a.xx) && Kokkos::isfinite(a.yy) && Kokkos::isfinite(a.zz) &&
            Kokkos::isfinite(a.xy) && Kokkos::isfinite(a.xz) && Kokkos::isfinite(a.yz);
 }

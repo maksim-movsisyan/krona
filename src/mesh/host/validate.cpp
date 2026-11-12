@@ -14,10 +14,9 @@
 namespace krona::mesh::host {
 namespace {
 
-/// @brief Reports the first invalid invariant without allocating diagnostic strings.
+/// @brief Reports the first invalid invariant without allocating diagnostic strings. 
 [[noreturn]] void invalid(const MeshPart& mesh, const char* reason,
-                         const char* entity = "mesh", std::size_t index = 0)
-{
+                         const char* entity = "mesh", std::size_t index = 0) {
     char message[320];
     std::snprintf(message, sizeof(message), "Mesh validation: rank=%d %s=%zu: %s",
                   mesh.rank, entity, index, reason);
@@ -26,30 +25,27 @@ namespace {
 
 /// @brief Validates CSR dimensions and monotone offsets before payload indexing.
 void check_csr(const MeshPart& mesh, const std::vector<std::size_t>& offsets,
-               std::size_t rows, std::size_t payload, const char* name)
-{
+               std::size_t rows, std::size_t payload, const char* name) {
     // Check dimensions first so even an empty/malformed offsets array is safe to inspect.
     if (offsets.size() != rows + 1 || offsets.front() != 0 || offsets.back() != payload ||
         !std::is_sorted(offsets.begin(), offsets.end())) invalid(mesh, "Invalid CSR offsets", name);
 }
 
 /// @brief Checks finite coordinate or centroid components in stored precision.
-[[nodiscard]] bool finite(GeometryReal x, GeometryReal y, GeometryReal z) noexcept
-{
+[[nodiscard]] bool finite(GeometryReal x, GeometryReal y, GeometryReal z) noexcept {
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
 }
 
 /// @brief Checks local entity counts, array extents and required metric storage.
-void check_shape(const MeshPart& mesh)
-{
+void check_shape(const MeshPart& mesh) {
     if (mesh.nprocs <= 0 || mesh.rank < 0 || mesh.rank >= mesh.nprocs ||
         mesh.n_own < 0 || mesh.n_cells < mesh.n_own || mesh.n_nodes_own < 0 ||
         mesh.n_nodes < mesh.n_nodes_own || mesh.n_faces < 0 || !mesh.faces_grouped ||
         mesh.n_internal_faces < 0 || mesh.n_internal_faces > mesh.n_inner_faces ||
         mesh.n_inner_faces > mesh.n_faces) invalid(mesh, "Invalid counts or unfinished face grouping");
-    const auto cells = static_cast<std::size_t>(mesh.n_cells);
-    const auto nodes = static_cast<std::size_t>(mesh.n_nodes);
-    const auto faces = static_cast<std::size_t>(mesh.n_faces);
+    const std::size_t cells = static_cast<std::size_t>(mesh.n_cells);
+    const std::size_t nodes = static_cast<std::size_t>(mesh.n_nodes);
+    const std::size_t faces = static_cast<std::size_t>(mesh.n_faces);
     if (mesh.cell_type.size() != cells || mesh.cell_gid.size() != cells || mesh.cell_donor.size() != cells ||
         mesh.cell_volume.size() != cells || mesh.cell_centroid_x.size() != cells ||
         mesh.cell_centroid_y.size() != cells || mesh.cell_centroid_z.size() != cells)
@@ -68,11 +64,10 @@ void check_shape(const MeshPart& mesh)
 }
 
 /// @brief Checks owned/ghost cell topology, global IDs, donors and positive finite metrics.
-void check_cells(const MeshPart& mesh)
-{
+void check_cells(const MeshPart& mesh) {
     for (std::size_t c = 0; c < mesh.cell_type.size(); ++c) {
-        const auto type = static_cast<std::size_t>(mesh.cell_type[c]);
-        const auto begin = mesh.cell_nodes_offsets[c], end = mesh.cell_nodes_offsets[c + 1];
+        const std::size_t type = static_cast<std::size_t>(mesh.cell_type[c]);
+        const std::size_t begin = mesh.cell_nodes_offsets[c], end = mesh.cell_nodes_offsets[c + 1];
         if (type >= 4 || end - begin != static_cast<std::size_t>(nodes_per_type[type]))
             invalid(mesh, "Unsupported cell type or connectivity arity", "cell", c);
         if (mesh.cell_gid[c] < 0 || static_cast<std::uint64_t>(mesh.cell_gid[c]) >= mesh.n_cells_g)
@@ -81,7 +76,7 @@ void check_cells(const MeshPart& mesh)
         const int donor = mesh.cell_donor[c];
         if (owned ? donor != -1 : donor < 0 || donor >= mesh.nprocs || donor == mesh.rank)
             invalid(mesh, "Invalid owned/ghost cell donor", "cell", c);
-        for (auto k = begin; k < end; ++k) {
+        for (std::size_t k = begin; k < end; ++k) {
             const auto node = mesh.cell_nodes[k];
             if (node < 0 || node >= mesh.n_nodes || (owned && node >= mesh.n_nodes_own))
                 invalid(mesh, "Cell node outside its allowed local range", "cell", c);
@@ -98,8 +93,7 @@ void check_cells(const MeshPart& mesh)
 }
 
 /// @brief Checks the three face ranges, sorted keys, owner facets and stored metrics.
-void check_faces(const MeshPart& mesh)
-{
+void check_faces(const MeshPart& mesh) {
     constexpr double normal_tolerance = 32 * static_cast<double>(std::numeric_limits<GeometryReal>::epsilon());
     for (std::size_t f = 0; f < mesh.face_owner.size(); ++f) {
         const auto owner = mesh.face_owner[f], neighbour = mesh.face_neigh[f];
@@ -148,8 +142,7 @@ void check_faces(const MeshPart& mesh)
 }
 
 /// @brief Verifies that patch CSR lists every labelled boundary face exactly once in order.
-void check_patches(const MeshPart& mesh)
-{
+void check_patches(const MeshPart& mesh) {
     auto expected = static_cast<std::size_t>(mesh.n_inner_faces);
     for (std::size_t p = 0; p < mesh.patches.size(); ++p) {
         for (auto k = mesh.patch_face_offsets[p]; k < mesh.patch_face_offsets[p + 1]; ++k) {
@@ -166,8 +159,7 @@ void check_patches(const MeshPart& mesh)
 }
 
 /// @brief Checks peer layouts, send ranges and one receive slot per ghost without communication.
-void check_halo(const MeshPart& mesh)
-{
+void check_halo(const MeshPart& mesh) {
     const auto peers = mesh.nb_ranks.size();
     check_csr(mesh, mesh.send_offsets, peers, mesh.send_owned_local.size(), "halo_send");
     check_csr(mesh, mesh.recv_offsets, peers, mesh.recv_ghost_local.size(), "halo_recv");
@@ -196,8 +188,7 @@ void check_halo(const MeshPart& mesh)
 } // namespace
 
 /// @brief Runs local structural checks with immediate WORLD-abort on invalid data.
-void validate_meshpart(const MeshPart& mesh)
-{
+void validate_meshpart(const MeshPart& mesh) {
     if (mpi::is_active()) mpi::require_main_thread();
     mpi::guarded([&](){
         check_shape(mesh); check_cells(mesh); check_faces(mesh); check_patches(mesh); check_halo(mesh);
@@ -205,8 +196,7 @@ void validate_meshpart(const MeshPart& mesh)
 }
 
 /// @brief Reduces exact counts, flux-area sums and packed load extrema, then checks conservation.
-MeshStatistics collect_mesh_statistics(const MeshPart& mesh, mpi::CommView comm)
-{
+MeshStatistics collect_mesh_statistics(const MeshPart& mesh, mpi::CommView comm) {
     mpi::require(!comm.is_null() && mpi::is_active(), "Mesh statistics require active MPI");
     mpi::require_main_thread();
     mpi::require(mesh.rank == comm.rank() && mesh.nprocs == comm.size(), "Mesh statistics communicator mismatch");

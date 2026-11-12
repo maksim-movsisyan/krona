@@ -66,8 +66,7 @@ public:
     explicit Solver(const Matrix& matrix, SolverOptions options = {},
                     typename preconditioner_type::Factory custom_factory = {})
         : matrix_(matrix), options_(std::move(options)),
-          preconditioner_(matrix, options_.preconditioner, std::move(custom_factory))
-    {
+          preconditioner_(matrix, options_.preconditioner, std::move(custom_factory)) {
         mpi::guarded([&] {
             relative_tolerance_ = options_.relative_tolerance.value_or(std::is_same_v<Scalar, float> ? 1.0e-5 : 1.0e-10);
             mpi::require(std::isfinite(relative_tolerance_) && relative_tolerance_ >= 0 && relative_tolerance_ < 1 &&
@@ -102,8 +101,7 @@ public:
     Solver& operator=(const Solver&) = delete;
 
     /// @brief Optional explicit warm-up; solve also prepares after coefficient revisions.
-    void prepare()
-    {
+    void prepare() {
         mpi::guarded([&] {
             // Let a rebuild release the old hierarchy before allocating a new one.
             problem_->setLeftPrec(Teuchos::null);
@@ -119,8 +117,7 @@ public:
     [[nodiscard]] const Teuchos::RCP<manager_type>& native() const noexcept { return manager_; }
 
     /// @brief Uses the supplied initial guess; RHS=0 uses ||r_initial|| as the relative reference.
-    [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution)
-    {
+    [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution) {
         matrix_.require_committed(); rhs.require_committed(); solution.require_committed();
         const auto* map = matrix_.distribution().native().getRawPtr();
         mpi::require(rhs.distribution().native().getRawPtr() == map && solution.distribution().native().getRawPtr() == map,

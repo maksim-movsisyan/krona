@@ -9,8 +9,7 @@
 namespace krona::mpi {
 
 /// @brief Available MPI thread support levels.
-enum class ThreadLevel : int
-{
+enum class ThreadLevel : int {
     single = MPI_THREAD_SINGLE,
     funneled = MPI_THREAD_FUNNELED,
     serialized = MPI_THREAD_SERIALIZED,
@@ -18,8 +17,7 @@ enum class ThreadLevel : int
 };
 
 /// @brief Returns the MPI name of a thread support level.
-[[nodiscard]] constexpr std::string_view to_string(ThreadLevel level) noexcept
-{
+[[nodiscard]] constexpr std::string_view to_string(ThreadLevel level) noexcept {
     // String literals remain valid for the lifetime of the program.
     switch (level) {
     case ThreadLevel::single:     return "MPI_THREAD_SINGLE";
@@ -32,8 +30,7 @@ enum class ThreadLevel : int
 
 /// @brief Initializes MPI or borrows an existing runtime on the MPI main thread.
 /// Owned MPI is finalized on normal exit; all MPI resources must be released first.
-class Runtime final
-{
+class Runtime final {
 public:
     /// @brief Initializes or borrows MPI, passing command-line arguments if needed.
     Runtime(

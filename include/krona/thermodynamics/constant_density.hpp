@@ -20,8 +20,7 @@ struct ConstantDensity {
 template<class Real = ComputeReal>
 struct ThermalConstantDensity {
     Real rho = 1000, specific_heat = 4200, reference_temperature = 273;
-    void validate() const
-    {
+    void validate() const {
         ConstantDensity<Real>{rho}.validate();
         mpi::require(std::isfinite(specific_heat) && specific_heat > Real{0} &&
             std::isfinite(reference_temperature) && reference_temperature > Real{0},

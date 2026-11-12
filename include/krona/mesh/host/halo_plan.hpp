@@ -8,7 +8,7 @@ namespace krona::mesh::host {
 
 /// @brief Read-only host metadata for MPI; offsets count cells, not scalar entries or bytes.
 /// Peer p uses indices [offsets[p], offsets[p+1]) in the matching MeshView halo map.
-/// Storage and CPU source arrays must outlive all users; do not capture this view in GPU kernels.
+/// Storage and CPU source arrays must outlive all users; do not capture this view in GPU kernels. 
 struct HaloPlanView {
     std::span<const int> nb_ranks;
     std::span<const std::size_t> send_offsets;

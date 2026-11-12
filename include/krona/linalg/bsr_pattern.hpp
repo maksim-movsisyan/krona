@@ -14,8 +14,7 @@ public:
     using graph_type = typename CsrPattern<Exec>::graph_type;
 
     BsrPattern(const CsrPattern<Exec>& block_graph, LocalOrdinal block_size)
-        : graph_(block_graph), distribution_(block_graph.distribution().expanded(checked_size(block_size))), block_size_(block_size)
-    {
+        : graph_(block_graph), distribution_(block_graph.distribution().expanded(checked_size(block_size))), block_size_(block_size) {
         const std::size_t per_block = static_cast<std::size_t>(block_size_)*static_cast<std::size_t>(block_size_);
         mpi::require(graph_.local_nonzeros() <= std::numeric_limits<std::size_t>::max()/per_block,
                      "Linalg: BSR coefficient count overflows");
@@ -37,8 +36,7 @@ public:
     [[nodiscard]] std::span<const std::size_t> host_input_to_entry() const { return graph_.host_input_to_entry(); }
 
 private:
-    static LocalOrdinal checked_size(LocalOrdinal size)
-    {
+    static LocalOrdinal checked_size(LocalOrdinal size) {
         mpi::require(size > 0, "Linalg: nonpositive component count");
         mpi::require(size <= std::numeric_limits<LocalOrdinal>::max()/size,
                      "Linalg: squared block size exceeds Tpetra int ordinals");

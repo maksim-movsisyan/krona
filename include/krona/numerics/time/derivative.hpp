@@ -20,15 +20,14 @@ struct Derivative {
  
 namespace detail {
 template<class Real>
-void require_step(Real dt)
-{
+void require_step(Real dt) {
     static_assert(std::is_floating_point_v<Real>);
     mpi::require(std::isfinite(dt) && dt > Real{0},
         "Time derivative: time step must be finite and positive");
 }
+
 template<class Real, std::size_t N>
-Derivative<Real, N> checked(Derivative<Real, N> derivative)
-{
+Derivative<Real, N> checked(Derivative<Real, N> derivative) {
     for (const auto weight : derivative.weights) {
         mpi::require(std::isfinite(weight),
             "Time derivative: unrepresentable coefficient");
@@ -41,8 +40,7 @@ Derivative<Real, N> checked(Derivative<Real, N> derivative)
 
 struct BackwardEuler {
     template<class Real>
-    [[nodiscard]] auto coefficients(Real dt) const
-    {
+    [[nodiscard]] auto coefficients(Real dt) const {
         detail::require_step(dt);
         const Real inverse = Real{1}/dt;
         return detail::checked(Derivative<Real, 1>{{inverse, -inverse}});
@@ -53,14 +51,12 @@ struct BackwardEuler {
 /// No startup, error control, step acceptance or step-ratio policy is implied.
 struct Bdf2 {
     template<class Real>
-    [[nodiscard]] auto coefficients(Real dt) const
-    {
+    [[nodiscard]] auto coefficients(Real dt) const {
         detail::require_step(dt);
         return detail::checked(Derivative<Real, 2>{{Real{1.5}/dt, -Real{2}/dt, Real{0.5}/dt}});
     }
     template<class Real>
-    [[nodiscard]] auto coefficients(Real dt, Real previous_dt) const
-    {
+    [[nodiscard]] auto coefficients(Real dt, Real previous_dt) const {
         detail::require_step(dt);
         detail::require_step(previous_dt);
         const Real ratio = dt/previous_dt;

@@ -354,7 +354,7 @@ Custom conditions may keep the old five-argument callable interface; a sixth err
 
 ## Configuration
 
-`read_config(path)` and `parse_config(text)` read constant conditions. Every labelled patch must appear exactly once with matching ID and exact name; order is irrelevant. Unlabelled faces use `[unlabelled]`. With no labels, write `boundary_condition = []` explicitly.
+`read_config(path, comm)` reads TOML on rank zero, broadcasts the text and parses it on every rank. `parse_config(text)` parses locally. Every labelled patch must appear exactly once with matching ID and exact name. Unlabelled faces use `[unlabelled]`. With no labels, write `boundary_condition = []` explicitly.
 
 ```toml
 [[boundary_condition]]
@@ -368,13 +368,39 @@ velocity = [0.0, 0.0, 0.0]
 type = "SYMMETRY"
 ```
 
-Construct `Manager(layout, model, config)` or call `configure(config)`, then `finalize()`. Supported type names match the condition table: `SYMMETRY`, `SLIP_WALL`, `ADIABATIC_WALL`, `ISOTHERMAL_WALL`, `HEAT_FLUX_WALL`, `VELOCITY_INLET`, `TOTAL_CONDITIONS_INLET`, `PRESSURE_OUTLET`, `SUPERSONIC_INLET`, `SUPERSONIC_OUTLET`.
+For numeric conditions, construct `Manager(layout, model, config)` or call `configure(config)`, then `finalize()`. Supported type names match the condition table: `SYMMETRY`, `SLIP_WALL`, `ADIABATIC_WALL`, `ISOTHERMAL_WALL`, `HEAT_FLUX_WALL`, `VELOCITY_INLET`, `TOTAL_CONDITIONS_INLET`, `PRESSURE_OUTLET`, `SUPERSONIC_INLET`, `SUPERSONIC_OUTLET`.
 
 Canonical parameters are `pressure`, `temperature`, `velocity`, `flux`, `total_pressure`, `total_temperature`, `mach`, `direction`, `allow_choking`. Supersonic TOML accepts velocity **or** positive Mach with direction. A pressure outlet's nested `backflow` table uses type `REJECT`, `TOTAL_CONDITIONS_INLET`, or `DIRECTION_TEMPERATURE` and the corresponding parameters above.
 
 Legacy aliases remain accepted: `WALL_ADIABATIC`, `WALL_ISOTHERMAL`, `OUTLET_BACK_PRESSURE`, `INLET_TOTAL_TP`, `INLET_SUPERSONIC`, `OUTLET_SUPERSONIC`; parameter aliases `T_wall`, `p_back`, `p`, `T`, `p0`, `T0`, `M` retain their original condition-specific meanings. Do not supply a parameter and its alias together.
 
-Unknown condition keys/types are rejected. Import metadata (`family`, `source_type`, `global_face_count`) and other scalar tables are accepted, but `scalar.temperature` conflicts with the physical temperature channel and is rejected. `FARFIELD` and `USER_DEFINED` are not implemented parser types. Profiles/custom closures are assigned in C++.
+Unknown condition keys/types are rejected. Import metadata (`family`, `source_type`, `global_face_count`) and other scalar tables are accepted, but `scalar.temperature` conflicts with the physical temperature channel and is rejected. `FARFIELD` and `USER_DEFINED` are not implemented parser types.
+
+### Tabulated parameters
+
+Each numeric scalar parameter and each component of `velocity` or `direction` accepts a number or a CSV path. The same rule applies to nested backflow parameters. `allow_choking` remains a boolean. For a Mach-based inlet, every sampled Mach number must be positive.
+
+```toml
+[[boundary_condition]]
+patch_id = 0
+name = "wall"
+type = "ISOTHERMAL_WALL"
+temperature = "profiles/wall_temperature.csv"
+velocity = [0.0, "profiles/wall_uy.csv", 0.0]
+```
+
+Each CSV supplies one scalar. Its header contains `value` and one to three axes selected from `x`, `y`, `z`. The rows must cover the full Cartesian grid on the active axes, with at least two coordinates on each. Relative paths use rank zero's working directory. Each rank interpolates the profiles at its own face centroids. A centroid outside the table bounds on an active axis causes a configuration error.
+
+Include `<krona/boundary/physical/tabulated_config.hpp>` and use the same configuration and communicator on all ranks, including ranks with empty local patches:
+
+```cpp
+const auto config = ph::read_config("bc.toml", comm);
+ph::TabulatedManager<Model, Exec, Real> boundary(layout, model);
+ph::configure_tabulated(boundary, config, host_mesh, comm);
+boundary.finalize();
+```
+
+Pass the host mesh used to build the layout. The manager owns the sampled buffers. Complete prior boundary kernels before rebinding conditions. `configure_tabulated()` also accepts numeric conditions, and `set()` supports custom C++ providers.
 
 ### Compressible flow: pressure outlet with reservoir backflow
 
@@ -431,6 +457,9 @@ type = "REJECT"
 | --- | --- |
 | `BoundaryLayout(...)` | Local blocking geometry preparation/validation and fence. |
 | `Manager(...)`, `set*()`, `configure()`, `finalize()` | Host work only; no device submission/fence or MPI communication. Validation hooks must follow that contract. |
+| `parse_config()` | Local, blocking TOML parsing. |
+| `read_config()` | Blocking collective TOML load, followed by local parsing. |
+| `configure_tabulated()` | Collective CSV loads, local interpolation and completed host-to-device copies. |
 | Profile factories and field-binding helpers | Construct parameter/descriptor objects; no field-value copies or work submission. |
 | `status.begin_async()` | Queues flag reset; the previous batch must have been checked. |
 | `apply_async()`, `evaluate_async()` | Host checks and kernel submission; no final fence. Require a begun status on the layout's execution instance. |

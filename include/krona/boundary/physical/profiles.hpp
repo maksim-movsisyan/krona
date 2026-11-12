@@ -21,14 +21,13 @@ template<class C, class P> struct ConditionType<Profiled<C, P>> { using type = C
 template<class C> using condition_type_t = typename ConditionType<std::remove_cvref_t<C>>::type;
 template<class C> inline constexpr bool is_profiled = ConditionType<std::remove_cvref_t<C>>::profiled;
 
-/// @brief A custom provider returns exactly Condition from provider(context).
+/// @brief Wraps a provider that returns a Condition when called with a face context.
 template<class Condition, class Provider>
 [[nodiscard]] KOKKOS_INLINE_FUNCTION auto profiled(Provider provider)
 { return Profiled<Condition, Provider>{provider}; }
 
 template<class C, class Context>
-KOKKOS_INLINE_FUNCTION auto sample_condition(const C& condition, const Context& context)
-{
+KOKKOS_INLINE_FUNCTION auto sample_condition(const C& condition, const Context& context) {
     if constexpr (is_profiled<C>) {
         static_assert(std::is_same_v<std::remove_cvref_t<decltype(condition.parameters(context))>, condition_type_t<C>>,
                       "Physical profile: provider must return its declared condition type");
@@ -38,8 +37,7 @@ KOKKOS_INLINE_FUNCTION auto sample_condition(const C& condition, const Context& 
 
 /// @brief Mechanical wall projection; factory profiles do not read thermal parameters here.
 template<class C,class Context>
-KOKKOS_INLINE_FUNCTION auto sample_wall_velocity(const C& condition,const Context& context)
-{
+KOKKOS_INLINE_FUNCTION auto sample_wall_velocity(const C& condition,const Context& context) {
     if constexpr (is_profiled<C> && requires { condition.parameters.wall_velocity(context); })
         return condition.parameters.wall_velocity(context);
     else return sample_condition(condition,context).velocity;
@@ -67,7 +65,7 @@ struct MechanicalParameters {
 };
 template<class R, template<class> class Wall, class P, class V>
 struct ThermalWallParameters {
-    P parameter; V velocity;
+    P parameter; V velocity; // parameter is temperature or heat flux or temperature gradient depending on wall type;
     template<class C> KOKKOS_INLINE_FUNCTION auto wall_velocity(const C& c) const { return vector_parameter<R>(velocity,c); }
     template<class C> KOKKOS_INLINE_FUNCTION auto operator()(const C& c) const
     { return Wall<R>{scalar_parameter<R>(parameter,c),vector_parameter<R>(velocity,c)}; }
@@ -121,8 +119,7 @@ struct ReservoirParameters {
 template<class R, class D, class T>
 struct ReverseParameters {
     D direction; T temperature;
-    template<class C> KOKKOS_INLINE_FUNCTION auto operator()(const C& c) const
-    {
+    template<class C> KOKKOS_INLINE_FUNCTION auto operator()(const C& c) const {
         Backflow<R> result; result.mode=BackflowMode::DirectionTemperature;
         result.direction=vector_parameter<R>(direction,c); result.temperature=scalar_parameter<R>(temperature,c); return result;
     }

@@ -32,8 +32,6 @@ using krona::test::host::check;
 using krona::test::host::equal;
 using krona::test::host::near;
 
-// Small fixtures make expected node counts and interface mappings explicit.
-
 /// @brief Creates a unit cube with caller-selected subdivisions.
 gen::GeneratorConfig cube(std::array<std::size_t, 3> cells = {2, 3, 2}) {
     gen::GeneratorConfig config;

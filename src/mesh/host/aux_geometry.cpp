@@ -7,8 +7,7 @@
 namespace krona::mesh::host {
 
 /// @brief Computes each missing face metric from one shared centre-displacement calculation.
-void MeshAuxGeometry::add_geometry(const MeshPart& m, AuxGeomType requested)
-{
+void MeshAuxGeometry::add_geometry(const MeshPart& m, AuxGeomType requested) {
     const std::uint64_t bits = static_cast<std::uint64_t>(requested);
     if ((bits & ~static_cast<std::uint64_t>(AuxGeomType::All)) != 0) mpi::fatal("Unknown auxiliary geometry flag");
     const auto pending = static_cast<AuxGeomType>(bits & ~static_cast<std::uint64_t>(active_mask) &
@@ -113,8 +112,7 @@ void MeshAuxGeometry::add_geometry(const MeshPart& m, AuxGeomType requested)
 }
 
 /// @brief Creates an empty metric cache and fills requested local face arrays.
-MeshAuxGeometry build_aux_geometry(const MeshPart& m, AuxGeomType mask)
-{
+MeshAuxGeometry build_aux_geometry(const MeshPart& m, AuxGeomType mask) {
     MeshAuxGeometry result;
     result.add_geometry(m, mask);
     return result;

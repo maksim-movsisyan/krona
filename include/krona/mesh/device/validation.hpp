@@ -339,7 +339,8 @@ struct ValidateIndices {
 };
 
 /// @brief Checks selected cell incidences after all CSR/index checks have succeeded.
-template <MeshData Data, AuxConnType Connectivity, class Space> struct ValidateCellIncidence {
+template <MeshData Data, AuxConnType Connectivity, class Space> 
+struct ValidateCellIncidence {
     MeshView<Space> mesh;
     AuxConnectivityView<Space> conn;
     KOKKOS_INLINE_FUNCTION void operator()(std::size_t cell, std::size_t& bad) const {
@@ -530,10 +531,9 @@ namespace detail {
 template <MeshData Data, AuxConnType Connectivity, AuxGeomType Geometry, class Space>
 std::size_t check_shapes(MeshView<Space> mesh, AuxConnectivityView<Space> conn, AuxGeometryView<Space> geom) {
     static_assert((static_cast<std::uint64_t>(Data) & ~static_cast<std::uint64_t>(MeshData::All)) == 0);
-    static_assert(
-        (static_cast<std::uint64_t>(Connectivity) & ~static_cast<std::uint64_t>(AuxConnType::All)) == 0);
-    static_assert((static_cast<std::uint64_t>(Geometry) & ~static_cast<std::uint64_t>(AuxGeomType::All)) ==
-                  0);
+    static_assert((static_cast<std::uint64_t>(Connectivity) & ~static_cast<std::uint64_t>(AuxConnType::All)) == 0);
+    static_assert((static_cast<std::uint64_t>(Geometry) & ~static_cast<std::uint64_t>(AuxGeomType::All)) == 0);
+
     if (!valid_sizes(mesh.sizes))
         return 1;
     std::size_t bad = 0;
@@ -544,11 +544,11 @@ std::size_t check_shapes(MeshView<Space> mesh, AuxConnectivityView<Space> conn, 
     check(mesh.has(Data));
     check(conn.has(Connectivity));
     check(geom.has(Geometry));
-    const auto cells = static_cast<std::size_t>(mesh.sizes.n_cells);
-    const auto own = static_cast<std::size_t>(mesh.sizes.n_own);
-    const auto faces = static_cast<std::size_t>(mesh.sizes.n_faces);
-    const auto nodes = static_cast<std::size_t>(mesh.sizes.n_nodes);
-    const auto own_nodes = static_cast<std::size_t>(mesh.sizes.n_nodes_own);
+    const std::size_t cells = static_cast<std::size_t>(mesh.sizes.n_cells);
+    const std::size_t own = static_cast<std::size_t>(mesh.sizes.n_own);
+    const std::size_t faces = static_cast<std::size_t>(mesh.sizes.n_faces);
+    const std::size_t nodes = static_cast<std::size_t>(mesh.sizes.n_nodes);
+    const std::size_t own_nodes = static_cast<std::size_t>(mesh.sizes.n_nodes_own);
     if constexpr (Connectivity != AuxConnType::None)
         check(conn.n_faces == mesh.sizes.n_faces && conn.n_cells_own == mesh.sizes.n_own &&
               conn.n_nodes_own == mesh.sizes.n_nodes_own);
@@ -650,11 +650,11 @@ template <MeshData Data = MeshData::All, AuxConnType Connectivity = AuxConnType:
         ++result.shapes;
     if (result.shapes != 0)
         return result;
-    const auto cells = static_cast<std::size_t>(mesh.sizes.n_cells);
-    const auto own = static_cast<std::size_t>(mesh.sizes.n_own);
-    const auto faces = static_cast<std::size_t>(mesh.sizes.n_faces);
-    const auto nodes = static_cast<std::size_t>(mesh.sizes.n_nodes);
-    const auto own_nodes = static_cast<std::size_t>(mesh.sizes.n_nodes_own);
+    const std::size_t cells = static_cast<std::size_t>(mesh.sizes.n_cells);
+    const std::size_t own = static_cast<std::size_t>(mesh.sizes.n_own);
+    const std::size_t faces = static_cast<std::size_t>(mesh.sizes.n_faces);
+    const std::size_t nodes = static_cast<std::size_t>(mesh.sizes.n_nodes);
+    const std::size_t own_nodes = static_cast<std::size_t>(mesh.sizes.n_nodes_own);
     if constexpr (has(Data, MeshData::CellGeometry) || has(Geometry, AuxGeomType::WallDistance))
         result.cells = detail::reduce("mesh/validate_cells", exec, cells,
                                       ValidateCells<Data, Geometry, Space>{mesh, geom});

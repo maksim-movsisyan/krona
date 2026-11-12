@@ -12,11 +12,10 @@ namespace krona::mesh::generation {
 class Grading {
 public:
     /// @brief Returns num_cells + 1 normalized node positions, including both endpoints.
-    // Node indices: 0 .. num_cells; endpoints: 0.0 and 1.0.
+    // Node indices: 0 .. num_cells; endpoints: 0.0 and 1.0. 
     // Geometric parameter: last-cell width / first-cell width.
     // Tanh parameter: positive clustering strength.
-    [[nodiscard]] static std::vector<double> compute_distribution(std::size_t num_cells, GradingType type, double parameter) noexcept 
-    {
+    [[nodiscard]] static std::vector<double> compute_distribution(std::size_t num_cells, GradingType type, double parameter) noexcept {
 
         return mpi::guarded([&] {
             mpi::require(num_cells > 0 && num_cells < std::vector<double>{}.max_size(),

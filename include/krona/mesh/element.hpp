@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string_view>
 
-namespace krona::mesh {
+namespace krona::mesh { 
 
 // Linear elements; node order follows CGNS SIDS.
 /// @brief Identifies supported linear volume, boundary and point elements.

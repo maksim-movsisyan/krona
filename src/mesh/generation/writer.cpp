@@ -1,17 +1,18 @@
 #include <krona/mesh/generation/writer.hpp>
+#include <krona/mesh/generation/hex.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <krona/mesh/generation/hex.hpp>
 #include <limits>
 #include <map>
 #include <string>
 #include <vector>
 
-#include <cgnslib.h>
 #include <krona/mpi/error.hpp>
+
+#include <cgnslib.h>
 #include <pcgnslib.h>
 
 namespace krona::mesh::generation {
@@ -28,8 +29,7 @@ void check_cgns(int status, const char *msg) {
 /// @brief Splits a global interval into balanced zero-based rank intervals.
 std::pair<std::uint64_t, std::uint64_t> decompose_1d(std::uint64_t total_count, int rank,
                                                      int nprocs) noexcept {
-    if (total_count == 0)
-        return {0, 0};
+    if (total_count == 0) return {0, 0};
     const std::uint64_t base = total_count / static_cast<std::uint64_t>(nprocs);
     const std::uint64_t rem = total_count % static_cast<std::uint64_t>(nprocs);
 
@@ -105,16 +105,22 @@ struct ResolvedPatch {
     std::vector<ResolvedPatch> result;
     result.reserve(topo.boundary_patches().size());
     auto total_elements = topo.total_cells();
+
+    // loop over all boundary patches includig automatic
     for (const auto &patch : topo.boundary_patches()) {
         ResolvedPatch resolved;
         resolved.faces.reserve(patch.faces.size());
+
+        // loop over all macro faces in that patch
         for (const auto &macro_face : patch.faces) {
             const auto it = block_faces.find(hex::face_key(macro_face.vertices));
             mpi::require(it != block_faces.end(), "Boundary face does not match any block face");
+
             const auto [block, face] = it->second;
             const auto &source = config.blocks[block];
             mpi::require(hex::same_perimeter(macro_face.vertices, hex::face_vertices(source.vertices, face)),
                          "Boundary vertices must follow the face perimeter");
+
             const auto &layout = hex::layouts[face];
             const auto Nu = source.cells[layout.u];
             const auto Nv = source.cells[layout.v];
@@ -123,16 +129,16 @@ struct ResolvedPatch {
             resolved.faces.push_back({block, face, Nu, Nv, resolved.quads});
             resolved.quads += quads;
             total_elements += quads;
-        }
+        } // end loop over all macro faces
+
         mpi::require(resolved.quads <= limit / 4, "QUAD_4 connectivity exceeds CGNS index range");
         result.push_back(std::move(resolved));
-    }
+    } // end loop over all boundary patches includig automatic
     return result;
 }
 
 /// @brief Writes balanced coordinate intervals within the per-rank buffer budget.
-void write_coordinates(CgnsZone zone, const GeneratorConfig &config, const MacroTopology &topo,
-                       mpi::CommView comm) {
+void write_coordinates(CgnsZone zone, const GeneratorConfig &config, const MacroTopology &topo, mpi::CommView comm) {
     const auto total_nodes = topo.total_nodes();
     const auto rank = comm.rank();
     const auto nprocs = comm.size();
@@ -314,8 +320,8 @@ void write_boundaries(CgnsZone zone, const GeneratorConfig &config, const MacroT
 } // namespace
 
 /// @brief Writes the full mesh collectively using bounded host buffers.
-void write(const std::string &filepath, const GeneratorConfig &config, const MacroTopology &topo,
-           mpi::CommView comm) noexcept {
+void write(const std::string &filepath, const GeneratorConfig &config, 
+           const MacroTopology &topo, mpi::CommView comm) noexcept {
     mpi::guarded([&] {
         mpi::require(!comm.is_null(), "CGNS writing requires a live communicator");
         mpi::require(!filepath.empty() && filepath.find('\0') == std::string::npos,
@@ -324,7 +330,7 @@ void write(const std::string &filepath, const GeneratorConfig &config, const Mac
                       "Generator requires signed 64-bit CGNS indices");
         const auto limit = static_cast<std::uint64_t>(std::numeric_limits<cgsize_t>::max()) - 1;
         mpi::require(topo.total_nodes() > 0 && topo.total_cells() > 0 && topo.total_nodes() <= limit &&
-                         topo.total_cells() <= limit / 8,
+                     topo.total_cells() <= limit / 8,
                      "CGNS node IDs and HEXA_8 connectivity must fit signed 64-bit indices");
         const auto patches = resolve_patches(config, topo, limit);
 

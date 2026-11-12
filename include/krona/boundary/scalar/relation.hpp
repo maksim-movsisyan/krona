@@ -17,8 +17,7 @@ struct Relation {
 };
 
 template<class Real>
-KOKKOS_INLINE_FUNCTION bool finite(const Relation<Real>& r)
-{
+KOKKOS_INLINE_FUNCTION bool finite(const Relation<Real>& r) {
     return Kokkos::isfinite(r.value_owner) && Kokkos::isfinite(r.value_constant) &&
            Kokkos::isfinite(r.gradient_owner) && Kokkos::isfinite(r.gradient_constant);
 }

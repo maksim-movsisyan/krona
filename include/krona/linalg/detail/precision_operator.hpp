@@ -23,8 +23,7 @@ public:
     bool hasTransposeApply() const override { return inner_->hasTransposeApply(); }
 
     void apply(const MV& x, MV& y, Teuchos::ETransp mode = Teuchos::NO_TRANS,
-               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const override
-    {
+               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const override {
         mpi::require(x.getNumVectors() == y.getNumVectors(), "Linalg: mixed-precision multivector width mismatch");
         mpi::require(mode == Teuchos::NO_TRANS || hasTransposeApply(), "Linalg: preconditioner does not support transpose apply");
         if (alpha == Scalar{0}) {

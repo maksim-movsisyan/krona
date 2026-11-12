@@ -37,8 +37,7 @@ public:
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return data_.extent(0); }
     KOKKOS_INLINE_FUNCTION bool empty() const { return size() == 0; }
 
-    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int component) const
-    {
+    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int component) const {
         KOKKOS_ASSERT(component >= 0 && component < Components);
         if constexpr (Components == 1) return data_(entity);
         else return data_(entity, component);
@@ -59,22 +58,19 @@ public:
     { return (*this)(entity, 2); }
 
     /// @brief Full 3x3 tensor, ordered xx,xy,xz,yx,yy,yz,zx,zy,zz.
-    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int row, int column) const requires (Components == 9)
-    {
+    KOKKOS_INLINE_FUNCTION T& operator()(std::size_t entity, int row, int column) const requires (Components == 9) {
         KOKKOS_ASSERT(row >= 0 && row < 3 && column >= 0 && column < 3);
         return (*this)(entity, row * 3 + column);
     }
 
     /// @brief Returns a component View; its stride depends on the field layout.
-    KOKKOS_INLINE_FUNCTION auto component(int index) const
-    {
+    KOKKOS_INLINE_FUNCTION auto component(int index) const {
         KOKKOS_ASSERT(index >= 0 && index < Components);
         if constexpr (Components == 1) return data_;
         else return Kokkos::subview(data_, Kokkos::ALL(), index);
     }
 
-    KOKKOS_INLINE_FUNCTION auto as_const() const
-    {
+    KOKKOS_INLINE_FUNCTION auto as_const() const {
         using Result = FieldView<const std::remove_const_t<T>, Components, Space, Layout>;
         return Result{typename Result::view_type{data_}};
     }

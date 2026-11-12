@@ -12,8 +12,7 @@ namespace {
 void report(
     std::string_view message,
     std::source_location where,
-    int rank = -1) noexcept
-{
+    int rank = -1) noexcept {
     std::fprintf(stderr, "[KRONA fatal] world rank=%d\n  ", rank);
 
     // string_view does not require a trailing null terminator.
@@ -30,8 +29,7 @@ void report(
 [[noreturn]] void terminate_failure(
     std::string_view message,
     int error_code,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     // Check if MPI is still alive before querying the rank or aborting.
     const bool active = is_active();
     int rank = -1;
@@ -72,8 +70,7 @@ namespace detail {
 [[noreturn]] void mpi_failure(
     int error_code,
     std::string_view operation,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     // Preserve the caller's location rather than this wrapper's location.
     terminate_failure(operation, error_code, where);
 }
@@ -83,8 +80,7 @@ namespace detail {
 /// @brief Routes an application error to the common termination path.
 [[noreturn]] void fatal(
     std::string_view message,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     // MPI_SUCCESS indicates that there is no MPI error code to report.
     terminate_failure(message, MPI_SUCCESS, where);
 }

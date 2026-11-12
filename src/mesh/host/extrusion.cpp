@@ -452,4 +452,4 @@ ExtrusionInfo extrude_one_layer(RawMesh& mesh, mpi::CommView comm, const Extrusi
         return extrude(mesh, comm, options);
     });
 }
-} // namespace krona::mesh::host
+} // namespace krona::mesh::host 

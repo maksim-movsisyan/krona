@@ -9,15 +9,13 @@
 
 namespace krona::execution {
 
-inline void require_kokkos(std::source_location where = std::source_location::current()) noexcept
-{
+inline void require_kokkos(std::source_location where = std::source_location::current()) noexcept {
     mpi::require(Kokkos::is_initialized() && !Kokkos::is_finalized(),
                  "Operation require active Kokkos", where);
 }
  
 template<class Exec, class Submit>
-void complete(const Exec& exec, Submit&& submit)
-{
+void complete(const Exec& exec, Submit&& submit) {
     try {
         std::forward<Submit>(submit)();
         exec.fence("KRONA halo: setup copies complete");

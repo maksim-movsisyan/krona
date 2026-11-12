@@ -96,8 +96,7 @@ int run(int argc, char *const *argv, mpi::CommView comm) noexcept {
         mpi::require(!comm.is_null(), "Mesh generator app requires a live communicator");
         // Parse paths and options only on the master rank.
         ParseResult parsed;
-        if (comm.rank() == 0)
-            parsed = parse_arguments(argc, argv);
+        if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
 
         // Every rank takes the same help, error or run branch.
         int action = static_cast<int>(parsed.action);

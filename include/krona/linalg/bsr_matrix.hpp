@@ -11,8 +11,7 @@ namespace krona::linalg {
 namespace detail {
 
 template<class Native, class Values>
-auto block_values(Values values, std::size_t blocks, LocalOrdinal size)
-{
+auto block_values(Values values, std::size_t blocks, LocalOrdinal size) {
     using Layout = typename Native::little_block_type::array_layout;
     const std::size_t width = static_cast<std::size_t>(size);
     const std::size_t row_stride = std::is_same_v<Layout, Kokkos::LayoutLeft> ? 1 : width;
@@ -30,8 +29,7 @@ struct SetBsrValues {
     Permutation permutation;
     std::size_t width;
 
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
         const auto entry = i/(width*width);
         const auto row = (i/width)%width;
         const auto column = i%width;
@@ -58,8 +56,7 @@ public:
     static constexpr bool block_storage = true;
 
     /// @brief Collective; copies the pattern descriptors and allocates coefficients.
-    explicit BsrMatrix(const BsrPattern<Exec>& pattern) : pattern_(pattern)
-    {
+    explicit BsrMatrix(const BsrPattern<Exec>& pattern) : pattern_(pattern) {
         mpi::guarded([&] {
             matrix_ = create_native_structure<Scalar>();
             Kokkos::fence("Linalg: block matrix initialization complete");
@@ -80,22 +77,19 @@ public:
 
     /// @brief Native interoperability: independent coefficients sharing graph and point maps.
     template<class OtherScalar>
-    [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const
-    {
+    [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const {
         return Teuchos::rcp(new native_type_for<OtherScalar>(*pattern_.native(),
             *distribution().native(), *distribution().native(), block_size()));
     }
 
     /// @brief Flat native coefficient order; prefer edit_blocks() for layout-independent assembly.
-    [[nodiscard]] auto edit_values(const Exec& exec = {})
-    {
+    [[nodiscard]] auto edit_values(const Exec& exec = {}) {
         begin_access(exec); ++revision_;
         return mpi::guarded([&] { return matrix_->getValuesDeviceNonConst(); });
     }
     /// @brief Declares a full overwrite. Native BlockCrsMatrix still uses ReadWrite access.
     [[nodiscard]] auto overwrite_values(const Exec& exec = {}) { return edit_values(exec); }
-    [[nodiscard]] auto read_values(const Exec& exec = {}) const
-    {
+    [[nodiscard]] auto read_values(const Exec& exec = {}) const {
         begin_access(exec);
         return mpi::guarded([&] { return std::as_const(*matrix_).getValuesDevice(); });
     }
@@ -108,16 +102,14 @@ public:
     [[nodiscard]] auto read_blocks(const Exec& exec = {}) const
     { return detail::block_values<native_type>(read_values(exec), pattern_.local_nonzeros(), block_size()); }
 
-    void commit() const
-    {
+    void commit() const {
         if (pending_) { pending_exec_.fence("Linalg: block matrix accesses committed"); pending_ = false; }
     }
     void require_committed() const
     { mpi::require(!pending_, "Linalg: matrix has pending reads or writes; call commit()"); }
 
     /// @brief Blocking host input: original graph order, then row-major dense blocks.
-    void set_values(std::span<const Scalar> input)
-    {
+    void set_values(std::span<const Scalar> input) {
         require_committed();
         mpi::require(input.size() == local_values(), "Linalg: wrong BSR coefficient count");
         mpi::guarded([&] {
@@ -135,8 +127,7 @@ public:
 
     /// @brief Async original-order input: flat row-major blocks or a rank-three View.
     template<class Input>
-    void set_values_async(Input input, const Exec& exec = {})
-    {
+    void set_values_async(Input input, const Exec& exec = {}) {
         static_assert(Input::rank == 1 || Input::rank == 3);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Input::memory_space>::accessible);
         const auto width = static_cast<std::size_t>(block_size());
@@ -154,8 +145,7 @@ public:
 
     /// @brief Collective, blocking y = alpha*A*x + beta*y, including native remote imports.
     void apply(const Vector<Scalar, Exec>& x, Vector<Scalar, Exec>& y,
-               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const
-    {
+               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const {
         require_committed(); x.require_committed(); y.require_committed();
         const auto* map = distribution().native().getRawPtr();
         mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
@@ -178,8 +168,7 @@ private:
     std::uint64_t revision_ = 0;
     mutable bool pending_ = false;
 
-    void begin_access(const Exec& exec) const
-    {
+    void begin_access(const Exec& exec) const {
         mpi::require(!pending_ || pending_exec_ == exec, "Linalg: commit before switching execution instances");
         pending_exec_ = exec; pending_ = true;
     }

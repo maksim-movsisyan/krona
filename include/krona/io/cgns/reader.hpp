@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace krona::io::cgns {
+namespace krona::io::cgns { 
 
 /// @brief Policy for boundary point sets that cannot identify imported faces.
 enum class UnsupportedBoundary { reject, ignore };

@@ -28,8 +28,7 @@ public:
           cx_(m.geometry.cell_centroid_x), cy_(m.geometry.cell_centroid_y), cz_(m.geometry.cell_centroid_z),
           fx_(m.geometry.face_centroid_x), fy_(m.geometry.face_centroid_y), fz_(m.geometry.face_centroid_z),
           nx_(m.geometry.face_normal_x), ny_(m.geometry.face_normal_y), nz_(m.geometry.face_normal_z),
-          owned_(m.sizes.n_own), cells_(m.sizes.n_cells), inner_(m.sizes.n_inner_faces), face_count_(m.sizes.n_faces)
-    {
+          owned_(m.sizes.n_own), cells_(m.sizes.n_cells), inner_(m.sizes.n_inner_faces), face_count_(m.sizes.n_faces) {
         using mesh::device::MeshData;
 
         mpi::require(
@@ -45,8 +44,8 @@ public:
             offsets_.extent(0) == static_cast<std::size_t>(owned_) + 1,
             "Reconstruction: incompatible mesh stencil descriptors");
 
-        const auto cells = static_cast<std::size_t>(cells_);
-        const auto faces = static_cast<std::size_t>(face_count_);
+        const std::size_t cells = static_cast<std::size_t>(cells_);
+        const std::size_t faces = static_cast<std::size_t>(face_count_);
 
         mpi::require(
             cx_.extent(0) >= cells &&
@@ -69,9 +68,8 @@ public:
 
     KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t cell) const { return offsets_(cell+1)-offsets_(cell); }
 
-    KOKKOS_INLINE_FUNCTION auto operator()(std::size_t cell, std::size_t k) const
-    {
-        const auto f = static_cast<std::size_t>(faces_(offsets_(cell)+k));
+    KOKKOS_INLINE_FUNCTION auto operator()(std::size_t cell, std::size_t k) const {
+        const std::size_t f = static_cast<std::size_t>(faces_(offsets_(cell)+k));
         const auto other = owners_(f) == static_cast<LocalIndex>(cell) ? neighbours_(f) : owners_(f);
         const auto offset = point(f)-centre(cell);
         const auto span = other < 0 ? offset : centre(static_cast<std::size_t>(other))-centre(cell);
@@ -83,10 +81,9 @@ public:
 
     /// @brief Inner faces only. FirstOrder specialization reads endpoints without loading geometry.
     template<class Scheme = SecondOrderUpwind>
-    KOKKOS_INLINE_FUNCTION auto face(std::size_t f) const
-    {
+    KOKKOS_INLINE_FUNCTION auto face(std::size_t f) const {
         KOKKOS_ASSERT(f < static_cast<std::size_t>(inner_));
-        const auto p = static_cast<std::size_t>(owners_(f)), n = static_cast<std::size_t>(neighbours_(f));
+        const std::size_t p = static_cast<std::size_t>(owners_(f)), n = static_cast<std::size_t>(neighbours_(f));
         if constexpr (Scheme::requirements == Values) return FaceGeometry<Real>{{p, n}, {n, p}};
         else {
             const auto left = point(f)-centre(p), right = point(f)-centre(n);
@@ -97,10 +94,9 @@ public:
     }
     
     /// @brief Reconstruct only the interior trace; the application supplies the physical boundary closure.
-    KOKKOS_INLINE_FUNCTION auto boundary_side(std::size_t f) const
-    {
+    KOKKOS_INLINE_FUNCTION auto boundary_side(std::size_t f) const {
         KOKKOS_ASSERT(f >= static_cast<std::size_t>(inner_) && f < static_cast<std::size_t>(face_count_));
-        const auto p = static_cast<std::size_t>(owners_(f));
+        const std::size_t p = static_cast<std::size_t>(owners_(f));
         const auto offset = point(f)-centre(p);
         return CellSide<Real>{p, static_cast<std::size_t>(cells_)+f-static_cast<std::size_t>(inner_), offset, offset, Real{1}};
     }

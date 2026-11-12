@@ -27,8 +27,7 @@ public:
 
     CsrPattern(const Distribution<Exec>& distribution, std::span<const std::size_t> row_offsets,
                std::span<const GlobalOrdinal> column_gids, const Exec& exec = {}, bool keep_input_mapping = true)
-        : distribution_(distribution), has_input_mapping_(keep_input_mapping)
-    {
+        : distribution_(distribution), has_input_mapping_(keep_input_mapping) {
         mpi::guarded([&] {
             const auto rows = distribution_.local_size();
             mpi::require(row_offsets.size() == rows+1 && row_offsets.front() == 0 &&
@@ -118,13 +117,11 @@ public:
     [[nodiscard]] bool has_input_mapping() const noexcept { return has_input_mapping_; }
     [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return distribution_; }
     [[nodiscard]] const Teuchos::RCP<const graph_type>& native() const noexcept { return graph_; }
-    [[nodiscard]] permutation_type input_to_entry() const
-    {
+    [[nodiscard]] permutation_type input_to_entry() const {
         mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return input_to_entry_;
     }
-    [[nodiscard]] std::span<const std::size_t> host_input_to_entry() const
-    {
+    [[nodiscard]] std::span<const std::size_t> host_input_to_entry() const {
         mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return {host_input_to_entry_.data(), host_input_to_entry_.extent(0)};
     }

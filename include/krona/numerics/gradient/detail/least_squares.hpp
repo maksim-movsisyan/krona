@@ -9,8 +9,7 @@ template<class Space, class Coefficients, class Real>
 struct PrepareLeastSquares {
     Metrics<Space> metrics;
     Coefficients coefficients;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, std::size_t& bad) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, std::size_t& bad) const {
         const std::size_t i = static_cast<std::size_t>(cell);
         const auto& conn = metrics.connectivity;
         const auto begin = conn.cell_faces_offsets(i), end = conn.cell_faces_offsets(i + 1);

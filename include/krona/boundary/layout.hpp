@@ -20,8 +20,7 @@ public:
     using memory_space = typename Exec::memory_space;
 
     BoundaryLayout(const mesh::host::MeshPart& host,
-        mesh::device::MeshView<memory_space> view, Exec exec = {}) : catalog_(host), exec_(exec)
-    {
+        mesh::device::MeshView<memory_space> view, Exec exec = {}) : catalog_(host), exec_(exec) {
         execution::require_kokkos();
         const auto& s = view.sizes;
         mpi::require(s.faces_grouped && s.n_own == host.n_own && s.n_cells == host.n_cells &&

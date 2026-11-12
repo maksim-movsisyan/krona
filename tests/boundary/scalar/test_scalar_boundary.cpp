@@ -406,7 +406,7 @@ constexpr auto selection = krona::mesh::device::MeshData::FaceCells |
 
 /// @brief Reads the scalar conditions corresponding to the shared TOML mesh fixture.
 scalar::Configuration file_configuration()
-{ return scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "temperature"); }
+{ return scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "temperature", krona::mpi::CommView::world()); }
 
 /// @brief Completes an independent host snapshot on the supplied execution instance.
 template<class View>
@@ -439,19 +439,20 @@ void config_case(const Exec& exec)
     const std::string text{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
     const auto parsed = scalar::parse_config(text, "temperature");
     const auto loaded = file_configuration();
-    const auto tracer = scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer");
+    const auto tracer = scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer", krona::mpi::CommView::world());
     equal(loaded.patches.size(), std::size_t{3}, "Read all labelled patches from a nonempty file");
     equal(parsed.patches.size(), loaded.patches.size(), "Text and file readers agree");
     for (std::size_t p = 0; p < loaded.patches.size(); ++p) {
         equal(parsed.patches[p].patch_id, loaded.patches[p].patch_id, "Parsed patch ID");
         equal(parsed.patches[p].name == loaded.patches[p].name, true, "Parsed patch name");
         check(parsed.patches[p].condition.kind == loaded.patches[p].condition.kind, "Parsed condition kind");
-        equal(parsed.patches[p].condition.parameter, loaded.patches[p].condition.parameter, "Parsed parameter");
+        equal(std::get<double>(parsed.patches[p].condition.parameter),
+              std::get<double>(loaded.patches[p].condition.parameter), "Parsed parameter");
     }
-    equal(loaded.patches[0].condition.parameter, 5.0, "Temperature-specific prescribed value");
-    equal(tracer.patches[0].condition.parameter, 0.25, "Independent scalar-specific value");
+    equal(std::get<double>(loaded.patches[0].condition.parameter), 5.0, "Temperature-specific prescribed value");
+    equal(std::get<double>(tracer.patches[0].condition.parameter), 0.25, "Independent scalar-specific value");
     check(tracer.patches[1].condition.kind == scalar::Kind::NormalGradient, "ZERO_GRADIENT alias");
-    equal(tracer.patches[1].condition.parameter, 0.0, "ZERO_GRADIENT parameter");
+    equal(std::get<double>(tracer.patches[1].condition.parameter), 0.0, "ZERO_GRADIENT parameter");
     krona::mpi::require(loaded.unlabelled.has_value() && tracer.unlabelled.has_value(),
                         "Both fields have explicit unlabelled conditions");
     check(loaded.unlabelled->kind == scalar::Kind::NormalGradient, "Read unlabelled condition");
@@ -495,7 +496,7 @@ void file_fill_case(const Exec& exec)
     near(host(4), Real{8}, tolerance, "Updated condition covers its entire patch");
 
     scalar::Manager<Exec, Real> tracer_manager(manager_layout,
-        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer"));
+        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer", krona::mpi::CommView::world()));
     krona::fields::FieldStorage<Real, 1, Exec> tracer(
         "tracer", tracer_manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, tracer.view().component(0));

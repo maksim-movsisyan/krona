@@ -26,8 +26,7 @@ struct CellGradients {
 
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return extent; }
 
-    KOKKOS_INLINE_FUNCTION Kokkos::Array<value_type, 3> operator()(std::size_t cell) const
-    {
+    KOKKOS_INLINE_FUNCTION Kokkos::Array<value_type, 3> operator()(std::size_t cell) const {
         KOKKOS_ASSERT(cell < extent);
         return {static_cast<value_type>(x(cell)),
                 static_cast<value_type>(y(cell)),
@@ -36,8 +35,7 @@ struct CellGradients {
 
     /// @brief Optional local host check; no fence or data inspection is performed.
     template<class Exec>
-    void validate(std::size_t count) const
-    {
+    void validate(std::size_t count) const {
         static_assert(Kokkos::SpaceAccessibility<Exec, memory_space>::accessible);
         mpi::require(extent >= count, "Gradient correction: gradient extent is too short");
         mpi::require(extent == 0 || (x.data && y.data && z.data &&
@@ -49,8 +47,7 @@ struct CellGradients {
 /// @brief Adapts three rank-one views, including strided views, without retaining their ownership.
 /// The exposed extent is the minimum input length; all inputs share one memory space.
 template<class X, class Y, class Z>
-[[nodiscard]] auto cell_gradients(X x, Y y, Z z)
-{
+[[nodiscard]] auto cell_gradients(X x, Y y, Z z) {
     const auto dx = fields::descriptor_from_view(x);
     const auto dy = fields::descriptor_from_view(y);
     const auto dz = fields::descriptor_from_view(z);
@@ -64,8 +61,7 @@ template<class X, class Y, class Z>
 
 /// @brief Selects gradient components 3*component+axis from an existing gradient FieldView.
 template<class Field>
-[[nodiscard]] auto cell_gradients(Field field, int component = 0)
-{
+[[nodiscard]] auto cell_gradients(Field field, int component = 0) {
     static_assert(Field::components > 0 && Field::components % 3 == 0,
                   "Gradient correction: field must have 3*N components");
     mpi::require(component >= 0 && component < Field::components/3,
@@ -100,8 +96,7 @@ struct GradientCorrection {
 
     /// @brief dot(t, grad(cell)); t may be a boundary tangential displacement.
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Real increment(std::size_t cell, Real tx, Real ty, Real tz) const
-    {
+    KOKKOS_INLINE_FUNCTION Real increment(std::size_t cell, Real tx, Real ty, Real tz) const {
         static_assert(std::is_floating_point_v<Real>);
         const auto g = gradients(cell);
         return tx*static_cast<Real>(g[0])+ty*static_cast<Real>(g[1])+tz*static_cast<Real>(g[2]);
@@ -110,8 +105,7 @@ struct GradientCorrection {
     /// @brief dot(t, w*grad(owner)+(1-w)*grad(neighbour)); w multiplies the OWNER gradient.
     template<class Real>
     KOKKOS_INLINE_FUNCTION Real interior(std::size_t owner, std::size_t neighbour,
-        Real owner_weight, Real tx, Real ty, Real tz) const
-    {
+        Real owner_weight, Real tx, Real ty, Real tz) const {
         static_assert(std::is_floating_point_v<Real>);
         const auto p = gradients(owner), n = gradients(neighbour);
         return tx*(owner_weight*static_cast<Real>(p[0])+(Real{1}-owner_weight)*static_cast<Real>(n[0])) +
@@ -121,16 +115,14 @@ struct GradientCorrection {
 
     /// @brief Adapter for any context with owner,tx,ty,tz; no boundary-module dependency.
     template<class Context>
-    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
-    {
+    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const {
         using Real = std::remove_cvref_t<decltype(c.tx)>;
         return increment<Real>(static_cast<std::size_t>(c.owner), c.tx, c.ty, c.tz);
     }
 
     /// @brief Adapter for any context with owner,neighbour,owner_weight.
     template<class Context, class Real>
-    KOKKOS_INLINE_FUNCTION Real interior(const Context& c, Real tx, Real ty, Real tz) const
-    {
+    KOKKOS_INLINE_FUNCTION Real interior(const Context& c, Real tx, Real ty, Real tz) const {
         return interior(static_cast<std::size_t>(c.owner), static_cast<std::size_t>(c.neighbour),
                         static_cast<Real>(c.owner_weight), tx, ty, tz);
     }

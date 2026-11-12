@@ -8,8 +8,7 @@ namespace krona::mpi {
 
 /// @brief Borrows an intracommunicator and caches its rank and size.
 /// The handle must stay live; an empty view has rank=-1 and size=0.
-class CommView final
-{
+class CommView final {
 public:
     /// @brief Creates an empty view without calling MPI.
     CommView() noexcept = default;
@@ -44,8 +43,7 @@ private:
 
 /// @brief Owns an intracommunicator configured with MPI_ERRORS_RETURN.
 /// Creation and freeing are collective; destroy owners before MPI_Finalize.
-class Comm final
-{
+class Comm final {
 public:
     /// @brief Creates an empty owner without calling MPI.
     Comm() noexcept = default;
@@ -116,8 +114,7 @@ private:
 };
 
 /// @brief Swaps owners locally without calling MPI.
-inline void swap(Comm& first, Comm& second) noexcept
-{
+inline void swap(Comm& first, Comm& second) noexcept {
     // Delegate to the member swap for ADL-based generic code.
     first.swap(second);
 }

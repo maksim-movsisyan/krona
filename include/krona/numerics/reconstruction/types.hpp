@@ -28,8 +28,7 @@ struct FaceStencil { Left left; Right right; };
 
 template<class Real>
 KOKKOS_INLINE_FUNCTION auto face_geometry(std::size_t owner, std::size_t neighbour,
-    Vector<Real> owner_to_face, Vector<Real> neighbour_to_face, Real owner_fraction = Real{-1})
-{
+    Vector<Real> owner_to_face, Vector<Real> neighbour_to_face, Real owner_fraction = Real{-1}) {
     const auto span = owner_to_face-neighbour_to_face;
     return FaceGeometry<Real>{{owner, neighbour, owner_to_face, span, owner_fraction},
         {neighbour, owner, neighbour_to_face, -span, owner_fraction < Real{0} ? Real{-1} : Real{1}-owner_fraction}};
@@ -57,8 +56,7 @@ template<class V, class G = NoGradients, class L = UnitFactors, class H = NoHess
 struct Data {
     static constexpr std::size_t components = V::components;
     V values; G gradients; L factors; H hessians; M moments;
-    KOKKOS_INLINE_FUNCTION auto factor(std::size_t cell, std::size_t component) const
-    {
+    KOKKOS_INLINE_FUNCTION auto factor(std::size_t cell, std::size_t component) const {
         static_assert(L::components == 1 || L::components == components);
         return factors(cell, L::components == 1 ? 0 : component);
     }

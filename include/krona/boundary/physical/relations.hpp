@@ -23,8 +23,7 @@ struct VelocityRelation {
 
 template<class Real>
 KOKKOS_INLINE_FUNCTION VelocityRelation<Real> no_slip_relation(
-    const FaceContext<Real>& c,Vector<Real> wall,Vector<Real> increment = {})
-{
+    const FaceContext<Real>& c,Vector<Real> wall,Vector<Real> increment = {}) {
     VelocityRelation<Real> r;
     r.value_constant = wall;
     r.gradient_constant = (wall-increment)*(Real{1}/c.distance);
@@ -34,8 +33,7 @@ KOKKOS_INLINE_FUNCTION VelocityRelation<Real> no_slip_relation(
 
 template<class Real>
 KOKKOS_INLINE_FUNCTION VelocityRelation<Real> slip_relation(
-    const FaceContext<Real>& c,Vector<Real> wall = {},Vector<Real> increment = {})
-{
+    const FaceContext<Real>& c,Vector<Real> wall = {},Vector<Real> increment = {}) {
     VelocityRelation<Real> r;
     const auto n = normal(c);
     const Real entries[]{n.x,n.y,n.z};
@@ -66,16 +64,17 @@ struct Corrections { P pressure; U velocity; T temperature; };
 /// Adiabatic defaults to isotropic conduction; an explicit law overrides this shortcut.
 template<class Real,class Law>
 KOKKOS_INLINE_FUNCTION scalar::Relation<Real> wall_temperature_relation(
-    AdiabaticWall<Real>,const FaceContext<Real>& c,Real increment,const Law& law)
-{
+    AdiabaticWall<Real>,const FaceContext<Real>& c,Real increment,const Law& law) {
     if constexpr (scalar::FluxLaw<Law,Real>)
         return scalar::make_relation(scalar::FixedFlux<Real>{0},c,increment,law);
     else return scalar::NormalGradient<Real>{0}(c,increment);
 }
+
 template<class Real,class Law>
 KOKKOS_INLINE_FUNCTION scalar::Relation<Real> wall_temperature_relation(
     IsothermalWall<Real> wall,const FaceContext<Real>& c,Real increment,const Law&)
 { return scalar::FixedValue<Real>{wall.temperature}(c,increment); }
+
 template<class Real,class Law>
 KOKKOS_INLINE_FUNCTION scalar::Relation<Real> wall_temperature_relation(
     HeatFluxWall<Real> wall,const FaceContext<Real>& c,Real increment,const Law& law)

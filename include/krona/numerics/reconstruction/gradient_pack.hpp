@@ -39,8 +39,7 @@ auto gradient_axis(Pack packed, std::index_sequence<C...>)
 /// @brief Adapts interleaved 3*c+axis components without copying values.
 /// Accepts a FieldView or a fields::pack containing one or more gradient fields.
 template<class Field>
-auto gradient_pack(Field field)
-{
+auto gradient_pack(Field field) {
     static_assert(Field::components > 0 && Field::components % 3 == 0,
                   "Reconstruction: gradient components must be ordered 3*c+axis");
     const auto packed = fields::pack(field);

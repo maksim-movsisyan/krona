@@ -46,7 +46,7 @@ using FaceKey = std::array<std::size_t, 4>;
 [[nodiscard]] inline FaceKey face_key(FaceKey vertices) noexcept {
     std::sort(vertices.begin(), vertices.end());
     return vertices;
-}
+} 
 
 /// @brief Checks the same quad perimeter in either traversal direction.
 [[nodiscard]] inline bool same_perimeter(const FaceKey &a, const FaceKey &b) noexcept {

@@ -16,8 +16,7 @@
 namespace krona::toml_config {
 namespace detail {
 
-inline void file_root(mpi::CommView comm, int master)
-{
+inline void file_root(mpi::CommView comm, int master) {
     if (comm.is_null()) mpi::fatal("Configuration file: communicator is empty");
     if (master < 0 || master >= comm.size())
         mpi::fatal("Configuration file: master rank is outside the communicator");
@@ -27,8 +26,7 @@ inline void file_root(mpi::CommView comm, int master)
 
 /// @brief Reads raw file text on master; other ranks return an empty string.
 /// Local and blocking; file is inspected only on master.
-[[nodiscard]] inline std::string read_master(const std::filesystem::path& file, mpi::CommView comm, int master = 0) noexcept
-{
+[[nodiscard]] inline std::string read_master(const std::filesystem::path& file, mpi::CommView comm, int master = 0) noexcept {
     return mpi::guarded([&] {
         detail::file_root(comm, master);
         std::string text;
@@ -49,8 +47,7 @@ inline void file_root(mpi::CommView comm, int master)
 
 /// @brief Broadcasts master's text, replacing the string on every other rank.
 /// Blocking collective: all ranks supply the same communicator and master.
-inline void broadcast(std::string& text, mpi::CommView comm, int master = 0) noexcept
-{
+inline void broadcast(std::string& text, mpi::CommView comm, int master = 0) noexcept {
     mpi::guarded([&] {
         detail::file_root(comm, master);
         std::uint64_t size = 0;
@@ -77,8 +74,7 @@ inline void broadcast(std::string& text, mpi::CommView comm, int master = 0) noe
 
 /// @brief Reads on master and returns identical text on all ranks.
 /// Blocking collective; the file path is used only on master.
-[[nodiscard]] inline std::string read_broadcast(const std::filesystem::path& file, mpi::CommView comm, int master = 0) noexcept
-{
+[[nodiscard]] inline std::string read_broadcast(const std::filesystem::path& file, mpi::CommView comm, int master = 0) noexcept {
     auto text = read_master(file, comm, master);
     broadcast(text, comm, master);
     return text;

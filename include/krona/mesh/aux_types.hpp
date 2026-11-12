@@ -3,7 +3,7 @@
 #include <cstdint>
 
 namespace krona::mesh {
-
+ 
 /// @brief Selects independently built local cell and node connectivity tables.
 enum class AuxConnType : std::uint64_t {
     None = 0,

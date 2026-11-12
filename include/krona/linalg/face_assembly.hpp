@@ -46,8 +46,7 @@ private:
     Prepared prepared_;
     mpi::CommView comm_;
 
-    static Prepared prepare(const mesh::host::MeshPart& mesh, mpi::CommView comm, const Exec& exec)
-    {
+    static Prepared prepare(const mesh::host::MeshPart& mesh, mpi::CommView comm, const Exec& exec) {
         return mpi::guarded([&] {
             execution::require_kokkos();
             mpi::require(mesh.faces_grouped && mesh.n_internal_faces >= 0 &&

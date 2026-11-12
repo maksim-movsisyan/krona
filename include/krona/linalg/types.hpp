@@ -89,8 +89,7 @@ struct Types : IndexTypes<Exec> {
 
 namespace detail {
 
-inline LocalOrdinal local_count(std::size_t value)
-{
+inline LocalOrdinal local_count(std::size_t value) {
     mpi::require(value <= static_cast<std::size_t>(std::numeric_limits<LocalOrdinal>::max()),
                  "Linalg: local count exceeds Tpetra int ordinals");
     return static_cast<LocalOrdinal>(value);

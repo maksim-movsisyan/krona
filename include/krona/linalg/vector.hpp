@@ -16,8 +16,7 @@ public:
     using memory_space = typename Types<Scalar, Exec>::memory_space;
     using native_type = typename Types<Scalar, Exec>::vector_type;
     
-    explicit Vector(const Distribution<Exec>& distribution) : distribution_(distribution)
-    {
+    explicit Vector(const Distribution<Exec>& distribution) : distribution_(distribution) {
         mpi::guarded([&] {
             vector_ = Teuchos::rcp(new native_type(distribution_.native(), true));
         });
@@ -30,26 +29,22 @@ public:
     [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return distribution_; }
 
     /// @brief Joins an access batch on exec; commit before native operations or another instance.
-    [[nodiscard]] auto edit(const Exec& exec = {})
-    {
+    [[nodiscard]] auto edit(const Exec& exec = {}) {
         begin_access(exec);
         return mpi::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::ReadWrite); });
     }
     /// @brief Joins an asynchronous read/write batch on the same execution instance.
-    [[nodiscard]] auto read(const Exec& exec = {}) const
-    {
+    [[nodiscard]] auto read(const Exec& exec = {}) const {
         begin_access(exec);
         return mpi::guarded([&] { return std::as_const(*vector_).getLocalViewDevice(Tpetra::Access::ReadOnly); });
     }
     /// @brief Full overwrite; old host data need not be copied to device.
-    [[nodiscard]] auto overwrite(const Exec& exec = {})
-    {
+    [[nodiscard]] auto overwrite(const Exec& exec = {}) {
         begin_access(exec);
         return mpi::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::OverwriteAll); });
     }
     /// @brief Completes the custom execution-space read/write batch.
-    void commit() const
-    {
+    void commit() const {
         if (pending_) { mpi::guarded([&] { pending_exec_.fence("Linalg: vector accesses committed"); }); pending_ = false; }
     }
     void require_committed() const
@@ -65,8 +60,7 @@ public:
 
     /// @brief Copies an owned prefix asynchronously; component strides are respected.
     template<class Component>
-    void copy_from_component_async(Component component, const Exec& exec = {})
-    {
+    void copy_from_component_async(Component component, const Exec& exec = {}) {
         static_assert(Kokkos::is_view<Component>::value && Component::rank == 1,
                       "Linalg: a component must be a rank-one Kokkos view");
         const auto target = overwrite(exec);
@@ -75,8 +69,7 @@ public:
 
     /// @brief Copies to an owned prefix asynchronously; ghost/boundary tails are untouched.
     template<class Component>
-    void copy_to_component_async(Component component, const Exec& exec = {}) const
-    {
+    void copy_to_component_async(Component component, const Exec& exec = {}) const {
         static_assert(Kokkos::is_view<Component>::value && Component::rank == 1,
                       "Linalg: a component must be a rank-one Kokkos view");
         const auto source = read(exec);
@@ -102,8 +95,7 @@ private:
     mutable Exec pending_exec_{};
     mutable bool pending_ = false;
 
-    void begin_access(const Exec& exec) const
-    {
+    void begin_access(const Exec& exec) const {
         mpi::require(!pending_ || pending_exec_ == exec,
                      "Linalg: commit before switching execution instances");
         pending_exec_ = exec; pending_ = true;

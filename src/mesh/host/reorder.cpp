@@ -228,9 +228,9 @@ struct OwnedGraph {
     return order;
 }
 
-/// @brief Reorders a vector prefix by cycles with one shared byte-per-row work buffer.
+/// @brief Reorders a vector prefix by cycles with one shared byte-per-row work buffer. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 template <class T>
-void permute(std::vector<T>& values, std::span<const LocalIndex> order, std::vector<std::uint8_t>& visited) {
+void permute_old(std::vector<T>& values, std::span<const LocalIndex> order, std::vector<std::uint8_t>& visited) {
     if (values.empty())
         return;
     visited.assign(order.size(), 0);
@@ -249,6 +249,17 @@ void permute(std::vector<T>& values, std::span<const LocalIndex> order, std::vec
         values[current] = saved;
         visited[current] = 1;
     }
+}
+
+/// @brief Reorders a vector prefix by out-of-place gather (the work buffer is unused). !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+template <class T>
+void permute(std::vector<T>& values, std::span<const LocalIndex> order, std::vector<std::uint8_t>& /*unused*/) {
+    if (values.empty())
+        return;
+    std::vector<T> tmp(order.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+        tmp[i] = values[static_cast<std::size_t>(order[i])];
+    std::copy(tmp.begin(), tmp.end(), values.begin()); // ghost-хвост остаётся на месте
 }
 
 /// @brief Rebuilds permuted CSR rows while keeping any unpermuted tail in place.
@@ -403,7 +414,7 @@ void reorder_faces(MeshPart& mesh) {
 
 } // namespace
 
-/// @brief Selects a built-in owned-cell order and always completes local face grouping.
+/// @brief Selects a built-in owned-cell order and always completes local face grouping. 
 void reorder_local_mesh(MeshPart& mesh, ReorderMethod method) {
     if (mpi::is_active())
         mpi::require_main_thread();

@@ -12,8 +12,7 @@ namespace krona::boundary::scalar {
 template<class Real = ComputeReal, class Provider = Real>
 struct FixedValue {
     Provider value{};
-    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
-    {
+    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const {
         const Real prescribed = static_cast<Real>(profile::sample(value, c));
         const Real inverse = Real{1}/c.distance;
         return {Real{0}, prescribed, -inverse, (prescribed-increment)*inverse};
@@ -24,8 +23,7 @@ struct FixedValue {
 template<class Real = ComputeReal, class Provider = Real>
 struct NormalGradient {
     Provider gradient{};
-    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const
-    {
+    KOKKOS_INLINE_FUNCTION Relation<Real> operator()(const FaceContext<Real>& c, Real increment = 0) const {
         const Real prescribed = static_cast<Real>(profile::sample(gradient, c));
         return {Real{1}, c.distance*prescribed+increment, Real{0}, prescribed};
     }
@@ -68,8 +66,7 @@ KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const Condition& condition,
 
 template<class Real, class Provider, class Law = NoFluxLaw>
 KOKKOS_INLINE_FUNCTION Relation<Real> make_relation(const FixedFlux<Real, Provider>& condition,
-    const FaceContext<Real>& c, Real increment = 0, const Law& law = {})
-{
+    const FaceContext<Real>& c, Real increment = 0, const Law& law = {}) {
     if constexpr (FluxLaw<Law, Real>) {
         const Real flux = static_cast<Real>(profile::sample(condition.flux, c));
         if (!Kokkos::isfinite(flux)) return {Real{0}, flux, Real{0}, flux};

@@ -8,8 +8,7 @@ namespace krona::linalg {
 /// @brief Packs fields::pack(...) into owned cell-major vector DOFs without intermediate storage.
 /// Opens a vector access batch; commit before native use or releasing field buffers.
 template<class Scalar, class Exec, class Input>
-void copy_from_fields_async(Vector<Scalar, Exec>& vector, Input input, const Exec& exec = {})
-{
+void copy_from_fields_async(Vector<Scalar, Exec>& vector, Input input, const Exec& exec = {}) {
     const auto values = vector.overwrite(exec);
     fields::copy_to_dofs_async(exec, input, Kokkos::subview(values, Kokkos::ALL(), 0));
 }
@@ -17,8 +16,7 @@ void copy_from_fields_async(Vector<Scalar, Exec>& vector, Input input, const Exe
 /// @brief Unpacks owned DOFs; ghost/boundary tails are untouched. Commit the vector after use.
 /// Destinations must be writable, mutually non-overlapping, and separate from native values.
 template<class Scalar, class Exec, class Output>
-void copy_to_fields_async(const Vector<Scalar, Exec>& vector, Output output, const Exec& exec = {})
-{
+void copy_to_fields_async(const Vector<Scalar, Exec>& vector, Output output, const Exec& exec = {}) {
     const auto values = vector.read(exec);
     fields::copy_from_dofs_async(exec, Kokkos::subview(values, Kokkos::ALL(), 0), output);
 }

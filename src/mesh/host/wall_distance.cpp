@@ -13,8 +13,7 @@ namespace {
 constexpr auto mpi_chunk = static_cast<std::size_t>(std::numeric_limits<int>::max());
 
 /// @brief Counts MPI 3.1 messages needed for a potentially 64-bit halo group.
-std::size_t chunk_count(std::size_t count)
-{
+std::size_t chunk_count(std::size_t count) {
     // Counts are in GeometryReal elements, not bytes.
     return count / mpi_chunk + static_cast<std::size_t>(count % mpi_chunk != 0);
 }
@@ -22,8 +21,7 @@ std::size_t chunk_count(std::size_t count)
 /// @brief Copies owned distances to ghosts using existing matching halo order and reusable buffers.
 void exchange_distances(const MeshPart& m, mpi::CommView comm, std::span<GeometryReal> distance,
                         std::vector<GeometryReal>& send, std::vector<GeometryReal>& receive,
-                        std::vector<MPI_Request>& requests)
-{
+                        std::vector<MPI_Request>& requests) {
     const auto datatype = mpi::datatype<GeometryReal>();
     std::size_t request = 0;
     // Post receives first; multiple chunks from the same peer retain MPI message order.
@@ -59,8 +57,7 @@ void exchange_distances(const MeshPart& m, mpi::CommView comm, std::span<Geometr
 /// @brief Performs one owned-cell relaxation pass and measures changes in stored precision.
 double relax(std::span<GeometryReal> distance, std::span<const std::size_t> offsets,
              std::span<const LocalIndex> neighbours, std::span<const GeometryReal> edge_distance,
-             bool reverse)
-{
+             bool reverse) {
     double change = 0;
     const auto owned = offsets.size() - 1;
     for (std::size_t i = 0; i < owned; ++i) {
@@ -87,8 +84,7 @@ WallDistanceStats MeshAuxGeometry::add_wall_distance(const MeshPart& m,
                                                      MeshAuxConnectivity& connectivity,
                                                      mpi::CommView comm,
                                                      std::span<const std::uint8_t> wall_patch,
-                                                     WallDistanceOptions options)
-{
+                                                     WallDistanceOptions options) {
     if (!mpi::is_active() || comm.is_null()) mpi::fatal("Wall distance requires an active MPI communicator");
     mpi::require_main_thread();
     if (comm.rank() != m.rank || comm.size() != m.nprocs || wall_patch.size() != m.patches.size())

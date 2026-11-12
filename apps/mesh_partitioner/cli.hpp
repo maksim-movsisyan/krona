@@ -7,7 +7,7 @@
 
 namespace krona::apps::mesh_partitioner {
 
-/// @brief Selects the amount of rank-zero diagnostic output.
+/// @brief Selects the amount of rank-zero diagnostic output. 
 enum class Verbosity : int { quiet, summary, detailed };
 
 /// @brief Selects execution, successful help or a command-line error.
@@ -19,6 +19,7 @@ struct Options {
     std::string output;
     std::string boundary_output;
     std::string vtu_directory;
+    std::string patches_template_directory;
     mesh::host::ReorderMethod reorder = mesh::host::ReorderMethod::NONE;
     Verbosity verbosity = Verbosity::quiet;
 };

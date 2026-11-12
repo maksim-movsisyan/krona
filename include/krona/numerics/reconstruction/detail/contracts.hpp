@@ -5,15 +5,13 @@
 namespace krona::numerics::reconstruction::detail {
 
 template<std::size_t N, class Pack>
-KOKKOS_INLINE_FUNCTION constexpr void check_component_count()
-{
+KOKKOS_INLINE_FUNCTION constexpr void check_component_count() {
     if constexpr (requires { Pack::components; })
         static_assert(Pack::components == N, "Reconstruction: component counts do not match");
 }
 
 template<class Scheme, class D>
-KOKKOS_INLINE_FUNCTION constexpr void check_input_components()
-{
+KOKKOS_INLINE_FUNCTION constexpr void check_input_components() {
     static_assert(D::components > 0);
     if constexpr ((Scheme::requirements & Gradients) != 0)
         check_component_count<D::components, decltype(D::gradients)>();

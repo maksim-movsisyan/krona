@@ -87,8 +87,7 @@ using Exec = krona::execution::ExecutionSpace;
 using Scalar = krona::SolverReal;
 using GO = la::GlobalOrdinal;
 
-int run(krona::mpi::CommView comm)
-{
+int run(krona::mpi::CommView comm) {
     return krona::mpi::guarded([&] {
         Exec exec{};
         constexpr std::size_t rows = 4;
@@ -294,7 +293,7 @@ vector.commit(); // Completes the read batch and destination-field writes.
 
 The alternative form is `copy_from_fields_async(vector, exec, rho, momentum, energy)`. Methods/functions without `_async` are genuine blocking counterparts: they submit the same transfer and call `vector.commit()` before returning. Existing names therefore remain usable, but now wait. Use `_async` to group dependent work without an intermediate fence.
 
-The former `linalg::FieldPack` and `linalg::field_pack()` are removed; use `fields::pack()`. Mixed scalar types and const inputs are supported; packed components share one memory space, as required by `fields::pack()`. Unpacking writes each component through its exact typed accessor, including mixed writable packs; it does not convert through the pack's common scalar type.
+Mixed scalar types and const inputs are supported; packed components share one memory space, as required by `fields::pack()`. Unpacking writes each component through its exact typed accessor, including mixed writable packs; it does not convert through the pack's common scalar type.
 
 Total component width and actual cell order must match the intended algebraic DOFs; extent/divisibility checks cannot establish semantic agreement. Fields must be long enough, accessible and writable when unpacking. Conversion uses the destination scalar type and ordinary cast semantics; representability is a caller precondition. Sources/destinations must not alias native vector values, and unpack destinations must not overlap each other. Queue producers on the same execution instance or synchronize them first. Keep buffers alive through commit/completion.
 

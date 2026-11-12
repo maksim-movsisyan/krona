@@ -12,7 +12,7 @@
 namespace krona::mesh::generation {
 namespace {
 
-/// @brief Reports an invalid generator configuration and terminates the MPI job.
+/// @brief Reports an invalid generator configuration and terminates the MPI job. 
 [[noreturn]] void fail(const std::string &message) 
 {
     mpi::fatal("Mesh generator: " + message);
@@ -21,8 +21,7 @@ namespace {
 } // namespace
 
 /// @brief Checks physical geometry, block values and patch-name contracts locally.
-void validate_generator_config(const GeneratorConfig &cfg) noexcept 
-{
+void validate_generator_config(const GeneratorConfig &cfg) noexcept {
     mpi::guarded([&] {
         mpi::require(!cfg.vertices.empty() && !cfg.blocks.empty(), "Mesh needs vertices and blocks");
         mpi::require(std::isfinite(cfg.scale) && cfg.scale > 0, "Mesh scale must be finite and positive");

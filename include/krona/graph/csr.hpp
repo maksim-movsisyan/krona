@@ -16,7 +16,7 @@ struct CsrGraphView {
     std::span<const GlobalIndex> adjacency;
 };
 
-/// @brief Owns local CSR rows without mesh, MPI or partitioner dependencies.
+/// @brief Owns local CSR rows without mesh, MPI or partitioner dependencies. 
 struct CsrGraph {
     std::vector<std::size_t> offsets;
     std::vector<GlobalIndex> adjacency;

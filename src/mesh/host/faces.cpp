@@ -64,7 +64,8 @@ template <class T> void release(std::vector<T>& data) {
 }
 
 /// @brief Visits source keys with compact references instead of materializing records.
-template <class Visit> void visit_sources(const RawMesh& mesh, Visit&& visit) {
+template <class Visit> 
+void visit_sources(const RawMesh& mesh, Visit&& visit) {
     // Eight slots per cell encode all supported local face indices.
     for (std::size_t cell = 0; cell < mesh.cells.size(); ++cell) {
         const std::size_t type = static_cast<std::size_t>(mesh.cells.types[cell]);
@@ -206,20 +207,20 @@ class GraphBuilder {
     const auto& ownership = mesh.distribution.cells;
 
     // corectness check
-    if (mesh.cell_dimension != 3 || mesh.distribution.rank != comm.rank() ||
-        ownership.parts() != comm.size() || !std::in_range<std::size_t>(ownership.local_size(comm.rank())) ||
-        mesh.cells.size() != static_cast<std::size_t>(ownership.local_size(comm.rank())))
-        mpi::fatal("Face construction requires a 3D mesh in its current block ownership");
-    if (!std::in_range<LocalIndex>(mesh.cells.size()))
-        mpi::fatal("Local cell count exceeds LocalIndex");
-    if (mesh.cells.size() > (std::numeric_limits<std::size_t>::max() - mesh.boundary.size()) / 8)
-        mpi::fatal("Face source references exceed size_t");
+    mpi::require(mesh.cell_dimension == 3 && mesh.distribution.rank == comm.rank() &&
+        ownership.parts() == comm.size() && std::in_range<std::size_t>(ownership.local_size(comm.rank())) &&
+        mesh.cells.size() == static_cast<std::size_t>(ownership.local_size(comm.rank())),
+        "Face construction requires a 3D mesh in its current block ownership");
+    mpi::require(std::in_range<LocalIndex>(mesh.cells.size()),
+                 "Local cell count exceeds LocalIndex");
+    mpi::require(mesh.cells.size() <= (std::numeric_limits<std::size_t>::max() - mesh.boundary.size()) / 8,
+                 "Face source references exceed size_t");
 
     assert(mesh.cells.offsets.size() == mesh.cells.size() + 1);
     assert(mesh.boundary.elements.offsets.size() == mesh.boundary.size() + 1);
     assert(mesh.boundary.patch_ids.size() == mesh.boundary.size());
 
-    // get numberof  local boundary faces
+    // get number of local boundary faces
     std::uint64_t count = mesh.boundary.size();
 
     // type checks protect the fixed face tables; connectivity validity is a caller contract.
@@ -252,11 +253,13 @@ class GraphBuilder {
         mpi::fatal("Face batch size is too small");
 
     // Match round counts across ranks before assigning keys to communication buckets.
-    const auto maximum = mpi::allreduce<mpi::Reduction::max>(comm, local_sources);
+    const std::uint64_t maximum = mpi::allreduce<mpi::Reduction::max>(comm, local_sources);
 
-    const auto target = std::min(options.batch_bytes / sizeof(HalfFace),
-                                 static_cast<std::size_t>(std::numeric_limits<int>::max()) / peers);
-    const auto rounds = std::max<std::uint64_t>(1, maximum / target + (maximum % target != 0));
+    const std::size_t target = std::min(options.batch_bytes / sizeof(HalfFace),
+                               static_cast<std::size_t>(std::numeric_limits<int>::max()) / peers);
+
+    const std::uint64_t rounds = std::max<std::uint64_t>(1, maximum / target + (maximum % target != 0));
+
     if (rounds > (std::numeric_limits<std::size_t>::max() - 1) / peers)
         mpi::fatal("Face bucket count exceeds size_t");
 
@@ -269,6 +272,11 @@ class GraphBuilder {
     });
     for (std::size_t i = 0; i < buckets; ++i)
         offsets[i + 1] += offsets[i];
+
+    // Store compact source references instead of full HalfFace records.
+    // Cell faces: cell * 8 + local_face.
+    // Boundary elements: mesh.cells.size() * 8 + boundary_index.
+    // Construct full HalfFace records only for the current round.
     std::vector<std::size_t> sources(offsets.back());
     {
         auto cursor = offsets;
@@ -289,25 +297,39 @@ class GraphBuilder {
     std::size_t total_faces = 0;
 
     for (std::size_t round = 0; round < static_cast<std::size_t>(rounds); ++round) {
+        // get rounda bucket
         const auto bucket = round * peers;
+        
+        // loop over all ranks
         for (std::size_t peer = 0; peer < peers; ++peer) {
             const auto count = offsets[bucket + peer + 1] - offsets[bucket + peer];
             if (!std::in_range<int>(count))
                 mpi::fatal("Face bucket exceeds MPI INT_MAX; reduce batch_bytes");
             counts[peer] = static_cast<int>(count);
-        }
+        } // end loop over all ranks
+
+        // fill send buffer with HalfFace
         std::vector<HalfFace> send(offsets[bucket + peers] - offsets[bucket]);
         for (std::size_t i = 0; i < send.size(); ++i)
             send[i] = source_record(mesh, sources[offsets[bucket] + i]);
+
+        // exchange data and release send buffer
         std::vector<HalfFace> received;
         mpi::alltoallv_packed(comm, std::span<const int>{counts}, std::span<const HalfFace>{send}, received,
                               workspace, half_type);
         release(send);
+        
+        // sort faces by key (duplicates received from different ranks now adjecent)
         if (!std::in_range<int>(received.size()))
             mpi::fatal("Face receive batch exceeds MPI INT_MAX; reduce batch_bytes");
         std::sort(received.begin(), received.end(),
                   [](const HalfFace& a, const HalfFace& b) { return a.key < b.key; });
 
+
+        // face_counts[i] - number of FaceRecords to send to rank i,
+        // which owns these faces.
+        // edge_counts[i] - number of reverse DualEdges to send to rank i,
+        // which owns the other adjacent cells and needs their graph adjacency.
         std::fill(face_counts.begin(), face_counts.end(), 0);
         std::fill(edge_counts.begin(), edge_counts.end(), 0);
         visit_matches(received, mesh.distribution.cells, [&](const FaceRecord&, int a, int b) {
@@ -315,6 +337,7 @@ class GraphBuilder {
             if (b != -1 && a != b)
                 ++edge_counts[static_cast<std::size_t>(b)];
         });
+        
         auto face_cursor = packing_offsets(face_counts);
         auto edge_cursor = packing_offsets(edge_counts);
         std::vector<FaceRecord> face_send(face_cursor.back());

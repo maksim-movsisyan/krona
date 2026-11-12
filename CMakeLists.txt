@@ -298,7 +298,7 @@ add_library(krona_mpi STATIC
 add_library(krona::mpi ALIAS krona_mpi)
 krona_public_headers(krona_mpi PUBLIC)
 target_link_libraries(krona_mpi
-    PUBLIC MPI::MPI_CXX krona::build_config
+    PUBLIC MPI::MPI_CXX
     PRIVATE krona::warnings)
 
 #==================================================================
@@ -548,7 +548,7 @@ if(KRONA_ENABLE_CGNS)
     add_library(krona::mesh_generation ALIAS krona_mesh_generation)
     krona_public_headers(krona_mesh_generation PUBLIC)
     target_link_libraries(krona_mesh_generation
-        PUBLIC krona::build_config krona::mpi
+        PUBLIC krona::mpi
         PRIVATE krona::warnings krona::toml_config krona::cgns)
 endif()
 
@@ -575,7 +575,10 @@ target_link_libraries(krona_mesh_host
     PUBLIC krona::mesh_types krona::graph krona::mpi
     PRIVATE krona::warnings)
 
-add_library(krona_boundary_config_io STATIC src/io/boundary_config/writer.cpp)
+add_library(krona_boundary_config_io STATIC 
+    src/io/boundary_config/writer.cpp
+    src/io/boundary_config/profile_template_writer.cpp
+    src/io/boundary_config/profile_reader.cpp)
 add_library(krona::boundary_config_io ALIAS krona_boundary_config_io)
 krona_public_headers(krona_boundary_config_io PUBLIC)
 target_link_libraries(krona_boundary_config_io
@@ -627,9 +630,9 @@ if(KRONA_ENABLE_PARTITIONING)
 endif()
 
 
-    #======================
+    #===================
     #=== MESH DEVICE ===
-    #======================
+    #===================
 krona_interface(mesh_device krona::mesh_types krona::execution krona::mpi)
 
 
@@ -691,8 +694,8 @@ add_library(krona::boundary_scalar ALIAS krona_boundary_scalar)
 target_compile_features(krona_boundary_scalar PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_scalar PUBLIC)
 target_link_libraries(krona_boundary_scalar
-    PUBLIC krona::mesh_device krona::fields krona::mpi krona::gradient krona::math
-    PRIVATE krona::warnings krona::tomlplusplus)
+    PUBLIC krona::mesh_device krona::fields krona::mpi krona::gradient krona::math krona::boundary_config_io
+    PRIVATE krona::warnings krona::toml_config)
 
     
     #====================================
@@ -704,7 +707,7 @@ target_compile_features(krona_boundary_physical PUBLIC cxx_std_20)
 krona_public_headers(krona_boundary_physical PUBLIC)
 target_link_libraries(krona_boundary_physical
     PUBLIC krona::boundary_scalar krona::gradient krona::math
-    PRIVATE krona::warnings krona::tomlplusplus)
+    PRIVATE krona::warnings krona::toml_config)
 
 
     #========================

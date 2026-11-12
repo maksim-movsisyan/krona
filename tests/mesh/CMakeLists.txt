@@ -1,5 +1,5 @@
 if(KRONA_ENABLE_CGNS)
     add_subdirectory(generation)
-endif()
+endif() 
 add_subdirectory(host)
 add_subdirectory(device)

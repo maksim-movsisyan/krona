@@ -31,21 +31,18 @@ namespace krona::toml_config {
 
 /// @brief Reads TOML values and reports errors with a module-specific prefix.
 /// Helpers are local; wrap the complete module decoder in mpi::guarded.
-class TomlReader final
-{
+class TomlReader final {
 public:
     /// @brief Owns the diagnostic prefix; no communicator is retained.
     explicit TomlReader(std::string context = "Configuration") : context_(std::move(context)) {}
 
     /// @brief Aborts through mpi::fatal with the reader's diagnostic prefix.
-    [[noreturn]] void error(std::string_view message) const
-    {
+    [[noreturn]] void error(std::string_view message) const {
         mpi::fatal(context_ + ": " + std::string{message});
     }
 
     /// @brief Parses text locally; source is an optional diagnostic filename.
-    [[nodiscard]] toml::table parse_text(std::string_view text, std::string_view source = {}) const noexcept
-    {
+    [[nodiscard]] toml::table parse_text(std::string_view text, std::string_view source = {}) const noexcept {
         return mpi::guarded([&]() -> toml::table {
 #if TOML_EXCEPTIONS
             return toml::parse(text, source);
@@ -58,8 +55,7 @@ public:
     }
 
     /// @brief Reads and parses a file on the calling rank only.
-    [[nodiscard]] toml::table parse_file(const std::filesystem::path& file) const noexcept
-    {
+    [[nodiscard]] toml::table parse_file(const std::filesystem::path& file) const noexcept {
         return mpi::guarded([&]() -> toml::table {
 #if TOML_EXCEPTIONS
             return toml::parse_file(file.string());
@@ -75,8 +71,7 @@ public:
     void check_keys(const toml::table& t, 
                     std::initializer_list<std::string_view> allowed,
                     std::string_view where = {},
-                    std::initializer_list<std::string_view> ignored = {}) const
-    {
+                    std::initializer_list<std::string_view> ignored = {}) const {
         for (const auto& [key, node] : t) {
             (void)node;
             const auto name = key.str();
@@ -91,8 +86,7 @@ public:
     /// Returns canonical when neither spelling is present.
     [[nodiscard]] std::string_view alias(const toml::table& t, 
                                          std::string_view canonical, 
-                                         std::string_view alternate) const
-    {
+                                         std::string_view alternate) const {
         if (t.contains(canonical) && t.contains(alternate))
             error("duplicate parameter aliases for '" + std::string{canonical} + "'");
         return t.contains(canonical) || !t.contains(alternate) ? canonical : alternate;
@@ -101,8 +95,7 @@ public:
     /// @brief Borrows a table; an absent optional table yields an empty table.
     [[nodiscard]] const toml::table& table(const toml::table& t, 
                                            std::string_view key, 
-                                           bool required = false) const
-    {
+                                           bool required = false) const {
         static const toml::table empty;
         const auto* node = t.get(key);
         if (!node && !required) return empty;
@@ -113,8 +106,7 @@ public:
     /// @brief Borrows an array; an absent optional array yields an empty array.
     [[nodiscard]] const toml::array& array(const toml::table& t, 
                                            std::string_view key, 
-                                           bool required = true) const
-    {
+                                           bool required = true) const {
         static const toml::array empty;
         const auto* node = t.get(key);
         if (!node && !required) return empty;
@@ -123,34 +115,29 @@ public:
     }
 
     /// @brief Reads a required string, preserving empty strings and embedded NULs.
-    [[nodiscard]] std::string string(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] std::string string(const toml::table& t, std::string_view key) const {
         const auto value = t[key].value<std::string>();
         if (!value) expected(key, "a string");
         return *value;
     }
 
     /// @brief Uses fallback only when the string key is absent.
-    [[nodiscard]] std::string string(const toml::table& t, std::string_view key, std::string fallback) const
-    {
+    [[nodiscard]] std::string string(const toml::table& t, std::string_view key, std::string fallback) const {
         return t.contains(key) ? string(t, key) : std::move(fallback);
     }
 
     /// @brief Reads a required nonempty string without embedded NULs.
-    [[nodiscard]] std::string nonempty_string(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] std::string nonempty_string(const toml::table& t, std::string_view key) const {
         return checked_string(string(t, key), key);
     }
 
     /// @brief Reads an optional nonempty string without embedded NULs.
-    [[nodiscard]] std::string nonempty_string(const toml::table& t, std::string_view key, std::string fallback) const
-    {
+    [[nodiscard]] std::string nonempty_string(const toml::table& t, std::string_view key, std::string fallback) const {
         return checked_string(string(t, key, std::move(fallback)), key);
     }
 
     /// @brief Reads a required finite number; integer TOML values are accepted.
-    [[nodiscard]] double number(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] double number(const toml::table& t, std::string_view key) const {
         const auto node = t[key];
         const auto value = node.value<double>();
         if (!node.is_number() || !value || !std::isfinite(*value))
@@ -159,35 +146,30 @@ public:
     }
 
     /// @brief Uses fallback only when the numeric key is absent.
-    [[nodiscard]] double number(const toml::table& t, std::string_view key, double fallback) const
-    {
+    [[nodiscard]] double number(const toml::table& t, std::string_view key, double fallback) const {
         return t.contains(key) ? number(t, key) : fallback;
     }
 
     /// @brief Reads one of two numeric aliases and rejects duplicates.
-    [[nodiscard]] double number(const toml::table& t, std::string_view canonical, std::string_view alternate) const
-    {
+    [[nodiscard]] double number(const toml::table& t, std::string_view canonical, std::string_view alternate) const {
         return number(t, alias(t, canonical, alternate));
     }
 
     /// @brief Reads a required boolean without numeric or string conversion.
-    [[nodiscard]] bool boolean(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] bool boolean(const toml::table& t, std::string_view key) const {
         const auto value = t[key].value<bool>();
         if (!value) expected(key, "a boolean");
         return *value;
     }
 
     /// @brief Uses fallback only when the boolean key is absent.
-    [[nodiscard]] bool boolean(const toml::table& t, std::string_view key, bool fallback) const
-    {
+    [[nodiscard]] bool boolean(const toml::table& t, std::string_view key, bool fallback) const {
         return t.contains(key) ? boolean(t, key) : fallback;
     }
 
     /// @brief Reads a required integer representable by T; floats are rejected.
     template<std::integral T = std::int64_t> requires (!std::same_as<T, bool>)
-    [[nodiscard]] T integer(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] T integer(const toml::table& t, std::string_view key) const {
         const auto node = t[key];
         const auto value = node.value<std::int64_t>();
         if (!node.is_integer() || !value)
@@ -204,15 +186,13 @@ public:
 
     /// @brief Uses fallback only when the integer key is absent.
     template<std::integral T> requires (!std::same_as<T, bool>)
-    [[nodiscard]] T integer(const toml::table& t, std::string_view key, T fallback) const
-    {
+    [[nodiscard]] T integer(const toml::table& t, std::string_view key, T fallback) const {
         return t.contains(key) ? integer<T>(t, key) : fallback;
     }
 
     /// @brief Reads a positive integer or checks a supplied default.
     template<std::integral T> requires (!std::same_as<T, bool>)
-    [[nodiscard]] T positive_integer(const toml::table& t, std::string_view key, T fallback) const
-    {
+    [[nodiscard]] T positive_integer(const toml::table& t, std::string_view key, T fallback) const {
         const auto value = integer(t, key, fallback);
         if (value <= 0) expected(key, "a positive integer");
         return value;
@@ -220,8 +200,7 @@ public:
 
     /// @brief Reads exactly N finite numbers; N defaults to three.
     template<std::size_t N = 3>
-    [[nodiscard]] std::array<double, N> vector(const toml::table& t, std::string_view key) const
-    {
+    [[nodiscard]] std::array<double, N> vector(const toml::table& t, std::string_view key) const {
         const auto& values = array(t, key);
         if (values.size() != N)
             expected(key, "an array of " + std::to_string(N) + " finite numbers");
@@ -237,42 +216,36 @@ public:
 
     /// @brief Uses fallback only when the vector key is absent.
     template<std::size_t N = 3>
-    [[nodiscard]] std::array<double, N> vector(const toml::table& t, std::string_view key, std::array<double, N> fallback) const
-    {
+    [[nodiscard]] std::array<double, N> vector(const toml::table& t, std::string_view key, std::array<double, N> fallback) const {
         return t.contains(key) ? vector<N>(t, key) : fallback;
     }
 
     /// @brief Maps a required string to one explicitly listed value.
     template<class E>
     [[nodiscard]] E choice(const toml::table& t, std::string_view key,
-                           std::initializer_list<std::pair<std::string_view, E>> choices) const
-    {
+                           std::initializer_list<std::pair<std::string_view, E>> choices) const {
         return selected(string(t, key), key, choices);
     }
 
     /// @brief Maps an optional string to one explicitly listed value.
     template<class E>
     [[nodiscard]] E choice(const toml::table& t, std::string_view key, std::string fallback,
-                           std::initializer_list<std::pair<std::string_view, E>> choices) const
-    {
+                           std::initializer_list<std::pair<std::string_view, E>> choices) const {
         return selected(string(t, key, std::move(fallback)), key, choices);
     }
 
 private:
-    [[noreturn]] void expected(std::string_view key, std::string_view type) const
-    {
+    [[noreturn]] void expected(std::string_view key, std::string_view type) const {
         error("'" + std::string{key} + "' must be " + std::string{type});
     }
 
-    [[noreturn]] void parse_error(const toml::parse_error& cause) const
-    {
+    [[noreturn]] void parse_error(const toml::parse_error& cause) const {
         std::ostringstream message;
         message << cause;
         error(message.str());
     }
 
-    [[nodiscard]] std::string checked_string(std::string value, std::string_view key) const
-    {
+    [[nodiscard]] std::string checked_string(std::string value, std::string_view key) const {
         if (value.empty() || value.find('\0') != std::string::npos)
             expected(key, "a nonempty string without embedded NULs");
         return value;
@@ -280,8 +253,7 @@ private:
 
     template<class E>
     [[nodiscard]] E selected(const std::string& value, std::string_view key,
-                             std::initializer_list<std::pair<std::string_view, E>> choices) const
-    {
+                             std::initializer_list<std::pair<std::string_view, E>> choices) const {
         for (const auto& [name, code] : choices)
             if (value == name) return code;
         error("unsupported " + std::string{key} + " '" + value + "'");

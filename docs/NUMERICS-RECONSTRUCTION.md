@@ -71,12 +71,19 @@ Values provide `components` and `operator()(cell, component)`. For limiter prepa
 
 ```cpp
 auto values = fld::pack(rho, u, v, w, temperature); // Rank-one views.
+
 auto input = rec::data(values, rec::gradient_pack(gradient_field));
 // gradient_field has 15 components in the same variable order.
 
-// Several gradient fields can be combined without copying their values:
+// Combine several gradient fields without copying their values.
 auto combined = rec::gradient_pack(fld::pack(grad_rho, grad_velocity, grad_T));
 // Widths: 3 + 9 + 3; result order: rho, velocity[0..2], T.
+
+// Pack separate rank-one derivative views, one pack per axis.
+auto gx = fld::pack(drho_dx, du_dx, dv_dx, dw_dx, dT_dx);
+auto gy = fld::pack(drho_dy, du_dy, dv_dy, dw_dy, dT_dy);
+auto gz = fld::pack(drho_dz, du_dz, dv_dz, dw_dz, dT_dz);
+auto input_by_axis = rec::data(values, rec::gradients(gx, gy, gz));
 ```
 
 Packs borrow buffers and preserve component strides. A mixed-type pack reads through its common scalar type; typed `get<C>()` preserves the actual component type. Limiter preparation uses that typed access for output, so a pack of writable `float` and `double` factor components is supported. Output components must be floating-point and must not be const. Numeric field packing lives in `fields`, not in reconstruction.

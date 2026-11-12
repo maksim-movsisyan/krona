@@ -6,7 +6,7 @@
 #include <utility>
 
 namespace krona::distribution {
-
+ 
 /// @brief Balanced contiguous ownership of [0, global_size), including empty ranks.
 template<std::signed_integral Index>
 class BlockDistribution final {

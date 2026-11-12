@@ -1,6 +1,7 @@
 add_executable(krona_test_mesh_device test_mesh.cpp)
 target_link_libraries(krona_test_mesh_device PRIVATE krona_test_support krona::mesh_device)
 
+
 # This suite exercises selected views and kernels in the configured execution space.
 foreach(case IN ITEMS selection geometry ownership halo_plan auxiliary empty
                       transfer auxiliary_contracts validation halo_validation)

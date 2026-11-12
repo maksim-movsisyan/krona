@@ -1,4 +1,4 @@
-# Physical boundary suites cover models, characteristic closures, thermal laws and profiles.
+# Physical boundary suites cover models, characteristic closures, thermal laws and profiles. 
 add_executable(krona_test_physical_boundary test_physical.cpp)
 target_link_libraries(krona_test_physical_boundary PRIVATE
     krona_test_support krona::boundary_physical)
@@ -66,6 +66,14 @@ foreach(case IN ITEMS walls arrays heat_flux liquid factories shared lambda mech
         ${MPIEXEC_PREFLAGS} $<TARGET_FILE:krona_test_physical_profiles> ${MPIEXEC_POSTFLAGS} "${case}")
     set_tests_properties("boundary.physical.profiles.${case}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE PROCESSORS "${ranks}"
         LABELS "boundary;physical;profiles" ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+endforeach()
+foreach(ranks IN ITEMS 1 2)
+    add_test(NAME "boundary.physical.profiles.tabulated.np${ranks}"
+        COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:krona_test_physical_profiles> ${MPIEXEC_POSTFLAGS} tabulated)
+    set_tests_properties("boundary.physical.profiles.tabulated.np${ranks}" PROPERTIES
+        LABELS "boundary;physical;profiles" PROCESSORS "${ranks}" TIMEOUT 120 RUN_SERIAL TRUE
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
 set(expected_invalid_profile "invalid sampled parameter or direction")
 set(expected_invalid_direction "invalid sampled parameter or direction")

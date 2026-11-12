@@ -9,8 +9,7 @@ struct CellKernel {
     Metrics<Space> metrics;
     Coefficients coefficients;
     Batch<T, N, Space> fields;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
         const std::size_t i = static_cast<std::size_t>(cell);
         Real cell_vol_inv = Real{1};
         if constexpr (!LeastSquares) {
@@ -53,8 +52,7 @@ struct CellKernel {
 template<class T, std::size_t N, class Space>
 struct ClearKernel {
     Batch<T, N, Space> fields;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
         const std::size_t i = static_cast<std::size_t>(cell);
         for (std::size_t c = 0; c < N; ++c) fields.x[c](i) = fields.y[c](i) = fields.z[c](i) = T{};
     }
@@ -66,8 +64,7 @@ struct FaceKernel {
     Batch<T, N, Space> fields;
     CellRange range;
 
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const std::size_t f = static_cast<std::size_t>(face);
         const auto owner = metrics.mesh.connectivity.face_owner(f);
         const auto neigh = metrics.mesh.connectivity.face_neigh(f);

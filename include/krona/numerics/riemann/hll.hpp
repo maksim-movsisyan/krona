@@ -7,8 +7,7 @@ namespace krona::numerics::riemann {
 /// @brief Endpoint acoustic bounds (Davis); no EOS-specific Roe average is assumed.
 struct DavisSpeeds {
     template<class R>
-    KOKKOS_INLINE_FUNCTION WaveSpeeds<R> operator()(State<R> l,State<R> r,Vector<R> n) const
-    {
+    KOKKOS_INLINE_FUNCTION WaveSpeeds<R> operator()(State<R> l,State<R> r,Vector<R> n) const {
         const R ul=l.velocity.dot(n),ur=r.velocity.dot(n);
         return {Kokkos::min(ul-l.sound_speed,ur-r.sound_speed),
                 Kokkos::max(ul+l.sound_speed,ur+r.sound_speed)};
@@ -17,8 +16,7 @@ struct DavisSpeeds {
 
 struct Rusanov {
     template<class R>
-    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const
-    {
+    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const {
         const auto status=detail::input_status(l,r,n);
         if(status!=Status::Success)return detail::failure<R>(status);
         const R speed=detail::endpoint_speed(l,r,n);
@@ -31,8 +29,7 @@ template<class Speeds=DavisSpeeds>
 struct Hll {
     Speeds speeds{};
     template<class R>
-    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const
-    {
+    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const {
         const auto status=detail::input_status(l,r,n);
         if(status!=Status::Success)return detail::failure<R>(status);
         const auto wave=speeds(l,r,n);
@@ -50,8 +47,7 @@ struct Hll {
 
 namespace detail {
 template<class R,class Speeds>
-KOKKOS_INLINE_FUNCTION Result<R> hll_fallback(State<R> l,State<R> r,Vector<R> n,const Speeds& speeds,bool enabled)
-{
+KOKKOS_INLINE_FUNCTION Result<R> hll_fallback(State<R> l,State<R> r,Vector<R> n,const Speeds& speeds,bool enabled) {
     if(!enabled)return failure<R>(Status::InvalidFan);
     auto result=Hll<Speeds>{speeds}(l,r,n);
     if(result.valid())result.status=Status::HllFallback;

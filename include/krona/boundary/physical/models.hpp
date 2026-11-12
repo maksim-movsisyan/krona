@@ -13,8 +13,7 @@ struct Compressible {
     EOS eos;
     Characteristics characteristics;
 
-    void validate() const
-    {
+    void validate() const {
         eos.validate();
         if constexpr (has_characteristics) characteristics.validate(eos);
     }
@@ -23,14 +22,12 @@ struct Compressible {
     { return eos.from_pT(s.pressure,s.temperature); }
 
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Conservative<Real> conservative(Primitive<Real,true> s) const
-    {
+    KOKKOS_INLINE_FUNCTION Conservative<Real> conservative(Primitive<Real,true> s) const {
         const auto q = thermodynamic(s);
         return {q.density,s.velocity*q.density,q.density*(q.internal_energy+s.velocity.norm2()/Real{2})};
     }
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Primitive<Real,true> primitive(Conservative<Real> s) const
-    {
+    KOKKOS_INLINE_FUNCTION Primitive<Real,true> primitive(Conservative<Real> s) const {
         if (!(s.density > Real{0})) Kokkos::abort("Physical boundary: nonpositive conservative density");
         const auto u = s.momentum*(Real{1}/s.density);
         const auto q = eos.from_rhoe(s.density,s.total_energy/s.density-u.norm2()/Real{2});
@@ -46,8 +43,7 @@ struct Incompressible {
     Material material;
     void validate() const { material.validate(); }
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Real density(Primitive<Real,Thermal> s) const
-    {
+    KOKKOS_INLINE_FUNCTION Real density(Primitive<Real,Thermal> s) const {
         if constexpr (Thermal) return material.density(s.temperature);
         else return material.density(Real{0});
     }

@@ -21,8 +21,7 @@ struct Requirements {
 };
 
 /// @brief Returns mandatory storage groups before creating the gradient plan.
-[[nodiscard]] constexpr Requirements requirements(Options options = {}) noexcept
-{
+[[nodiscard]] constexpr Requirements requirements(Options options = {}) noexcept {
     using MeshData = mesh::device::MeshData;
     using mesh::AuxConnType;
     using mesh::AuxGeomType;

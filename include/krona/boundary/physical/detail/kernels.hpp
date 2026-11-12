@@ -11,8 +11,7 @@ struct Evaluate {
 
     template<class Real,class Condition,class State,class Errors>
     KOKKOS_INLINE_FUNCTION auto evaluate_local(const FaceContext<Real>& c,
-        const Condition& condition,const State& inside,const Errors& errors) const
-    {
+        const Condition& condition,const State& inside,const Errors& errors) const {
         if constexpr (requires { model.at(c,condition); }) {
             const auto local=model.at(c,condition);
             static_assert(decltype(local)::thermal==Model::thermal&&decltype(local)::compressible==Model::compressible,
@@ -22,8 +21,7 @@ struct Evaluate {
     }
     
     template<class Real,class Condition>
-    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c,const Condition& condition) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c,const Condition& condition) const {
         bool failed=false;
         const DeviceErrors<Flags> errors{flags,&failed};
         const auto inside=reader(c,condition);
@@ -44,8 +42,7 @@ template<class Fields>
 struct Fill {
     Fields fields;
     template<class Real,class State,class Errors>
-    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c,const Evaluation<State>& result,const Errors& errors) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(const FaceContext<Real>& c,const Evaluation<State>& result,const Errors& errors) const {
         if (!fields.can_store(result.face)) { errors.fail(Error::Output,"Physical boundary: unrepresentable primitive output"); return; }
         fields.write(c.extended_index,result.face);
     }

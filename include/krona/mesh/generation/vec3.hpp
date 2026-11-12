@@ -4,7 +4,7 @@
 
 namespace krona::mesh::generation {
 
-/// @brief Stores a Cartesian point or vector without a device dependency.
+/// @brief Stores a Cartesian point or vector without a device dependency. 
 struct Vec3 {
     double x{0.0};
     double y{0.0};

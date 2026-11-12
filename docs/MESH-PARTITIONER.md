@@ -27,7 +27,7 @@ Steps involving MPI must be called by every rank, including ranks with no cells,
 - Reader defaults select base 1 and zone 1. All ranks use the same file and options. CGNS calls must not overlap because CGNS configuration is process-global.
 - In 3D, supported BC point sets identify boundary elements: `PointList` / `PointRange` at `FaceCenter`, or legacy element lists/ranges. Unsupported BC sets are rejected by default; `UnsupportedBoundary::ignore` records their names in `ReadResult::source.ignored_boundary_conditions`.
 - External faces without a label remain boundary faces with `invalid_patch_id`. `build_faces` does not create an automatic patch. Duplicate boundary records, boundary labels on interior faces and faces shared by more than two cells are rejected. Hanging interfaces require a conforming mesh first.
-- The HDF5 result is a partitioned mesh snapshot. Loading requires the saved MPI size and communicator rank numbering, matching `GeometryReal` precision and equally wide or wider local/global index types. Loading with a different MPI size requires repartitioning.
+- The HDF5 result is a partitioned mesh snapshot. Loading requires the same MPI communicator size as the original run. The reader uses the saved part2rank mapping to assign partitions to ranks in the supplied communicator. If MPI ranks are placed differently in the solver run than during partitioning, the benefits of topology-aware mapping may be reduced or lost. Loading requires matching `GeometryReal` precision and equally wide or wider local/global index types. Loading with a different MPI size requires repartitioning.
 
 ## Prepare and save a mesh in C++
 
@@ -47,8 +47,7 @@ This is the application's processing order, with explicit ownership transfer. No
 #include <utility>
 #include <vector>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     krona::mpi::Runtime runtime{argc, argv};
     return krona::mpi::guarded([&] {
         namespace host = krona::mesh::host;

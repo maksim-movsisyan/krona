@@ -10,8 +10,7 @@ namespace krona::mesh::host {
 namespace {
 
 /// @brief Converts row counts to starting cursors and allocates the exact CSR payload.
-void allocate_rows(std::vector<std::size_t>& offsets, std::vector<LocalIndex>& values)
-{
+void allocate_rows(std::vector<std::size_t>& offsets, std::vector<LocalIndex>& values) {
     std::size_t total = 0;
     for (std::size_t row = 0; row + 1 < offsets.size(); ++row) {
         const auto count = offsets[row];
@@ -26,8 +25,7 @@ void allocate_rows(std::vector<std::size_t>& offsets, std::vector<LocalIndex>& v
 }
 
 /// @brief Restores starts after the offsets array has served as insertion cursors.
-void restore_rows(std::vector<std::size_t>& offsets)
-{
+void restore_rows(std::vector<std::size_t>& offsets) {
     // Each cursor now points to its row end; shift those ends into CSR positions.
     for (std::size_t row = offsets.size() - 1; row != 0; --row)
         offsets[row] = offsets[row - 1];
@@ -35,8 +33,7 @@ void restore_rows(std::vector<std::size_t>& offsets)
 }
 
 /// @brief Sorts each row without creating a second payload buffer.
-void sort_rows(std::span<const std::size_t> offsets, std::vector<LocalIndex>& values)
-{
+void sort_rows(std::span<const std::size_t> offsets, std::vector<LocalIndex>& values) {
     auto entries = std::span{values};
     for (std::size_t row = 0; row + 1 < offsets.size(); ++row) {
         // span iterators also support zero-length rows.
@@ -49,8 +46,7 @@ void sort_rows(std::span<const std::size_t> offsets, std::vector<LocalIndex>& va
 
 /// @brief Inverts face-to-cell incidence into owned-cell rows using in-place cursors.
 void build_cell_faces_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
-                           std::vector<LocalIndex>& faces)
-{
+                           std::vector<LocalIndex>& faces) {
     offsets.assign(static_cast<std::size_t>(m.n_own) + 1, 0);
     for (std::size_t f = 0; f < m.face_owner.size(); ++f) {
         ++offsets[static_cast<std::size_t>(m.face_owner[f])];
@@ -70,8 +66,7 @@ void build_cell_faces_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
 
 /// @brief Collects face neighbours for owned cells, skipping physical boundary faces.
 void build_cell_cells_face_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
-                                std::vector<LocalIndex>& cells)
-{
+                                std::vector<LocalIndex>& cells) {
     offsets.assign(static_cast<std::size_t>(m.n_own) + 1, 0);
     for (std::size_t f = 0; f < m.face_owner.size(); ++f) {
         const auto neighbour = m.face_neigh[f];
@@ -93,8 +88,7 @@ void build_cell_cells_face_conn(const MeshPart& m, std::vector<std::size_t>& off
 
 /// @brief Inverts available cell connectivity for the owned-used node prefix.
 void build_node_cells_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
-                           std::vector<LocalIndex>& cells)
-{
+                           std::vector<LocalIndex>& cells) {
     offsets.assign(static_cast<std::size_t>(m.n_nodes_own) + 1, 0);
     for (const auto node : m.cell_nodes)
         if (node < m.n_nodes_own) ++offsets[static_cast<std::size_t>(node)];
@@ -112,8 +106,7 @@ void build_node_cells_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
 
 /// @brief Inverts local face connectivity for the owned-used node prefix.
 void build_node_faces_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
-                           std::vector<LocalIndex>& faces)
-{
+                           std::vector<LocalIndex>& faces) {
     offsets.assign(static_cast<std::size_t>(m.n_nodes_own) + 1, 0);
     for (const auto node : m.face_nodes)
         if (node < m.n_nodes_own) ++offsets[static_cast<std::size_t>(node)];
@@ -132,8 +125,7 @@ void build_node_faces_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
 /// @brief Counts and fills unique vertex neighbours using one LocalIndex stamp per local cell.
 void build_cell_cells_node_conn(const MeshPart& m, std::span<const std::size_t> node_offsets,
                                 std::span<const LocalIndex> node_cells,
-                                std::vector<std::size_t>& offsets, std::vector<LocalIndex>& cells)
-{
+                                std::vector<std::size_t>& offsets, std::vector<LocalIndex>& cells) {
     assert(node_offsets.size() == static_cast<std::size_t>(m.n_nodes_own) + 1);
     const auto owned = static_cast<std::size_t>(m.n_own);
     offsets.assign(owned + 1, 0);
@@ -165,8 +157,7 @@ void build_cell_cells_node_conn(const MeshPart& m, std::span<const std::size_t> 
 
 /// @brief Builds the node transpose temporarily when it is not retained by the caller.
 void build_cell_cells_node_conn(const MeshPart& m, std::vector<std::size_t>& offsets,
-                                std::vector<LocalIndex>& cells)
-{
+                                std::vector<LocalIndex>& cells) {
     std::vector<std::size_t> node_offsets;
     std::vector<LocalIndex> node_cells;
     // Keep dependency storage local instead of activating an unrequested table.
@@ -175,8 +166,7 @@ void build_cell_cells_node_conn(const MeshPart& m, std::vector<std::size_t>& off
 }
 
 /// @brief Adds requested missing tables without copying already computed CSR arrays.
-void MeshAuxConnectivity::add_connectivity(const MeshPart& m, AuxConnType requested)
-{
+void MeshAuxConnectivity::add_connectivity(const MeshPart& m, AuxConnType requested) {
     if ((static_cast<std::uint64_t>(requested) & ~static_cast<std::uint64_t>(AuxConnType::All)) != 0)
         mpi::fatal("Unknown auxiliary connectivity flag");
     assert(active_mask == AuxConnType::None ||
@@ -210,8 +200,7 @@ void MeshAuxConnectivity::add_connectivity(const MeshPart& m, AuxConnType reques
 }
 
 /// @brief Creates an empty cache and builds the requested local relations.
-MeshAuxConnectivity build_aux_connectivity(const MeshPart& m, AuxConnType mask)
-{
+MeshAuxConnectivity build_aux_connectivity(const MeshPart& m, AuxConnType mask) {
     MeshAuxConnectivity result;
     result.add_connectivity(m, mask);
     return result;

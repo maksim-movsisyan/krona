@@ -11,8 +11,7 @@ namespace krona::mpi {
 namespace {
 
 /// @brief Returns whether a value names a supported MPI thread level.
-[[nodiscard]] constexpr bool valid(ThreadLevel level) noexcept
-{
+[[nodiscard]] constexpr bool valid(ThreadLevel level) noexcept {
     // A cast to an enum may still produce an invalid value.
     switch (level) {
     case ThreadLevel::single:
@@ -42,8 +41,7 @@ Runtime::Runtime(
     int* argc,
     char*** argv,
     ThreadLevel required,
-    std::source_location where) noexcept : construction_thread_(std::this_thread::get_id()), origin_(where)
-{
+    std::source_location where) noexcept : construction_thread_(std::this_thread::get_id()), origin_(where) {
     // MPI cannot be initialized again after finalization.
     require(valid(required), "Invalid requested MPI thread level", where);
     require(!is_finalized(), "MPI cannot be reinitialized after finalization", where);
@@ -67,8 +65,7 @@ Runtime::Runtime(
 }
 
 /// @brief Finalizes an owned runtime through the common lifecycle path.
-Runtime::~Runtime() noexcept
-{
+Runtime::~Runtime() noexcept {
     // Borrowed guards do not finalize MPI or make lifecycle MPI calls.
     if (owns_mpi_) {
         finalize(origin_);
@@ -76,8 +73,7 @@ Runtime::~Runtime() noexcept
 }
 
 /// @brief Rejects lifecycle calls from a different C++ thread.
-void Runtime::require_construction_thread(std::source_location where) const noexcept
-{
+void Runtime::require_construction_thread(std::source_location where) const noexcept {
     if (std::this_thread::get_id() != construction_thread_) {
         // MPI calls may be forbidden here; print and exit locally.
         std::fprintf(stderr,
@@ -91,8 +87,7 @@ void Runtime::require_construction_thread(std::source_location where) const noex
 }
 
 /// @brief Finalizes owned MPI once or detaches a borrowed guard.
-void Runtime::finalize(std::source_location where) noexcept
-{
+void Runtime::finalize(std::source_location where) noexcept {
     // Check the C++ thread before making any MPI calls.
     require_construction_thread(where);
     if (closed_) {

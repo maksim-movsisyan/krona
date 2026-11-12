@@ -1,0 +1,30 @@
+[[boundary_condition]]
+patch_id = 0
+name = "first"
+type = "ISOTHERMAL_WALL"
+temperature = "data/tabulated_temperature.csv"
+velocity = [0.0, "data/tabulated_component.csv", 1.0]
+
+[[boundary_condition]]
+patch_id = 1
+name = "second"
+type = "SUPERSONIC_INLET"
+pressure = 120000
+temperature = 280
+mach = "data/tabulated_component.csv"
+direction = [-2.0, 0.0, 0.0]
+
+[[boundary_condition]]
+patch_id = 2
+name = "empty"
+type = "SYMMETRY"
+
+[unlabelled]
+type = "PRESSURE_OUTLET"
+pressure = 90000
+
+[unlabelled.backflow]
+type = "TOTAL_CONDITIONS_INLET"
+total_pressure = 130000
+total_temperature = "data/tabulated_temperature.csv"
+direction = [-1.0, 0.0, 0.0]

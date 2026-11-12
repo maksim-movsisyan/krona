@@ -17,8 +17,7 @@ template<class Flags>
 struct DeviceErrors {
     Flags flags;
     bool* local_failed;
-    KOKKOS_INLINE_FUNCTION void fail(Error error, const char*) const
-    {
+    KOKKOS_INLINE_FUNCTION void fail(Error error, const char*) const {
         *local_failed = true;
         Kokkos::atomic_exchange(&flags(static_cast<int>(error)), 1);
     }
@@ -30,8 +29,7 @@ template<class Exec = execution::ExecutionSpace>
 class Status {
 public:
     using flags_type = Kokkos::View<int*, typename Exec::memory_space>;
-    explicit Status(Exec exec = {}) : exec_(exec)
-    {
+    explicit Status(Exec exec = {}) : exec_(exec) {
         execution::require_kokkos();
         mpi::guarded([&] {
             flags_ = flags_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
@@ -42,23 +40,20 @@ public:
     Status(const Status&) = delete;
     Status& operator=(const Status&) = delete;
     ~Status() { if (pending_) mpi::guarded([&] { exec_.fence("Physical boundary: pending status work completed"); }); }
-    void begin_async()
-    {
+    void begin_async() {
         execution::require_kokkos();
         mpi::require(!pending_, "Physical boundary: status pending; call check()");
         pending_ = true;
         mpi::guarded([&] { Kokkos::deep_copy(exec_, flags_, 0); });
     }
-    [[nodiscard]] flags_type device_flags(const Exec& exec) const
-    {
+    [[nodiscard]] flags_type device_flags(const Exec& exec) const {
         mpi::require(pending_, "Physical boundary: call status.begin_async() first");
         mpi::require(exec == exec_, "Physical boundary: status execution instance mismatch");
         return flags_;
     }
     [[nodiscard]] bool pending() const noexcept { return pending_; }
     /// @brief Local blocking completion and fatal diagnostics; no MPI collective.
-    void check()
-    {
+    void check() {
         mpi::require(pending_, "Physical boundary: no pending status batch");
         mpi::guarded([&] {
             Kokkos::deep_copy(exec_, host_, flags_);

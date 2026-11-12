@@ -1,0 +1,23 @@
+[[boundary_condition]]
+patch_id = 0
+name = "first"
+[boundary_condition.scalar.phi]
+type = "FIXED_VALUE"
+value = "data/tabulated.csv"
+
+[[boundary_condition]]
+patch_id = 1
+name = "second"
+[boundary_condition.scalar.phi]
+type = "NORMAL_GRADIENT"
+gradient = "data/tabulated.csv"
+
+[[boundary_condition]]
+patch_id = 2
+name = "empty"
+[boundary_condition.scalar.phi]
+type = "ZERO_GRADIENT"
+
+[unlabelled.scalar.phi]
+type = "FIXED_FLUX"
+flux = "data/tabulated.csv"

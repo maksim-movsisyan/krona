@@ -9,8 +9,7 @@ namespace krona::mpi {
 
 /// @brief Stores the first local failure without allocating memory.
 /// Text is copied and limited to 511 bytes; use a fresh object for each stage.
-struct LocalError final
-{
+struct LocalError final {
     char message[512]{};
     std::source_location where{};
     bool failed = false;

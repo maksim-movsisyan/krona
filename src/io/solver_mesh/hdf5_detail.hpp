@@ -47,14 +47,12 @@ inline void check(herr_t status, std::string_view operation)
 class Handle {
 public:
     /// @brief Takes ownership of a newly created HDF5 handle.
-    Handle(hid_t value, herr_t (*close_function)(hid_t)) : id_(value), close_(close_function)
-    {
+    Handle(hid_t value, herr_t (*close_function)(hid_t)) : id_(value), close_(close_function) {
         // Negative IDs indicate creation or opening failure.
         mpi::require(id_ >= 0, "Cannot create or open an HDF5 object");
     }
     /// @brief Closes normally or aborts before collective cleanup during exception unwinding.
-    ~Handle()
-    {
+    ~Handle() {
         // A lone rank must not enter H5Fclose while its peers continue dataset operations.
         if (id_ >= 0 && std::uncaught_exceptions() != 0)
             mpi::fatal("Exception during collective HDF5 I/O");
@@ -67,8 +65,7 @@ public:
     /// @brief Returns the borrowed HDF5 ID.
     [[nodiscard]] hid_t get() const noexcept { return id_; }
     /// @brief Closes once and reports flush/close failures before MPI finalization.
-    void close()
-    {
+    void close() {
         if (id_ >= 0) {
             // Invalidate ownership before checking the close result.
             check(close_(std::exchange(id_, -1)), "HDF5 close failed");
@@ -80,8 +77,7 @@ private:
 };
 
 /// @brief Selects the native memory datatype without changing an array's representation.
-template<class T> hid_t memory_type()
-{
+template<class T> hid_t memory_type() {
     // CellType has an explicitly fixed uint8_t underlying representation.
     if constexpr (std::is_enum_v<T>) return memory_type<std::underlying_type_t<T>>();
     else if constexpr (std::is_same_v<T, float>) return H5T_NATIVE_FLOAT;
@@ -100,8 +96,7 @@ template<class T> hid_t memory_type()
 }
 
 /// @brief Selects a fixed-width little-endian datatype for the portable file schema.
-template<class T> hid_t file_type()
-{
+template<class T> hid_t file_type() {
     if constexpr (std::is_enum_v<T>) return file_type<std::underlying_type_t<T>>();
     else if constexpr (std::is_same_v<T, float>) return H5T_IEEE_F32LE;
     else if constexpr (std::is_same_v<T, double>) return H5T_IEEE_F64LE;
@@ -119,8 +114,7 @@ template<class T> hid_t file_type()
 }
 
 /// @brief Opens a parallel file access property list on the caller's communicator.
-inline Handle file_access(mpi::CommView comm)
-{
+inline Handle file_access(mpi::CommView comm) {
     mpi::require(mpi::is_active() && !comm.is_null(), "HDF5 I/O requires an active communicator");
     mpi::require_main_thread();
     Handle access{H5Pcreate(H5P_FILE_ACCESS), H5Pclose};
@@ -132,8 +126,7 @@ inline Handle file_access(mpi::CommView comm)
 }
 
 /// @brief Creates one transfer property list reused by all collective dataset operations.
-inline Handle collective_transfer()
-{
+inline Handle collective_transfer() {
     Handle transfer{H5Pcreate(H5P_DATASET_XFER), H5Pclose};
     // Empty ranks still call H5Dread/H5Dwrite with a none selection.
     check(H5Pset_dxpl_mpio(transfer.get(), H5FD_MPIO_COLLECTIVE), "H5Pset_dxpl_mpio");
@@ -141,8 +134,7 @@ inline Handle collective_transfer()
 }
 
 /// @brief Checks the replicated partition permutation and builds its inverse.
-inline std::vector<int> inverse_mapping(std::span<const int> part2rank, int size)
-{
+inline std::vector<int> inverse_mapping(std::span<const int> part2rank, int size) {
     mpi::require(part2rank.size() == static_cast<std::size_t>(size), "Invalid partition mapping size");
     std::vector<int> rank2part(static_cast<std::size_t>(size), -1);
     for (int part = 0; part < size; ++part) {
@@ -158,10 +150,9 @@ inline std::vector<int> inverse_mapping(std::span<const int> part2rank, int size
 struct Layout {
     std::array<U64, category_count> start{}, count{}, total{};
     /// @brief Accumulates partition-ordered prefixes and selects one partition's counts.
-    Layout(std::span<const U64> directory, int part, int size)
-    {
+    Layout(std::span<const U64> directory, int part, int size) {
         mpi::require(directory.size() == static_cast<std::size_t>(size) * row_size,
-                "Invalid partition directory size");
+                     "Invalid partition directory size");
         for (int p = 0; p < size; ++p) {
             for (std::size_t c = 0; c < category_count; ++c) {
                 const U64 n = directory[static_cast<std::size_t>(p) * row_size + c];
@@ -174,8 +165,7 @@ struct Layout {
 };
 
 /// @brief Visits all persistent SoA arrays in a fixed collective operation order.
-template<class Mesh, class Visitor> void visit_arrays(Mesh& m, Visitor&& visit)
-{
+template<class Mesh, class Visitor> void visit_arrays(Mesh& m, Visitor&& visit) {
     // The category controls a dataset's partition prefix, not its element datatype.
     visit("cells/type", m.cell_type, cells);
     visit("cells/gid", m.cell_gid, cells);
@@ -215,8 +205,7 @@ template<class Mesh, class Visitor> void visit_arrays(Mesh& m, Visitor&& visit)
 
 /// @brief Transfers one one-dimensional slice, including zero-length selections.
 template<class T> void transfer(hid_t dataset, hid_t properties, U64 start, U64 count,
-                                T* data, bool writing)
-{
+                                T* data, bool writing) {
     Handle disk{H5Dget_space(dataset), H5Sclose};
     const hsize_t extent = count == 0 ? 1 : count;
     Handle memory{H5Screate_simple(1, &extent, nullptr), H5Sclose};
@@ -239,9 +228,8 @@ template<class T> void transfer(hid_t dataset, hid_t properties, U64 start, U64 
 
 /// @brief Creates an uncompressed portable dataset and writes this rank's non-overlapping slice.
 template<class T> void write(hid_t file, hid_t properties, const char* name,
-                            U64 total, U64 start, std::span<const T> values,
-                            bool offsets = false)
-{
+                             U64 total, U64 start, std::span<const T> values,
+                             bool offsets = false) {
     const hsize_t extent = total;
     Handle space{H5Screate_simple(1, &extent, nullptr), H5Sclose};
     // CSR offsets are UInt64 on disk even when the host uses a smaller size_t.
@@ -255,8 +243,7 @@ template<class T> void write(hid_t file, hid_t properties, const char* name,
 
 /// @brief Reads a dataset only after checking its extent and primitive datatype.
 template<class T, std::size_t Extent> void read(hid_t file, hid_t properties, const char* name,
-                           U64 total, U64 start, std::span<T, Extent> values, bool offsets = false)
-{
+                           U64 total, U64 start, std::span<T, Extent> values, bool offsets = false) {
     Handle dataset{H5Dopen2(file, name, H5P_DEFAULT), H5Dclose};
     Handle space{H5Dget_space(dataset.get()), H5Sclose};
     hsize_t extent = 0;
@@ -277,23 +264,20 @@ template<class T, std::size_t Extent> void read(hid_t file, hid_t properties, co
 
 /// @brief Writes replicated metadata once; every other rank contributes an empty selection.
 template<class T> void write_shared(hid_t file, hid_t properties, const char* name,
-                                   std::span<const T> values, int rank)
-{
+                                    std::span<const T> values, int rank) {
     // Dataset creation remains collective, without overlapping payload writes.
     write(file, properties, name, values.size(), 0, rank == 0 ? values : values.first(0));
 }
 
 /// @brief Resizes an output array after checking its allocation limit.
-template<class T> void resize(std::vector<T>& values, U64 count)
-{
+template<class T> void resize(std::vector<T>& values, U64 count) {
     mpi::require(count <= values.max_size(), "HDF5 array exceeds the host allocation range");
     // Storage is final MeshPart storage; no payload staging array is allocated.
     values.resize(static_cast<std::size_t>(count));
 }
 
 /// @brief Converts a file count to a representable local mesh count.
-inline LocalIndex local_count(U64 value)
-{
+inline LocalIndex local_count(U64 value) {
     mpi::require(value <= static_cast<U64>(std::numeric_limits<LocalIndex>::max()),
             "HDF5 mesh count exceeds LocalIndex");
     return static_cast<LocalIndex>(value);

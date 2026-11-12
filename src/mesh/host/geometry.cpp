@@ -113,22 +113,31 @@ struct CellMetrics {
 
 /// @brief Integrates signed tetrahedron volumes and moments around a local cell anchor.
 [[nodiscard]] CellMetrics cell_metrics(CellType type, std::span<Vec3> points) noexcept {
+    // compute geometric cell center
     Vec3 anchor;
     for (const auto p : points)
         anchor = anchor + p;
     anchor = anchor * (1.0 / static_cast<double>(points.size()));
+
     // Points were already shifted by the first vertex; moments stay local too.
     for (auto& p : points)
         p = p - anchor;
+
     const auto ti = static_cast<std::size_t>(type);
+
     double volume = 0;
     Vec3 moment;
+
+    // loop over all cell faces
     for (int facet = 0; facet < faces_per_type[ti]; ++facet) {
+        // get face vertices coordinates
         const int count = face_nodes[ti][facet];
         std::array<Vec3, 4> face;
         for (int i = 0; i < count; ++i)
             face[static_cast<std::size_t>(i)] = points[static_cast<std::size_t>(face_table[ti][facet][i])];
+
         if (count == 3) {
+            // for triangle face area = 1/2 * cross product
             const auto area = cross(face[1] - face[0], face[2] - face[0]) * 0.5;
             const double v = dot(area, face[0]) / 3.0;
             volume += v;
@@ -144,7 +153,7 @@ struct CellMetrics {
                 moment = moment + (centre + a + b) * (v * 0.25);
             }
         }
-    }
+    } // end loop over all cell faces
     return {volume, positive(volume) ? anchor + moment * (1.0 / volume) : anchor};
 }
 
@@ -182,7 +191,7 @@ struct FaceMetrics {
 /// @brief Fills reusable metric arrays and returns statistics for this rank only.
 [[nodiscard]] GeometryStats compute(MeshPart& mesh) {
     check_shape(mesh);
-    const auto cells = static_cast<std::size_t>(mesh.n_cells), faces = static_cast<std::size_t>(mesh.n_faces);
+    const std::size_t cells = static_cast<std::size_t>(mesh.n_cells), faces = static_cast<std::size_t>(mesh.n_faces);
     mesh.cell_centroid_x.resize(cells);
     mesh.cell_centroid_y.resize(cells);
     mesh.cell_centroid_z.resize(cells);
@@ -196,26 +205,36 @@ struct FaceMetrics {
     mesh.face_area.resize(faces);
     GeometryStats stats;
     double correction = 0;
+
+    // loop over all cells
     for (std::size_t cell = 0; cell < cells; ++cell) {
         const auto type = mesh.cell_type[cell];
         if (static_cast<std::size_t>(type) >= 4)
             mpi::fatal("Geometry supports only TET/PYRA/PRISM/HEXA cells");
-        const auto begin = mesh.cell_nodes_offsets[cell], end = mesh.cell_nodes_offsets[cell + 1];
+
+        const std::size_t begin = mesh.cell_nodes_offsets[cell], end = mesh.cell_nodes_offsets[cell + 1];
         if (end - begin != static_cast<std::size_t>(nodes_per_element(type)) || end > mesh.cell_nodes.size())
             fail_cell(mesh, cell, "Invalid cell connectivity extent", static_cast<double>(end - begin));
+
+        // compute radius-vector of cell nodes
+        // in coordinate system of first cell node
         std::array<Vec3, 8> vertices;
-        const auto origin = cell_origin(mesh, cell);
+        const Vec3 origin = cell_origin(mesh, cell); // returns first cell node radius vector
         for (std::size_t i = begin; i < end; ++i)
             vertices[i - begin] = point(mesh, mesh.cell_nodes[i]) - origin;
+
+        // compute cell metrics
         const auto metrics = cell_metrics(type, std::span{vertices}.first(end - begin));
         if (!positive(metrics.volume) || !finite(metrics.centre))
             fail_cell(mesh, cell, "Nonpositive or nonfinite cell geometry", metrics.volume);
+
         const auto volume = static_cast<GeometryReal>(metrics.volume);
         const Vec3 centre{static_cast<GeometryReal>(metrics.centre.x),
                           static_cast<GeometryReal>(metrics.centre.y),
                           static_cast<GeometryReal>(metrics.centre.z)};
         if (!positive(static_cast<double>(volume)) || !finite(centre))
             fail_cell(mesh, cell, "Cell geometry does not fit GeometryReal", metrics.volume);
+
         mesh.cell_volume[cell] = volume;
         // Reuse final arrays for offsets until winding checks finish; no second centroid buffer.
         mesh.cell_centroid_x[cell] = static_cast<GeometryReal>(centre.x);
@@ -230,26 +249,33 @@ struct FaceMetrics {
             correction = (total - stats.total_volume) - increment;
             stats.total_volume = total;
         }
-    }
+    } // end loop over all cells
+
+    // loop over all faces
     for (std::size_t face = 0; face < faces; ++face) {
-        const auto begin = mesh.face_nodes_offsets[face], end = mesh.face_nodes_offsets[face + 1];
+        const std::size_t begin = mesh.face_nodes_offsets[face], end = mesh.face_nodes_offsets[face + 1];
         if ((end - begin != 3 && end - begin != 4) || end > mesh.face_nodes.size())
             fail_face(mesh, face, "Invalid face connectivity extent", static_cast<double>(end - begin));
         assert(mesh.face_owner[face] >= 0 && mesh.face_owner[face] < mesh.n_own);
-        const auto owner = static_cast<std::size_t>(mesh.face_owner[face]);
+
+        const std::size_t owner = static_cast<std::size_t>(mesh.face_owner[face]);
         const auto origin = cell_origin(mesh, owner);
         std::array<Vec3, 4> vertices;
         for (std::size_t i = begin; i < end; ++i)
             vertices[i - begin] = point(mesh, mesh.face_nodes[i]) - origin;
+        
+        // compute face metrics
         const auto metrics = face_metrics(std::span{vertices}.first(end - begin));
-        const auto area = static_cast<GeometryReal>(metrics.area);
+        const GeometryReal area = static_cast<GeometryReal>(metrics.area);
         if (!positive(metrics.area) || !positive(static_cast<double>(area)) || !finite(metrics.centre) ||
             !finite(metrics.normal))
             fail_face(mesh, face, "Nonpositive, nonfinite or unrepresentable face geometry", metrics.area);
+
         // Compare local offsets, not rounded absolute centroids on shifted meshes.
         const double owner_side = dot(metrics.normal, metrics.centre - cell_offset(mesh, owner));
         if (!positive(owner_side))
             fail_face(mesh, face, "Normal does not point out of owner", owner_side);
+
         const auto neighbour = mesh.face_neigh[face];
         if (neighbour != invalid_local_index) {
             assert(neighbour >= 0 && neighbour < mesh.n_cells);
@@ -262,6 +288,7 @@ struct FaceMetrics {
         const auto centre = origin + metrics.centre;
         if (!finite(centre))
             fail_face(mesh, face, "Nonfinite absolute face centroid", metrics.area);
+
         mesh.face_centroid_x[face] = static_cast<GeometryReal>(centre.x);
         mesh.face_centroid_y[face] = static_cast<GeometryReal>(centre.y);
         mesh.face_centroid_z[face] = static_cast<GeometryReal>(centre.z);
@@ -271,7 +298,8 @@ struct FaceMetrics {
         mesh.face_area[face] = area;
         stats.min_face_area = std::min(stats.min_face_area, metrics.area);
         stats.max_face_area = std::max(stats.max_face_area, metrics.area);
-    }
+    } // end loop over all faces
+
     for (std::size_t cell = 0; cell < cells; ++cell) {
         const auto centre = cell_origin(mesh, cell) + cell_offset(mesh, cell);
         if (!finite(centre))
@@ -280,6 +308,7 @@ struct FaceMetrics {
         mesh.cell_centroid_y[cell] = static_cast<GeometryReal>(centre.y);
         mesh.cell_centroid_z[cell] = static_cast<GeometryReal>(centre.z);
     }
+    
     // Coordinate motion requires fresh bounds; owned-used nodes avoid ghost-only outliers.
     for (LocalIndex node = 0; node < mesh.n_nodes_own; ++node) {
         const auto p = point(mesh, node);

@@ -24,8 +24,7 @@ struct PreconditionerOptions {
 };
 
 namespace detail {
-inline std::string upper_name(std::string name)
-{
+inline std::string upper_name(std::string name) {
     for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return name;
 }
@@ -34,8 +33,7 @@ template<class Source, class Destination>
 struct ConvertMatrixValues {
     Source source;
     Destination destination;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i, std::size_t& bad) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i, std::size_t& bad) const {
         using Value = typename Destination::non_const_value_type;
         const Value value = static_cast<Value>(source(i));
         destination(i) = value;
@@ -76,20 +74,17 @@ public:
     [[nodiscard]] bool enabled() const noexcept
     { return static_cast<bool>(factory_) || (!type_.empty() && type_ != "NONE"); }
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
-    [[nodiscard]] const Teuchos::RCP<operator_type>& native() const
-    {
+    [[nodiscard]] const Teuchos::RCP<operator_type>& native() const {
         mpi::require(prepared_, "Linalg: prepare the preconditioner before requesting its operator");
         return operator_;
     }
-    [[nodiscard]] const Teuchos::RCP<inner_operator_type>& native_inner() const
-    {
+    [[nodiscard]] const Teuchos::RCP<inner_operator_type>& native_inner() const {
         mpi::require(prepared_, "Linalg: preconditioner is not prepared");
         return inner_;
     }
     void invalidate() noexcept { prepared_ = false; }
 
-    void prepare()
-    {
+    void prepare() {
         matrix_.require_committed();
         mpi::guarded([&] {
             if (!enabled() || matrix_.distribution().global_size() == 0) {
@@ -177,8 +172,7 @@ private:
     std::uint64_t prepared_revision_ = 0, generation_ = 0;
     bool prepared_ = false;
 
-    void update_matrix()
-    {
+    void update_matrix() {
         if constexpr (std::is_same_v<Scalar, PrecScalar>) {
             preconditioner_matrix_ = matrix_.native();
         } else {
@@ -195,8 +189,7 @@ private:
         }
     }
 
-    Teuchos::ParameterList amg_parameters() const
-    {
+    Teuchos::ParameterList amg_parameters() const {
         auto parameters = options_.parameters;
         const auto set_default = [&](const char* name, const auto& value) {
             if (!parameters.isParameter(name)) parameters.set(name, value);

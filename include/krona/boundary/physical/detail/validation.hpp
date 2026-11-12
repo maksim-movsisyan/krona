@@ -11,8 +11,7 @@ template<class Real>
 void finite_vector(Vector<Real> v)
 { mpi::require(std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z),"Physical boundary: vector must be finite"); }
 template<class Real>
-Vector<Real> unit_vector(Vector<Real> v)
-{
+Vector<Real> unit_vector(Vector<Real> v) {
     finite_vector(v);
     const Real norm = std::sqrt(v.norm2());
     mpi::require(std::isfinite(norm)&&norm>Real{0},"Physical boundary: direction must be nonzero");
@@ -43,8 +42,7 @@ Profiled<C,P> prepare(Profiled<C,P> c,const Model& model)
 { require_compatible(std::type_identity<C>{},model); return c; }
 
 template<class C,class Model>
-C prepare(C c,const Model& model)
-{
+C prepare(C c,const Model& model) {
     if constexpr (requires { c.validate(model); }) c.validate(model);
     return c;
 }
@@ -53,33 +51,28 @@ SlipWall<Real> prepare(SlipWall<Real> c,const Model&) { finite_vector(c.velocity
 template<class Real,class Model>
 AdiabaticWall<Real> prepare(AdiabaticWall<Real> c,const Model&) { finite_vector(c.velocity); return c; }
 template<class Real,class Model>
-IsothermalWall<Real> prepare(IsothermalWall<Real> c,const Model&)
-{
+IsothermalWall<Real> prepare(IsothermalWall<Real> c,const Model&) {
     mpi::require(Model::thermal,"Physical boundary: isothermal wall requires a temperature field");
     finite_vector(c.velocity); positive(c.temperature); return c;
 }
 template<class Real,class Model>
-HeatFluxWall<Real> prepare(HeatFluxWall<Real> c,const Model&)
-{
+HeatFluxWall<Real> prepare(HeatFluxWall<Real> c,const Model&) {
     mpi::require(Model::thermal,"Physical boundary: heat-flux wall requires a temperature field");
     finite_vector(c.velocity); mpi::require(std::isfinite(c.flux),"Physical boundary: flux must be finite"); return c;
 }
 template<class Real,class Model>
-TotalConditionsInlet<Real> prepare(TotalConditionsInlet<Real> c,const Model&)
-{
+TotalConditionsInlet<Real> prepare(TotalConditionsInlet<Real> c,const Model&) {
     mpi::require(Model::compressible&&Model::has_characteristics,
         "Physical boundary: total inlet requires a compatible compressible characteristic model");
     positive(c.total_pressure); positive(c.total_temperature); c.direction=unit_vector(c.direction); return c;
 }
 template<class Real,class Model>
-VelocityInlet<Real> prepare(VelocityInlet<Real> c,const Model&)
-{
+VelocityInlet<Real> prepare(VelocityInlet<Real> c,const Model&) {
     mpi::require(!Model::compressible,"Physical boundary: VelocityInlet currently targets incompressible flow");
     finite_vector(c.velocity); if constexpr (Model::thermal) positive(c.temperature); return c;
 }
 template<class Real,class Model>
-SupersonicInlet<Real> prepare(SupersonicInlet<Real> c,const Model&)
-{
+SupersonicInlet<Real> prepare(SupersonicInlet<Real> c,const Model&) {
     mpi::require(Model::compressible,"Physical boundary: supersonic inlet requires compressible flow");
     positive(c.pressure); positive(c.temperature); finite_vector(c.velocity);
     mpi::require(std::isfinite(c.mach)&&c.mach>=Real{0},"Physical boundary: invalid prescribed Mach number");
@@ -90,8 +83,7 @@ template<class Model>
 SupersonicOutlet prepare(SupersonicOutlet c,const Model&)
 { mpi::require(Model::compressible,"Physical boundary: supersonic outlet requires compressible flow"); return c; }
 template<class Real,class Model>
-PressureOutlet<Real> prepare(PressureOutlet<Real> c,const Model& model)
-{
+PressureOutlet<Real> prepare(PressureOutlet<Real> c,const Model& model) {
     mpi::require(std::isfinite(c.pressure),"Physical boundary: pressure must be finite");
     if constexpr (Model::compressible) {
         positive(c.pressure);
@@ -126,8 +118,7 @@ template<class Real,class O> SupersonicInlet<Real> condition_cast(SupersonicInle
     static_cast<Real>(c.mach),vector_cast<Real>(c.direction)}; }
 template<class Real,class O> VelocityInlet<Real> condition_cast(VelocityInlet<O> c)
 { return {vector_cast<Real>(c.velocity),static_cast<Real>(c.temperature)}; }
-template<class Real,class O> PressureOutlet<Real> condition_cast(PressureOutlet<O> c)
-{
+template<class Real,class O> PressureOutlet<Real> condition_cast(PressureOutlet<O> c) {
     Backflow<Real> back{c.backflow.mode,condition_cast<Real>(c.backflow.reservoir),
         vector_cast<Real>(c.backflow.direction),static_cast<Real>(c.backflow.temperature)};
     return {static_cast<Real>(c.pressure),back};

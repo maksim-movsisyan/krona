@@ -18,7 +18,7 @@ namespace thermo = krona::thermodynamics;
 | `ConstantDensity<Real>` | Nonthermal incompressible material | `rho = 1000` |
 | `ThermalConstantDensity<Real>` | Incompressible material with constant density and specific heat | `rho = 1000`, `specific_heat = 4200`, `reference_temperature = 273` |
 
-These are the supplied models; there is no general real-gas, mixture, or tabulated EOS implementation in this module. The two constant-density models are material closures, **not acoustic EOS**: they have no sound-speed or `(rho,e)` inversion API.
+These are the supplied models; The two constant-density models are material closures, **not acoustic EOS**: they have no sound-speed or `(rho,e)` inversion API.
 
 `Real` defaults to `ComputeReal` and stores the model parameters. Evaluation methods deduce a separate scalar type `S` from their arguments and return results in `S`. Pass both arguments with the same floating-point type. `cv()` and `cp()` return the parameter type `Real`.
 
@@ -168,16 +168,14 @@ struct ShiftedIdealGas {
     thermo::IdealGas<double> gas{};
     double energy_shift = -1e6; // J/kg, added to e and h.
 
-    void validate() const
-    {
+    void validate() const {
         gas.validate();
         krona::mpi::require(std::isfinite(energy_shift),
                             "ShiftedIdealGas: nonfinite energy reference");
     }
 
     template<class S>
-    KOKKOS_INLINE_FUNCTION thermo::State<S> from_pT(S p, S T) const
-    {
+    KOKKOS_INLINE_FUNCTION thermo::State<S> from_pT(S p, S T) const {
         auto q = gas.from_pT(p, T);
         q.internal_energy += static_cast<S>(energy_shift);
         q.enthalpy += static_cast<S>(energy_shift);
@@ -185,8 +183,7 @@ struct ShiftedIdealGas {
     }
 
     template<class S>
-    KOKKOS_INLINE_FUNCTION thermo::State<S> from_rhoe(S rho, S e) const
-    {
+    KOKKOS_INLINE_FUNCTION thermo::State<S> from_rhoe(S rho, S e) const {
         const auto q = gas.from_rhoe(rho, e - static_cast<S>(energy_shift));
         return from_pT(q.pressure, q.temperature);
     }

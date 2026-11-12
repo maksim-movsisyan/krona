@@ -7,8 +7,7 @@
 namespace krona::numerics::reconstruction {
 namespace detail {
 template<class Exec, class P>
-void accessible()
-{
+void accessible() {
     if constexpr (requires { typename P::memory_space; })
         static_assert(Kokkos::SpaceAccessibility<Exec, typename P::memory_space>::accessible);
 }
@@ -22,8 +21,7 @@ void accessible()
 template<class Real = ComputeReal, class Exec, class Stencil, class D, class Output,
          class Limiter = BarthJespersen, class Scheme = SecondOrderUpwind, class Coupling = Componentwise>
 void compute_limiters_async(const Exec& exec, Stencil stencil, D input, Output output,
-    Limiter limiter = {}, Scheme scheme = {}, Coupling = {}, CellRange range = {})
-{
+    Limiter limiter = {}, Scheme scheme = {}, Coupling = {}, CellRange range = {}) {
     static_assert(std::is_floating_point_v<Real>);
     static_assert((Scheme::requirements & Factors) == 0, "Prepare factors with an unlimited reconstruction");
     detail::check_input_components<Scheme, D>();

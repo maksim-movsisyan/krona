@@ -1,6 +1,6 @@
 # KRONA Mesh Generator
 
-Define a mesh in TOML using three parts: vertices describe the geometry, blocks specify the cell counts and spacing, and boundary patches name the outer faces. The result is a three-dimensional CGNS mesh with `HEXA_8` volume cells and `QUAD_4` boundary elements.
+Define a mesh in TOML using three parts: vertices describe the geometry, blocks specify the cell counts and spacing, and boundary patches name the outer faces. The result is a three-dimensional CGNS mesh with `HEXA_8` volume cells and `QUAD_4` boundary elements. 
 
 ## Contents
 

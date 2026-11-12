@@ -12,7 +12,7 @@
 
 namespace krona::mesh::host {
 
-/// @brief Owns element types and oriented global-node connectivity in CSR form.
+/// @brief Owns element types and oriented global-node connectivity in CSR form. 
 struct ElementTable {
     std::vector<CellType> types;
     std::vector<std::size_t> offsets{0};

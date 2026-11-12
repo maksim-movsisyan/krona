@@ -20,8 +20,7 @@ struct ComponentDescriptor {
 };
 
 template<class View>
-[[nodiscard]] auto descriptor_from_view(View view)
-{
+[[nodiscard]] auto descriptor_from_view(View view) {
     static_assert(Kokkos::is_view<View>::value && View::rank == 1,
                   "Fields: a packed Kokkos view must have rank one");
     mpi::require(view.extent(0) == 0 || (view.data() != nullptr && view.stride(0) > 0),

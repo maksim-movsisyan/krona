@@ -8,8 +8,7 @@
 namespace krona::io::solver_mesh {
 
 /// @brief Restores the exact local snapshot from its saved partition row and validates it once.
-mesh::host::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView comm)
-{
+mesh::host::MeshPart import_mesh_hdf5(const std::filesystem::path& path, mpi::CommView comm) {
     using namespace detail;
     auto access = file_access(comm);
     Handle file{H5Fopen(path.string().c_str(), H5F_ACC_RDONLY, access.get()), H5Fclose};

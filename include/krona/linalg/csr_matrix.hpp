@@ -31,8 +31,7 @@ public:
     using native_type_for = typename Types<OtherScalar, Exec>::matrix_type;
     static constexpr bool block_storage = false;
 
-    explicit CsrMatrix(const CsrPattern<Exec>& pattern) : pattern_(pattern)
-    {
+    explicit CsrMatrix(const CsrPattern<Exec>& pattern) : pattern_(pattern) {
         mpi::guarded([&] {
             matrix_ = create_native_structure<Scalar>();
             Kokkos::fence("Linalg: matrix initialization complete");
@@ -49,41 +48,35 @@ public:
 
     /// @brief Native interoperability: independent coefficients sharing this matrix's graph/maps.
     template<class OtherScalar>
-    [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const
-    {
+    [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const {
         auto matrix = Teuchos::rcp(new native_type_for<OtherScalar>(pattern_.native()));
         matrix->fillComplete(distribution().native(), distribution().native());
         return matrix;
     }
 
     /// @brief Native CSR order; use pattern.input_to_entry() for original input slots.
-    [[nodiscard]] auto edit_values(const Exec& exec = {})
-    {
+    [[nodiscard]] auto edit_values(const Exec& exec = {}) {
         begin_access(exec); ++revision_;
         return mpi::guarded([&] { return matrix_->getLocalValuesDevice(Tpetra::Access::ReadWrite); });
     }
     /// @brief Full coefficient overwrite; skips synchronization of old host values.
-    [[nodiscard]] auto overwrite_values(const Exec& exec = {})
-    {
+    [[nodiscard]] auto overwrite_values(const Exec& exec = {}) {
         begin_access(exec); ++revision_;
         return mpi::guarded([&] { return matrix_->getLocalValuesDevice(Tpetra::Access::OverwriteAll); });
     }
     /// @brief Begins an asynchronous read batch without changing the coefficient revision.
-    [[nodiscard]] auto read_values(const Exec& exec = {}) const
-    {
+    [[nodiscard]] auto read_values(const Exec& exec = {}) const {
         begin_access(exec);
         return mpi::guarded([&] { return std::as_const(*matrix_).getLocalValuesDevice(Tpetra::Access::ReadOnly); });
     }
-    void commit() const
-    {
+    void commit() const {
         if (pending_) { pending_exec_.fence("Linalg: matrix accesses committed"); pending_ = false; }
     }
     void require_committed() const
     { mpi::require(!pending_, "Linalg: matrix has pending reads or writes; call commit()"); }
 
     /// @brief Blocking host assembly in the original CSR input order.
-    void set_values(std::span<const Scalar> input)
-    {
+    void set_values(std::span<const Scalar> input) {
         require_committed();
         mpi::require(input.size() == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
         mpi::guarded([&] {
@@ -96,8 +89,7 @@ public:
 
     /// @brief Asynchronous device assembly in the original CSR input order.
     template<class Input>
-    void set_values_async(Input input, const Exec& exec = {})
-    {
+    void set_values_async(Input input, const Exec& exec = {}) {
         static_assert(Input::rank == 1);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Input::memory_space>::accessible);
         mpi::require(input.extent(0) == pattern_.local_nonzeros(), "Linalg: wrong coefficient count");
@@ -110,8 +102,7 @@ public:
 
     /// @brief Collective, blocking y = alpha*A*x + beta*y, including native remote imports.
     void apply(const Vector<Scalar, Exec>& x, Vector<Scalar, Exec>& y,
-               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const
-    {
+               Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const {
         require_committed(); x.require_committed(); y.require_committed();
         const auto* map = distribution().native().getRawPtr();
         mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
@@ -134,8 +125,7 @@ private:
     std::uint64_t revision_ = 0;
     mutable bool pending_ = false;
 
-    void begin_access(const Exec& exec) const
-    {
+    void begin_access(const Exec& exec) const {
         mpi::require(!pending_ || pending_exec_ == exec,
                      "Linalg: commit before switching execution instances");
         pending_exec_ = exec; pending_ = true;

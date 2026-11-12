@@ -12,7 +12,7 @@ namespace krona::mesh::partition {
 
 using PartitionBlockId = std::uint32_t;
 
-/// @brief Configures unweighted dKaMinPar partitioning into one block per MPI rank.
+/// @brief Configures unweighted dKaMinPar partitioning into one block per MPI rank. 
 struct DKaMinParOptions {
     double imbalance_tolerance = 0.03;
     int threads_per_rank = 1;

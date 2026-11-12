@@ -30,16 +30,14 @@ struct Vector3 {
     { x /= s; y /= s; z /= s; return *this; }
 
     template<class Other>
-    KOKKOS_INLINE_FUNCTION constexpr auto dot(Vector3<Other> b) const noexcept
-    {
+    KOKKOS_INLINE_FUNCTION constexpr auto dot(Vector3<Other> b) const noexcept {
         using R = std::common_type_t<Real, Other>;
         return static_cast<R>(x)*static_cast<R>(b.x) + static_cast<R>(y)*static_cast<R>(b.y) +
                static_cast<R>(z)*static_cast<R>(b.z);
     }
 
     template<class Other>
-    KOKKOS_INLINE_FUNCTION constexpr auto cross(Vector3<Other> b) const noexcept
-    {
+    KOKKOS_INLINE_FUNCTION constexpr auto cross(Vector3<Other> b) const noexcept {
         using R = std::common_type_t<Real, Other>;
         const R ax = static_cast<R>(x), ay = static_cast<R>(y), az = static_cast<R>(z);
         const R bx = static_cast<R>(b.x), by = static_cast<R>(b.y), bz = static_cast<R>(b.z);
@@ -57,16 +55,14 @@ KOKKOS_INLINE_FUNCTION constexpr Vector3<To> cast(Vector3<From> v) noexcept
 { return {static_cast<To>(v.x), static_cast<To>(v.y), static_cast<To>(v.z)}; }
 
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto operator+(Vector3<A> a, Vector3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator+(Vector3<A> a, Vector3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     const auto x = cast<R>(a), y = cast<R>(b);
     return Vector3<R>{x.x+y.x, x.y+y.y, x.z+y.z};
 }
 
 template<class A, class B>
-KOKKOS_INLINE_FUNCTION constexpr auto operator-(Vector3<A> a, Vector3<B> b) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator-(Vector3<A> a, Vector3<B> b) noexcept {
     using R = std::common_type_t<A, B>;
     const auto x = cast<R>(a), y = cast<R>(b);
     return Vector3<R>{x.x-y.x, x.y-y.y, x.z-y.z};
@@ -77,8 +73,7 @@ KOKKOS_INLINE_FUNCTION constexpr Vector3<R> operator-(Vector3<R> v) noexcept
 { return {-v.x, -v.y, -v.z}; }
 
 template<class A, class S> requires std::is_arithmetic_v<S>
-KOKKOS_INLINE_FUNCTION constexpr auto operator*(Vector3<A> v, S s) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator*(Vector3<A> v, S s) noexcept {
     using R = std::common_type_t<A, S>;
     const auto x = cast<R>(v);
     const R scale = static_cast<R>(s);
@@ -89,8 +84,7 @@ template<class S, class A> requires std::is_arithmetic_v<S>
 KOKKOS_INLINE_FUNCTION constexpr auto operator*(S s, Vector3<A> v) noexcept { return v*s; }
 
 template<class A, class S> requires std::is_arithmetic_v<S>
-KOKKOS_INLINE_FUNCTION constexpr auto operator/(Vector3<A> v, S s) noexcept
-{
+KOKKOS_INLINE_FUNCTION constexpr auto operator/(Vector3<A> v, S s) noexcept {
     using R = std::common_type_t<A, S>;
     const auto x = cast<R>(v);
     const R divisor = static_cast<R>(s);

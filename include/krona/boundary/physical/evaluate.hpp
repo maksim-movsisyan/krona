@@ -11,8 +11,8 @@ namespace krona::boundary::physical {
 template<class Condition,class Real,class Model,class Law,class Correction,class Errors=detail::AbortErrors>
 KOKKOS_INLINE_FUNCTION auto evaluate(const Condition& condition,const FaceContext<Real>& c,
     Primitive<Real,Model::thermal> inside,const Model& model,const Law& law,const Correction& correction,
-    const Errors& errors={})
-{
+    const Errors& errors={}) {
+        
     auto numeric=sample_condition(condition,c);
     const auto failed=Evaluation{inside,inside};
     if (!detail::prepare_device(numeric,model,errors,is_profiled<Condition>)||

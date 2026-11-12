@@ -25,16 +25,14 @@ struct PackStorage<std::index_sequence<I...>, Components...> : PackSlot<I, Compo
     KOKKOS_INLINE_FUNCTION explicit PackStorage(Components... c) : PackSlot<I, Components>{c}... {}
 
     template<std::size_t C>
-    KOKKOS_INLINE_FUNCTION auto descriptor() const
-    {
+    KOKKOS_INLINE_FUNCTION auto descriptor() const {
         using Component = std::tuple_element_t<C, std::tuple<Components...>>;
         return static_cast<const PackSlot<C, Component>&>(*this).descriptor;
     }
 };
 
 template<class Input>
-constexpr std::size_t pack_width()
-{
+constexpr std::size_t pack_width() {
     if constexpr (Kokkos::is_view<Input>::value) {
         static_assert(Input::rank == 1, "Fields: use a FieldView or rank-one component views");
         return 1;
@@ -45,8 +43,7 @@ constexpr std::size_t pack_width()
 }
 
 template<std::size_t C, class First, class... Rest>
-auto packed_input_component(const First& first, const Rest&... rest)
-{
+auto packed_input_component(const First& first, const Rest&... rest) {
     constexpr auto width = pack_width<First>();
     if constexpr (C < width) {
         if constexpr (Kokkos::is_view<First>::value) return first;
@@ -57,8 +54,7 @@ auto packed_input_component(const First& first, const Rest&... rest)
 }
 
 template<class Input>
-std::size_t pack_extent(const Input& input)
-{
+std::size_t pack_extent(const Input& input) {
     if constexpr (Kokkos::is_view<Input>::value) return input.extent(0);
     else return input.size();
 }
@@ -95,8 +91,7 @@ public:
 
     /// @brief Exact scalar reference; preserves this component's individual constness.
     template<std::size_t C>
-    KOKKOS_INLINE_FUNCTION decltype(auto) get(std::size_t entity) const
-    {
+    KOKKOS_INLINE_FUNCTION decltype(auto) get(std::size_t entity) const {
         static_assert(C < components);
         KOKKOS_ASSERT(entity < extent_);
         const auto c = this->template descriptor<C>();
@@ -105,8 +100,7 @@ public:
 
     /// @brief Borrowed rank-one view of one component, restricted to the common pack extent.
     template<std::size_t C>
-    KOKKOS_INLINE_FUNCTION auto component() const
-    {
+    KOKKOS_INLINE_FUNCTION auto component() const {
         static_assert(C < components);
         const auto c = this->template descriptor<C>();
         using T = typename decltype(c)::value_type;
@@ -117,8 +111,7 @@ public:
 
     /// @brief Same scalar types: reference (read-only if any input is const).
     /// Mixed scalar types: common-type value; write through get<C>() or component<C>().
-    KOKKOS_INLINE_FUNCTION decltype(auto) operator()(std::size_t entity, std::size_t c) const
-    {
+    KOKKOS_INLINE_FUNCTION decltype(auto) operator()(std::size_t entity, std::size_t c) const {
         KOKKOS_ASSERT(entity < extent_ && c < components);
         return access(entity, c, std::index_sequence_for<Components...>{});
     }
@@ -132,8 +125,7 @@ private:
 
     template<std::size_t... I>
     KOKKOS_INLINE_FUNCTION decltype(auto) access(std::size_t entity, std::size_t c,
-                                                std::index_sequence<I...>) const
-    {
+                                                std::index_sequence<I...>) const {
         if constexpr (homogeneous) {
             value_type* result = nullptr;
             ((c == I ? result = &this->template get<I>(entity) : result), ...);
@@ -146,8 +138,7 @@ private:
     }
 
     template<std::size_t I>
-    KOKKOS_INLINE_FUNCTION auto const_descriptor() const
-    {
+    KOKKOS_INLINE_FUNCTION auto const_descriptor() const {
         const auto c = this->template descriptor<I>();
         using T = const std::remove_const_t<typename decltype(c)::value_type>;
         return ComponentDescriptor<T, memory_space>{c.data, c.stride};
@@ -170,8 +161,7 @@ auto make_component_pack(std::size_t extent, std::index_sequence<I...>, const In
 /// @brief Flattens FieldViews, rank-one Kokkos views or existing packs, in argument/component order.
 /// Keep all backing allocations alive until every user finishes; no ownership is retained.
 template<class First, class... Rest>
-[[nodiscard]] auto pack(First first, Rest... rest)
-{
+[[nodiscard]] auto pack(First first, Rest... rest) {
     constexpr auto width = detail::pack_width<First>() + (detail::pack_width<Rest>() + ... + 0);
     std::size_t extent = detail::pack_extent(first);
     ((extent = extent < detail::pack_extent(rest) ? extent : detail::pack_extent(rest)), ...);
@@ -180,8 +170,7 @@ template<class First, class... Rest>
 
 /// @brief An existing valid pack already has the required representation.
 template<class... Components>
-[[nodiscard]] auto pack(ComponentPack<Components...> packed)
-{
+[[nodiscard]] auto pack(ComponentPack<Components...> packed) {
     return packed;
 }
 

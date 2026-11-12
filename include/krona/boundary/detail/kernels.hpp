@@ -12,8 +12,7 @@ struct ValidateGeometry {
     GeometryView<Space> geometry;
     LocalIndex n_own = 0;
 
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const {
         const std::size_t f = static_cast<std::size_t>(face);
         const auto owner = geometry.face_owner(f);
         if (owner < 0 || owner >= n_own) { ++bad; return; }
@@ -44,8 +43,7 @@ struct ForEachFace {
 
 /// @brief Validates borrowed exterior geometry once and returns its compact descriptor.
 template<class Real, class Exec, class Space>
-GeometryView<Space> attach_geometry(const Exec& exec, mesh::device::MeshView<Space> mesh_view)
-{
+GeometryView<Space> attach_geometry(const Exec& exec, mesh::device::MeshView<Space> mesh_view) {
     static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible);
     using mesh::device::MeshData;
     const auto& s = mesh_view.sizes;

@@ -203,7 +203,8 @@ Complete gradient producers before reading them. Boundary filling uses owned gra
 | `for_each_face_async(sink, time)` | Device `sink(context, typed_condition)`; raw dispatch without relation/law/correction/status handling. |
 | `for_each_patch(visitor)` | Host `visitor(PatchRange, typed_condition)` for each nonempty local patch, including unlabelled faces. Launch your own kernels from it. |
 
-Callbacks must compile for every condition alternative in the manager, including currently unassigned types. `for_each_patch`/`for_each_face_async` require finalization, but do not require a flux law merely to visit flux conditions.
+Your callback must compile for every condition type registered in the manager, even if the current configuration uses only some of them.
+Call `finalize()` before using `for_each_patch()` or `for_each_face_async()`. Both methods pass the condition to your callback. For `FixedFlux`, the callback can use the prescribed flux directly. It needs a flux law only if it converts that flux to a normal gradient.
 
 For example, define this sink at namespace scope:
 
@@ -235,7 +236,7 @@ For a new mathematical condition, implement device `operator()(const FaceContext
 
 ## Configuration
 
-`read_config(path, "temperature")` and `parse_config(text, "temperature")` read constant conditions from `[boundary_condition.scalar.temperature]` tables:
+`read_config(path, "temperature", comm)` reads TOML on communicator rank zero, broadcasts the text and parses the selected scalar on every rank. `parse_config(text, "temperature")` parses locally. To load several scalars from one file, call `toml_config::read_broadcast(path, comm)` once and pass the text to `parse_config` for each field.
 
 ```toml
 [[boundary_condition]]
@@ -249,9 +250,46 @@ value = 300.0
 type = "ZERO_GRADIENT"
 ```
 
-Supported types are `FIXED_VALUE` (`value`), `NORMAL_GRADIENT` (`gradient`), `ZERO_GRADIENT` (no parameter), and `FIXED_FLUX` (`flux`). Every labelled mesh patch must appear exactly once with matching ID and exact name; order is irrelevant. With no labels, write `boundary_condition = []` explicitly. Unknown scalar keys and invalid numeric parameters are rejected. Profiles and custom conditions are assigned in C++, not interpreted from TOML.
+Supported types are `FIXED_VALUE` (`value`), `NORMAL_GRADIENT` (`gradient`), `ZERO_GRADIENT` (only `type`), and `FIXED_FLUX` (`flux`). Every labelled mesh patch must appear exactly once with matching ID and exact name. With no labels, write `boundary_condition = []` explicitly. Unknown scalar keys and invalid parameters are rejected. `Configuration::field` selects the parsed scalar section.
 
-Construct `Manager(layout, config)` or call `configure(config)`, then `finalize()`. `Configuration::field` selects the parsed scalar section; it does not bind a field buffer or check its name.
+For numeric conditions, construct `Manager(layout, config)` or call `configure(config)`, then `finalize()`.
+
+For a tabulated condition, put the CSV path in the corresponding parameter. This patch entry prescribes an inlet temperature that varies with `y`.
+
+```toml
+[[boundary_condition]]
+patch_id = 0
+name = "inlet"
+
+[boundary_condition.scalar.temperature]
+type = "FIXED_VALUE"
+value = "profiles/inlet.csv"
+```
+
+The file `profiles/inlet.csv` contains the tabulated temperatures.
+
+```csv
+y,value
+0.0,300.0
+1.0,340.0
+```
+
+**KRONA interpolates the profile at each local face centroid.** For example, a face whose centroid has `y = 0.25` gets a temperature of `310.0` by linear interpolation. Only the axes listed in the CSV are used.
+
+**Choose the CSV coordinates independently of the boundary mesh.** The sample points can differ from the face centroids. A centroid outside the table bounds on any active axis causes a configuration error.
+
+Relative CSV paths use rank zero's working directory. The header contains `value` and one to three of `x`, `y`, and `z`. Each active axis needs at least two distinct coordinates, and the rows must cover every combination of active coordinates exactly once.
+
+Include `<krona/boundary/scalar/tabulated_config.hpp>` and configure the manager on every rank, including ranks with empty local patches:
+
+```cpp
+const auto config = scalar::read_config("bc.toml", "temperature", comm);
+scalar::TabulatedManager<Exec, Real> boundary(layout);
+scalar::configure_tabulated(boundary, config, host_mesh, comm);
+boundary.finalize();
+```
+
+Pass the host mesh used to build the layout and identical configurations on all ranks. The manager's conditions own the sampled buffers. Complete prior boundary kernels before rebinding conditions. For custom C++ providers, use `set()` or `set_unlabelled()`.
 
 ## Asynchrony and errors
 
@@ -259,6 +297,9 @@ Construct `Manager(layout, config)` or call `configure(config)`, then `finalize(
 | --- | --- |
 | `BoundaryLayout(...)` | Local blocking geometry validation and fence; copies host catalog metadata. |
 | `Manager(...)`, `set*()`, `configure()`, `finalize()` | Host work only. No device submission, fence or MPI communication. |
+| `parse_config()` | Local, blocking TOML parsing. |
+| `read_config()` | Blocking collective TOML load, followed by local parsing. |
+| `configure_tabulated()` | Collective CSV loads, local interpolation and completed host-to-device copies. |
 | `Status(...)` | Allocates small diagnostic buffers without initializing their device values. |
 | `status.begin_async()` | Queues a reset on its execution instance; requires the previous batch to have been checked. |
 | `apply_async()`, `apply_component_async()`, `evaluate_async()` | Host checks and kernel submission; no final fence. Require a begun status on the layout's execution instance. |

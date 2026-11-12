@@ -19,8 +19,7 @@ This example loads a prepared mesh, registers a scalar and an AoS vector, closes
 #include <Kokkos_Core.hpp>
 #include <cstddef>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     krona::mpi::Runtime runtime{argc, argv};
     return krona::mpi::guarded([&] {
         Kokkos::ScopeGuard kokkos{argc, argv};

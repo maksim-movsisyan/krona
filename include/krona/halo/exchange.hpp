@@ -31,8 +31,7 @@ struct TransferKernel {
     BufferView buffer;
     std::size_t width;
 
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t c, std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t c, std::size_t i) const {
         const auto field = fields(c);
         const auto segment = segments(peers(i));
         const std::size_t cell = static_cast<std::size_t>(map(i));
@@ -81,8 +80,7 @@ public:
              mpi::CommView comm, int tag, Exec exec, Transfer transfer = Transfer::HostStaged)
         : exec_(exec), comm_(comm), tag_(tag), transfer_(transfer),
           n_own_(mesh.sizes.n_own), n_cells_(mesh.sizes.n_cells),
-          send_map_(mesh.halo.send_owned_local), recv_map_(mesh.halo.recv_ghost_local)
-    {
+          send_map_(mesh.halo.send_owned_local), recv_map_(mesh.halo.recv_ghost_local) {
         execution::require_kokkos();
         mpi::require(mpi::is_active(), "Halo requires active MPI and a valid communicator");
         mpi::require(mesh.has(mesh::device::MeshData::Halo), "Halo maps were not selected");
@@ -129,8 +127,7 @@ public:
 
     /// @brief Registers all components in field order; no names or physics enter kernels.
     template<int N, class Space, class Layout>
-    void add_field(fields::FieldView<T, N, Space, Layout> field)
-    {
+    void add_field(fields::FieldView<T, N, Space, Layout> field) {
         static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible, "Execution space cannot access this field");
 
         mpi::require(!prepared_, "Halo: registration is closed after prepare");
@@ -144,8 +141,7 @@ public:
     /// Host-only registration; no copies, kernels or communication are submitted.
     /// Components must be mutable, have scalar type T and cover all local cells.
     template<class Pack>
-    void add_pack(const Pack& pack)
-    {
+    void add_pack(const Pack& pack) {
         static_assert(Pack::components > 0);
         static_assert(Pack::homogeneous, "Halo: one exchange requires a homogeneous component pack");
         static_assert(std::is_same_v<typename Pack::value_type, T>, "Halo: pack must be mutable and match the exchange scalar type");
@@ -160,8 +156,7 @@ public:
 
     /// @brief Registers one mutable rank-one Kokkos View, including a strided component subview.
     template<class View>
-    void add_component(View component)
-    {
+    void add_component(View component) {
         static_assert(Kokkos::is_view<View>::value && View::rank == 1);
         static_assert(std::is_same_v<typename View::value_type, T>);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
@@ -182,8 +177,7 @@ public:
     }
 
     /// @brief Allocates reusable buffers and validates maps; local, not collective.
-    void prepare()
-    {
+    void prepare() {
         mpi::require(!prepared_, "Halo: prepare was already called");
         mpi::require(!registered_.empty(), "Halo: register at least one field");
         const auto width = registered_.size();
@@ -249,8 +243,7 @@ public:
 
     /// @brief Posts receives, packs, then posts sends. Waits only for send-buffer readiness.
     /// Producers on another execution-space instance must be synchronized by the caller.
-    void start()
-    {
+    void start() {
         mpi::require(prepared_, "Halo: prepare must precede start");
         mpi::require(state_ != State::Communicating, "Halo: exchange is already active");
         if (state_ == State::Unpacking) wait(); // Previous unpack still owns the receive buffer.
@@ -282,8 +275,7 @@ public:
 
     /// @brief Waits for MPI, then queues receive upload and ghost scatter on exec.
     /// Subsequent kernels on this same instance observe updated ghosts in order.
-    void finish_async()
-    {
+    void finish_async() {
         mpi::require(state_ == State::Communicating, "Halo: no active MPI exchange");
         mpi::guarded([&](){
             if (!requests_.empty())
@@ -299,8 +291,7 @@ public:
     }
 
     /// @brief Completes outstanding communication and makes ghost values ready for external users.
-    void wait()
-    {
+    void wait() {
         if (state_ == State::Communicating) finish_async();
         if (state_ == State::Unpacking) {
             mpi::guarded([&](){exec_.fence("KRONA halo: ghost values ready");});
@@ -334,8 +325,7 @@ private:
     bool prepared_ = false, unit_stride_ = true;
     State state_ = State::Idle;
 
-    void make_segments(segments_type& segments, peers_type& lookup, bool sending)
-    {
+    void make_segments(segments_type& segments, peers_type& lookup, bool sending) {
         segments = segments_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing,
                                  "halo/segments"), peers_.size());
         lookup = peers_type(Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "halo/slot_peers"),
@@ -354,26 +344,22 @@ private:
         });
     }
 
-    T* send_pointer() const noexcept
-    {
+    T* send_pointer() const noexcept {
         if constexpr (host_memory) return send_.data();
         else return transfer_ == Transfer::DeviceDirect ? send_.data() : send_host_.data();
     }
-    T* recv_pointer() const noexcept
-    {
+    T* recv_pointer() const noexcept {
         if constexpr (host_memory) return recv_.data();
         else return transfer_ == Transfer::DeviceDirect ? recv_.data() : recv_host_.data();
     }   
 
     template<class Pack, std::size_t... I>
-    void add_pack_impl(const Pack& pack, std::index_sequence<I...>)
-    {
+    void add_pack_impl(const Pack& pack, std::index_sequence<I...>) {
         (add_component(pack.template component<I>()), ...);
     }
 
     template<bool UnitStride>
-    void pack()
-    {
+    void pack() {
         const auto width = registered_.size();
         using Kernel = detail::TransferKernel<true, UnitStride, components_type, map_type, peers_type, segments_type, buffer_type>;
         // Neighboring lanes process neighboring map slots within one component.
@@ -382,8 +368,7 @@ private:
     }
 
     template<bool UnitStride>
-    void unpack()
-    {
+    void unpack() {
         const auto width = registered_.size();
         using Kernel = detail::TransferKernel<false, UnitStride, components_type, map_type, peers_type, segments_type, buffer_type>;
         Kokkos::parallel_for("halo/unpack", policy_type(exec_, {0, 0}, {width, recv_map_.extent(0)}, {1, 128}),

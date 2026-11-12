@@ -10,15 +10,14 @@ struct Hllc {
     Speeds speeds{};
     bool fallback=true;
     template<class R>
-    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const
-    {
+    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const {
         const auto status=detail::input_status(l,r,n);
-        if(status!=Status::Success)return detail::failure<R>(status);
+        if(status!=Status::Success) return detail::failure<R>(status);
         const auto wave=speeds(l,r,n);
         const R sl=wave.left,sr=wave.right,speed=Kokkos::max(Kokkos::abs(sl),Kokkos::abs(sr));
         if(!Kokkos::isfinite(sl)||!Kokkos::isfinite(sr)||!(sl<sr))return detail::failure<R>(Status::InvalidFan);
-        if(sl>=R{0})return detail::finish(physical_flux(l,n),speed);
-        if(sr<=R{0})return detail::finish(physical_flux(r,n),speed);
+        if(sl>=R{0}) return detail::finish(physical_flux(l,n),speed);
+        if(sr<=R{0}) return detail::finish(physical_flux(r,n),speed);
         const R ul=l.velocity.dot(n),ur=r.velocity.dot(n);
         const R dl=l.density*(sl-ul),dr=r.density*(sr-ur),denominator=dl-dr;
         if(!Kokkos::isfinite(denominator)||denominator==R{0})
@@ -39,7 +38,7 @@ struct Hllc {
         const auto flux=middle>=R{0}?physical_flux(l,n)+(star_l-ql)*sl:
                                            physical_flux(r,n)+(star_r-qr)*sr;
         auto result=detail::finish(flux,speed);
-        if(!result.valid())return detail::hll_fallback(l,r,n,speeds,fallback);
+        if(!result.valid()) return detail::hll_fallback(l,r,n,speeds,fallback);
         return result;
     }
 };

@@ -16,8 +16,7 @@ struct PerfectGasCharacteristics {
 
     template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> outlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, Real pressure, const Errors& errors={}) const
-    {
+        const FaceContext<Real>& c, Primitive<Real,true> inside, Real pressure, const Errors& errors={}) const {
         const auto qi = eos.from_pT(inside.pressure,inside.temperature);
         const Real gm = static_cast<Real>(eos.gamma) - Real{1};
         const auto n = normal(c);
@@ -43,8 +42,7 @@ struct PerfectGasCharacteristics {
 
     template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> inlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, TotalConditionsInlet<Real> specified, const Errors& errors={}) const
-    {
+        const FaceContext<Real>& c, Primitive<Real,true> inside, TotalConditionsInlet<Real> specified, const Errors& errors={}) const {
         const auto n = normal(c);
         const Real mu = specified.direction.dot(n);
         if (!(mu < Real{0})) { errors.fail(Error::Characteristics,"Physical boundary: inlet direction must point into the domain"); return inside; }

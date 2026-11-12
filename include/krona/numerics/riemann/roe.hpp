@@ -12,14 +12,12 @@ struct Roe {
     Parameter gamma;
     bool entropy_fix=true, fallback=true;
     explicit Roe(Parameter g,bool entropy=true,bool use_fallback=true)
-        : gamma(g),entropy_fix(entropy),fallback(use_fallback)
-    {
+        : gamma(g),entropy_fix(entropy),fallback(use_fallback) {
         mpi::require(std::isfinite(gamma) && gamma>Parameter{1},
                      "Roe: gamma must be finite and greater than one");
     }
     template<class R>
-    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const
-    {
+    KOKKOS_INLINE_FUNCTION Result<R> operator()(State<R> l,State<R> r,Vector<R> n) const {
         const auto status=detail::input_status(l,r,n);
         if(status!=Status::Success)return detail::failure<R>(status);
         const R g=static_cast<R>(gamma);
@@ -51,21 +49,18 @@ struct Roe {
         return result.valid()?result:fail(l,r,n);
     }
 private:
-    template<class R> KOKKOS_INLINE_FUNCTION static bool close(R x,R y)
-    {
+    template<class R> KOKKOS_INLINE_FUNCTION static bool close(R x,R y) {
         return Kokkos::isfinite(x)&&Kokkos::isfinite(y)&&Kokkos::abs(x-y)<=
             R{128}*(Kokkos::epsilon_v<R>+static_cast<R>(Kokkos::epsilon_v<Parameter>))*
             Kokkos::max(Kokkos::abs(x),Kokkos::abs(y));
     }
-    template<class R> KOKKOS_INLINE_FUNCTION static bool compatible(State<R> s,R g)
-    {
+    template<class R> KOKKOS_INLINE_FUNCTION static bool compatible(State<R> s,R g) {
         return Kokkos::isfinite(g)&&g>R{1}&&close(s.pressure,(g-R{1})*s.density*s.internal_energy)&&
             close(s.sound_speed*s.sound_speed,g*s.pressure/s.density);
     }
     template<class R> KOKKOS_INLINE_FUNCTION static bool positive(Conservative<R> q)
     { return detail::finite(q)&&q.mass>R{0}&&q.energy-R{0.5}*q.momentum.norm2()/q.mass>R{0}; }
-    template<class R> KOKKOS_INLINE_FUNCTION R acoustic(R lambda,R left,R right) const
-    {
+    template<class R> KOKKOS_INLINE_FUNCTION R acoustic(R lambda,R left,R right) const {
         const R value=Kokkos::abs(lambda);
         if(!entropy_fix)return value;
         const R width=Kokkos::max(R{0},Kokkos::max(lambda-left,right-lambda));

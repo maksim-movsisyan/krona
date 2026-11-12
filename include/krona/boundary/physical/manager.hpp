@@ -26,8 +26,7 @@ private:
         VelocityInlet<Real>,SupersonicInlet<Real>,SupersonicOutlet,std::remove_cvref_t<CustomConditions>...>;
     static_assert(std::is_copy_constructible_v<condition_type>,"Physical boundary conditions/providers must be copy constructible");
 public:
-    Manager(const layout_type& layout,Model model) : layout_(&layout),model_(std::move(model))
-    {
+    Manager(const layout_type& layout,Model model) : layout_(&layout),model_(std::move(model)) {
         execution::require_kokkos();
         mpi::guarded([&] { model_.validate(); conditions_.resize(catalog().patches().size()); });
     }
@@ -39,8 +38,7 @@ public:
     Manager(Manager&&)=delete; Manager& operator=(Manager&&)=delete;
 
     template<class C>
-    void set(mesh::PatchId id,C condition)
-    {
+    void set(mesh::PatchId id,C condition) {
         static_assert(std::is_constructible_v<condition_type,C>,"Register the condition type in Manager");
         mpi::require(id>=0&&static_cast<std::size_t>(id)<conditions_.size(),"Physical boundary: unknown patch ID");
         mpi::guarded([&] {
@@ -51,8 +49,7 @@ public:
         });
     }
     template<class C>
-    void set_unlabelled(C condition)
-    {
+    void set_unlabelled(C condition) {
         static_assert(std::is_constructible_v<condition_type,C>);
         mpi::guarded([&] {
             auto prepared=detail::prepare(std::move(condition),model_);
@@ -60,28 +57,50 @@ public:
             unlabelled_.template emplace<C>(std::move(prepared)); finalized_=false;
         });
     }
-    void configure(const Configuration& config)
-    {
+    void configure(const Configuration& config) {
+        configure(config, [](const TabulatedConditionConfig&, PatchRange, const auto&) {
+            mpi::fatal("Physical boundary: CSV profile requires configure_tabulated");
+        });
+    }
+
+    /// @brief Resolver(spec, range, assign) assigns one typed condition per file-backed patch.
+    template<class Resolver>
+    void configure(const Configuration& config, Resolver&& resolver) {
         mpi::guarded([&] {
             mpi::require(config.patches.size()==conditions_.size(),"Physical boundary: configuration must describe every mesh patch");
             std::vector<bool> seen(conditions_.size(),false);
+            const auto resolve = [&](const ConfigCondition& condition, PatchRange range, const auto& assign) {
+                std::visit([&](const auto& c) {
+                    if constexpr (std::is_same_v<std::remove_cvref_t<decltype(c)>,TabulatedConditionConfig>) {
+                        bool assigned = false;
+                        resolver(c,range,[&](auto resolved) {
+                            mpi::require(!assigned,"Physical boundary: profile resolver assigned more than once");
+                            assign(std::move(resolved));
+                            assigned = true;
+                        });
+                        mpi::require(assigned,"Physical boundary: profile resolver did not assign a condition");
+                    } else
+                        assign(detail::condition_cast<Real>(c));
+                },condition);
+            };
             for (const auto& p:config.patches) {
                 mpi::require(p.patch_id>=0&&static_cast<std::uint64_t>(p.patch_id)<conditions_.size(),
                     "Physical boundary: configuration patch ID is out of range");
-                const auto id=static_cast<std::size_t>(p.patch_id);
+                const std::size_t id=static_cast<std::size_t>(p.patch_id);
                 mpi::require(!seen[id],"Physical boundary: duplicate configuration patch ID");
                 mpi::require(p.name==catalog().patches()[id].name,"Physical boundary: patch name does not match the mesh");
                 seen[id]=true;
-                std::visit([&](const auto& c) { set(static_cast<mesh::PatchId>(id),detail::condition_cast<Real>(c)); },p.condition);
+                resolve(p.condition,catalog().patches()[id].range,
+                        [&](auto c) { set(static_cast<mesh::PatchId>(id),std::move(c)); });
             }
             unlabelled_.template emplace<std::monostate>();
-            if (config.unlabelled) std::visit([&](const auto& c) { set_unlabelled(detail::condition_cast<Real>(c)); },*config.unlabelled);
+            if (config.unlabelled)
+                resolve(*config.unlabelled,catalog().unlabelled(),[&](auto c) { set_unlabelled(std::move(c)); });
             finalized_=false;
         });
     }
     /// @brief Host completeness/provider checks and cached requirements. No work submission or MPI.
-    void finalize()
-    {
+    void finalize() {
         mpi::guarded([&] {
             require_complete(); needs_law_=false;
             const auto inspect=[&](PatchRange range,const condition_type& condition) {
@@ -99,8 +118,7 @@ public:
     [[nodiscard]] bool finalized() const noexcept { return finalized_; }
 
     template<class Visitor>
-    void for_each_patch(Visitor&& visitor) const
-    {
+    void for_each_patch(Visitor&& visitor) const {
         require_finalized();
         mpi::guarded([&] {
             for (std::size_t p=0;p<conditions_.size();++p) visit(catalog().patches()[p].range,conditions_[p],visitor);
@@ -108,8 +126,7 @@ public:
         });
     }
     template<class Sink>
-    void for_each_face_async(Sink sink,Real time=0) const
-    {
+    void for_each_face_async(Sink sink,Real time=0) const {
         mpi::require(std::isfinite(time),"Physical boundary: time must be finite");
         for_each_patch([&](PatchRange range,const auto& condition) {
             using C=std::remove_cvref_t<decltype(condition)>;
@@ -120,8 +137,7 @@ public:
 
     /// @brief Reader(context,condition) supplies the interior; sink(context,evaluation) consumes both traces.
     template<class Sink,class Reader,class Law=scalar::NoFluxLaw,class Correction=Corrections<>>
-    void evaluate_async(Sink sink,Reader reader,Status<Exec>& status,Law law={},Correction correction={},Real time=0) const
-    {
+    void evaluate_async(Sink sink,Reader reader,Status<Exec>& status,Law law={},Correction correction={},Real time=0) const {
         validate_inputs<Law>(correction);
         mpi::guarded([&] {
             if constexpr (requires { reader.template validate<Exec>(layout_->owned_cells()); })
@@ -131,8 +147,7 @@ public:
     }
     /// @brief Writes only primitive physical-face slots, never stored exterior/conservative states.
     template<class Fields,class Law=scalar::NoFluxLaw,class Correction=Corrections<>>
-    void apply_async(Fields fields,Status<Exec>& status,Law law={},Correction correction={},Real time=0) const
-    {
+    void apply_async(Fields fields,Status<Exec>& status,Law law={},Correction correction={},Real time=0) const {
         static_assert(Fields::thermal==Model::thermal,"Primitive binding must match the model's thermal capability");
         mpi::guarded([&] { fields.template validate<Exec,true>(required_field_size()); });
         validate_inputs<Law>(correction);
@@ -156,23 +171,20 @@ private:
     { profile::validate<Exec>(c,range); }
     void require_finalized() const
     { mpi::require(finalized_,"Physical boundary: call finalize() after assigning conditions"); }
-    void require_complete() const
-    {
+    void require_complete() const {
         for (const auto& c:conditions_) mpi::require(!std::holds_alternative<std::monostate>(c),
             "Physical boundary: missing condition on a labelled patch");
         mpi::require(!catalog().needs_unlabelled()||!std::holds_alternative<std::monostate>(unlabelled_),
             "Physical boundary: unlabelled faces need an explicit condition");
     }
     template<class Visitor>
-    static void visit(PatchRange range,const condition_type& condition,Visitor& visitor)
-    {
+    static void visit(PatchRange range,const condition_type& condition,Visitor& visitor) {
         if (range.empty()) return;
         std::visit([&](const auto& c) {
             if constexpr (!std::is_same_v<std::remove_cvref_t<decltype(c)>,std::monostate>) visitor(range,c);
         },condition);
     }
-    template<class C> void validate_correction(const C& c) const
-    {
+    template<class C> void validate_correction(const C& c) const {
         if constexpr (requires { c.gradients.template validate<Exec>(layout_->owned_cells()); })
             c.gradients.template validate<Exec>(layout_->owned_cells());
         else if constexpr (requires { c.template validate<Exec>(layout_->owned_cells()); })
@@ -182,8 +194,7 @@ private:
     void validate_correction(const VectorCorrection<X,Y,Z>& c) const
     { validate_correction(c.x); validate_correction(c.y); validate_correction(c.z); }
     template<class Law,class C>
-    void validate_inputs(const C& correction) const
-    {
+    void validate_inputs(const C& correction) const {
         require_finalized();
         if constexpr (!scalar::FluxLaw<Law,Real>)
             mpi::require(!needs_law_,"Physical boundary: heat-flux wall requires an explicit flux law");
@@ -193,8 +204,7 @@ private:
         });
     }
     template<class Sink,class Reader,class Law,class Correction>
-    void submit(Sink sink,Reader reader,Status<Exec>& status,Law law,Correction correction,Real time) const
-    {
+    void submit(Sink sink,Reader reader,Status<Exec>& status,Law law,Correction correction,Real time) const {
         using Flags=typename Status<Exec>::flags_type;
         for_each_face_async(detail::Evaluate<Model,Reader,Sink,Law,Correction,Flags>{
             model_,reader,sink,law,correction,status.device_flags(execution_space())},time);

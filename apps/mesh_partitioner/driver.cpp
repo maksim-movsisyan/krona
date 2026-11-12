@@ -3,6 +3,7 @@
 
 #include <krona/toml_config/file.hpp>
 #include <krona/io/boundary_config/writer.hpp>
+#include <krona/io/boundary_config/profile_template_writer.hpp>
 #include <krona/io/cgns/reader.hpp>
 #include <krona/io/solver_mesh/hdf5_writer.hpp>
 #include <krona/io/vtu/vtu.hpp>
@@ -41,6 +42,7 @@ void broadcast_options(Options& options, mpi::CommView comm) {
     toml_config::broadcast(options.output, comm);
     toml_config::broadcast(options.boundary_output, comm);
     toml_config::broadcast(options.vtu_directory, comm);
+    toml_config::broadcast(options.patches_template_directory, comm);
     options.reorder = static_cast<mesh::host::ReorderMethod>(settings[0]);
     options.verbosity = static_cast<Verbosity>(settings[1]);
 }
@@ -294,7 +296,7 @@ int run_partitioner(const Options& options, mpi::CommView comm) {
     started = Clock::now();
     topology.graph = {};
     auto part = mesh::host::migrate_local_mesh(std::move(source), std::move(topology.faces),
-                                               std::span<const int>{partition.vertex_target_rank}, comm);
+                                                         std::span<const int>{partition.vertex_target_rank}, comm);
     std::vector<int>{}.swap(partition.vertex_target_rank);
     if (report)
         print_migration(part, detailed, seconds_since(started));
@@ -320,6 +322,9 @@ int run_partitioner(const Options& options, mpi::CommView comm) {
     if (!options.boundary_output.empty() && comm.rank() == 0)
         io::boundary_config::generate_bc_template_config(part, options.boundary_output,
                                                          statistics.patch_face_counts);
+    if (!options.patches_template_directory.empty())
+        io::boundary_config::generate_patch_profile_templates(part, options.patches_template_directory, comm);
+                                                         
     started = Clock::now();
     io::solver_mesh::export_mesh_hdf5(part, options.output, comm, partition.part2rank);
     if (report)
@@ -343,20 +348,17 @@ int run(int argc, char* const* argv, mpi::CommView comm) noexcept {
     return mpi::guarded([&] {
         mpi::require(!comm.is_null(), "Mesh partitioner app requires a live communicator");
         ParseResult parsed;
-        if (comm.rank() == 0)
-            parsed = parse_arguments(argc, argv);
+        if (comm.rank() == 0) parsed = parse_arguments(argc, argv);
 
         // All ranks take the same help, error or execution branch.
         int action = static_cast<int>(parsed.action);
         mpi::broadcast(comm, action);
         if (action == static_cast<int>(CliAction::help)) {
-            if (comm.rank() == 0)
-                usage(stdout);
+            if (comm.rank() == 0) usage(stdout);
             return EXIT_SUCCESS;
         }
         if (action == static_cast<int>(CliAction::error)) {
-            if (comm.rank() == 0)
-                print_error(parsed, stderr);
+            if (comm.rank() == 0) print_error(parsed, stderr);
             return EXIT_FAILURE;
         }
         broadcast_options(parsed.options, comm);

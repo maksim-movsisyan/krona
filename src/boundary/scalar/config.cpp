@@ -1,132 +1,83 @@
 #include <krona/boundary/scalar/config.hpp>
-#include <krona/mpi/error.hpp>
-#include <krona/execution/utils.hpp>
+#include <krona/toml_config/file.hpp>
+#include <krona/toml_config/toml.hpp>
 
-#if __has_include(<toml++/toml.hpp>)
-#include <toml++/toml.hpp>
-#elif __has_include(<toml++/toml.h>)
-#include <toml++/toml.h>
-#elif __has_include(<toml.hpp>)
-#include <toml.hpp>
-#else
-#error "Scalar boundary configuration requires toml++ headers"
-#endif
-
-#include <cmath>
 #include <unordered_set>
-#include <utility>
 
 namespace krona::boundary::scalar {
 namespace {
 
-[[noreturn]] void config_error(const std::string& message)
-{ mpi::fatal("Scalar boundary configuration: " + message); }
-
-[[nodiscard]] std::string required_string(const toml::table& table, std::string_view key,
-                                          const std::string& where)
-{
-    auto value = table[key].value<std::string>();
-    if (!value) config_error(where + ": missing string '" + std::string{key} + "'");
-    return std::move(*value);
-}
-
-[[nodiscard]] ConditionConfig parse_condition(const toml::table& table, const std::string& where)
-{
-    const auto type = required_string(table, "type", where);
-    ConditionConfig condition;
+[[nodiscard]] ConditionConfig parse_condition(const toml::table& table, const toml_config::TomlReader& reader) {
+    const auto type = reader.string(table, "type");
+    Kind kind;
     std::string_view parameter;
-    if (type == "FIXED_VALUE") { condition.kind = Kind::FixedValue; parameter = "value"; }
-    else if (type == "NORMAL_GRADIENT") { condition.kind = Kind::NormalGradient; parameter = "gradient"; }
-    else if (type == "FIXED_FLUX") { condition.kind = Kind::FixedFlux; parameter = "flux"; }
-    else if (type == "ZERO_GRADIENT") condition.kind = Kind::NormalGradient;
-    else config_error(where + ": unsupported scalar type '" + type + "'");
-    // Strict scalar keys catch misspellings; unrelated physics and import metadata stay untouched.
-    for (const auto& [key, node] : table) {
-        (void)node;
-        if (key.str() != "type" && key.str() != "profile" && (parameter.empty() || key.str() != parameter))
-            config_error(where + ": unexpected key '" + std::string{key.str()} + "'");
+    if (type == "FIXED_VALUE") {
+        kind = Kind::FixedValue;
+        parameter = "value";
+    } else if (type == "NORMAL_GRADIENT") {
+        kind = Kind::NormalGradient;
+        parameter = "gradient";
+    } else if (type == "FIXED_FLUX") {
+        kind = Kind::FixedFlux;
+        parameter = "flux";
+    } else if (type == "ZERO_GRADIENT") {
+        reader.check_keys(table, {"type"});
+        return {Kind::NormalGradient, 0.0};
+    } else {
+        reader.error("unsupported scalar type '" + type + "'");
     }
-    if (table.contains("profile")) {
-        if (parameter.empty() || table.contains(parameter))
-            config_error(where + ": profile requires a parameterized condition without a numeric parameter");
-        condition.profile = required_string(table, "profile", where);
-        if (condition.profile.empty()) config_error(where + ": profile reference must not be empty");
-    } else if (!parameter.empty()) {
-        const auto node = table[parameter];
-        const auto value = node.value<double>();
-        if (!node || !node.is_number() || !value || !std::isfinite(*value))
-            config_error(where + ": '" + std::string{parameter} + "' must be a finite number");
-        condition.parameter = *value;
-    }
-    return condition;
+
+    reader.check_keys(table, {"type", parameter});
+    if (table[parameter].is_string())
+        return {kind, std::filesystem::path{reader.nonempty_string(table, parameter)}};
+    return {kind, reader.number(table, parameter)};
 }
 
-[[nodiscard]] Configuration decode(const toml::table& root, std::string_view field)
-{
-    if (field.empty()) config_error("field name must not be empty");
+[[nodiscard]] Configuration decode(const toml::table& root, std::string_view field,
+                                   const toml_config::TomlReader& reader) {
+    if (field.empty()) reader.error("field name must not be empty");
     Configuration result;
     result.field = field;
-    const auto* entries = root.get_as<toml::array>("boundary_condition");
-    if (!entries) config_error("expected [[boundary_condition]] entries or boundary_condition = []");
+    const auto& entries = reader.array(root, "boundary_condition");
     std::unordered_set<std::int64_t> seen;
-    result.patches.reserve(entries->size());
-    for (const auto& node : *entries) {
+    result.patches.reserve(entries.size());
+    for (const auto& node : entries) {
         const auto* table = node.as_table();
-        if (!table) config_error("boundary_condition entries must be tables");
-        const auto id = (*table)["patch_id"].value<std::int64_t>();
-        if (!id || *id < 0) config_error("patch_id must be a nonnegative integer");
-        if (!seen.insert(*id).second) config_error("duplicate patch_id " + std::to_string(*id));
-        const auto name = required_string(*table, "name", "patch " + std::to_string(*id));
-        const auto where = "patch " + std::to_string(*id) + " ('" + name + "'), scalar '" + std::string{field} + "'";
-        const auto* scalar = table->get_as<toml::table>("scalar");
-        const auto* condition = scalar ? scalar->get_as<toml::table>(field) : nullptr;
-        if (!condition) config_error(where + ": missing scalar condition table");
-        result.patches.push_back({*id, name, parse_condition(*condition, where)});
+        if (!table) reader.error("boundary_condition entries must be tables");
+        const auto id = reader.integer(*table, "patch_id");
+        if (id < 0) reader.error("patch_id must be a nonnegative integer");
+        if (!seen.insert(id).second) reader.error("duplicate patch_id " + std::to_string(id));
+        auto name = reader.string(*table, "name");
+        const toml_config::TomlReader condition_reader{
+            "Scalar boundary configuration: patch " + std::to_string(id) + " ('" + name +
+            "'), scalar '" + std::string{field} + "'"};
+        const auto& scalar = condition_reader.table(*table, "scalar");
+        if (!scalar.contains(field)) condition_reader.error("missing scalar condition table");
+        auto condition = parse_condition(condition_reader.table(scalar, field, true), condition_reader);
+        result.patches.push_back({id, std::move(name), std::move(condition)});
     }
-    if (const auto* unlabelled = root.get_as<toml::table>("unlabelled")) {
-        if (const auto* scalar = unlabelled->get_as<toml::table>("scalar")) {
-            if (const auto* condition = scalar->get_as<toml::table>(field))
-                result.unlabelled = parse_condition(*condition, "unlabelled faces, scalar '" + std::string{field} + "'");
-        }
+
+    const auto& unlabelled = reader.table(root, "unlabelled");
+    const auto& scalar = reader.table(unlabelled, "scalar");
+    if (scalar.contains(field)) {
+        const toml_config::TomlReader condition_reader{
+            "Scalar boundary configuration: unlabelled faces, scalar '" + std::string{field} + "'"};
+        result.unlabelled = parse_condition(condition_reader.table(scalar, field, true), condition_reader);
     }
     return result;
 }
 
-#if !TOML_EXCEPTIONS
-[[noreturn]] void parse_error(const toml::parse_error& error)
-{
-    std::ostringstream message;
-    message << error;
-    config_error(message.str());
-}
-#endif
-
 } // namespace
 
-Configuration parse_config(std::string_view text, std::string_view field)
-{
+Configuration parse_config(std::string_view text, std::string_view field) {
     return mpi::guarded([&] {
-#if TOML_EXCEPTIONS
-        return decode(toml::parse(text), field);
-#else
-        auto parsed = toml::parse(text);
-        if (!parsed) parse_error(parsed.error());
-        return decode(parsed.table(), field);
-#endif
+        const toml_config::TomlReader reader{"Scalar boundary configuration"};
+        return decode(reader.parse_text(text), field, reader);
     });
 }
 
-Configuration read_config(const std::filesystem::path& file, std::string_view field)
-{
-    return mpi::guarded([&] {
-#if TOML_EXCEPTIONS
-        return decode(toml::parse_file(file.string()), field);
-#else
-        auto parsed = toml::parse_file(file.string());
-        if (!parsed) parse_error(parsed.error());
-        return decode(parsed.table(), field);
-#endif
-    });
+Configuration read_config(const std::filesystem::path& file, std::string_view field, mpi::CommView comm) {
+    return parse_config(toml_config::read_broadcast(file, comm), field);
 }
 
 } // namespace krona::boundary::scalar

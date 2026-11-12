@@ -21,8 +21,7 @@ namespace krona::mesh::partition {
 namespace {
 
 /// @brief Builds a bijective placement, optionally grouping shared-memory ranks.
-void make_rank_mapping(mpi::CommView comm, bool group, PartitionResult& result)
-{
+void make_rank_mapping(mpi::CommView comm, bool group, PartitionResult& result) {
     const auto peers = static_cast<std::size_t>(comm.size());
     result.part2rank.resize(peers);
     result.rank2part.resize(peers);
@@ -33,7 +32,7 @@ void make_rank_mapping(mpi::CommView comm, bool group, PartitionResult& result)
         std::vector<int> leaders(peers);
         MPI_Comm handle = MPI_COMM_NULL;
         mpi::check(MPI_Comm_split_type(comm.native(), MPI_COMM_TYPE_SHARED,
-                                      comm.rank(), MPI_INFO_NULL, &handle),
+                   comm.rank(), MPI_INFO_NULL, &handle),
                    "MPI_Comm_split_type(shared memory)");
         auto shared = mpi::Comm::adopt(handle);
         int leader = comm.rank();
@@ -66,8 +65,7 @@ void make_rank_mapping(mpi::CommView comm, bool group, PartitionResult& result)
 /// @brief Borrows matching index types or converts them into temporary import storage.
 template<std::integral Target, std::integral Source>
 [[nodiscard]] std::span<const Target> index_view(
-    std::span<const Source> source, std::vector<Target>& storage)
-{
+    std::span<const Source> source, std::vector<Target>& storage) {
     if constexpr (std::same_as<Target, Source>) {
         // Matching types need no allocation, cast or aliasing workaround.
         return source;
@@ -80,8 +78,7 @@ template<std::integral Target, std::integral Source>
 
 /// @brief Imports distributed CSR and releases conversion buffers before solving.
 void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
-                  std::span<const GlobalIndex> distribution)
-{
+                  std::span<const GlobalIndex> distribution) {
     std::vector<kaminpar::dist::GlobalNodeID> distribution_storage, adjacency_storage;
     std::vector<kaminpar::dist::GlobalEdgeID> offset_storage;
     const auto vtxdist = index_view(distribution, distribution_storage);
@@ -95,8 +92,7 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
 /// @brief Checks ownership and CSR dimensions once; deep graph validity is a contract.
 [[nodiscard]] std::size_t check_input(
     graph::CsrGraphView graph, std::span<const GlobalIndex> distribution,
-    mpi::CommView comm, const DKaMinParOptions& options)
-{
+    mpi::CommView comm, const DKaMinParOptions& options) {
     const auto peers = static_cast<std::size_t>(comm.size());
     if (distribution.size() != peers + 1 || distribution.front() != 0)
         mpi::fatal("Partitioning requires P+1 contiguous ownership endpoints starting at zero");
@@ -108,6 +104,7 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
     const auto local = distribution[rank + 1] - distribution[rank];
     if (!std::in_range<std::size_t>(local)) mpi::fatal("Local graph size exceeds size_t");
     const auto cells = static_cast<std::size_t>(local);
+
     // Protect narrowing inside the library's configured local ID and weight types.
     if (cells >= std::numeric_limits<std::size_t>::max() ||
         cells >= std::numeric_limits<kaminpar::dist::NodeID>::max() ||
@@ -137,10 +134,11 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
 /// @brief Computes destinations and planned loads without gathering the global graph.
 [[nodiscard]] PartitionResult partition(
     graph::CsrGraphView graph, std::span<const GlobalIndex> distribution,
-    mpi::CommView comm, const DKaMinParOptions& options)
-{
+    mpi::CommView comm, const DKaMinParOptions& options) {
     const auto cells = check_input(graph, distribution, comm, options);
     PartitionResult result;
+
+    // create rank2part / part2rank mappings for topology aware decomposition (not verified)
     make_rank_mapping(comm, options.group_by_shared_memory, result);
     result.vertex_target_rank.resize(cells, 0);
     result.vertices_per_rank.resize(static_cast<std::size_t>(comm.size()), 0);
@@ -153,8 +151,7 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
 
     {
         kaminpar::dKaMinPar::reseed(options.seed);
-        kaminpar::dKaMinPar partitioner(
-            comm.native(), options.threads_per_rank, kaminpar::dist::create_default_context());
+        kaminpar::dKaMinPar partitioner(comm.native(), options.threads_per_rank, kaminpar::dist::create_default_context());
         partitioner.set_output_level(options.quiet ? kaminpar::OutputLevel::QUIET
                                                   : kaminpar::OutputLevel::PROGRESS);
         import_graph(partitioner, graph, distribution);
@@ -164,7 +161,9 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
         const auto cut = partitioner.compute_partition(
             static_cast<kaminpar::dist::BlockID>(comm.size()),
             options.imbalance_tolerance, std::span{blocks});
+
         if (cut < 0) mpi::fatal("dKaMinPar returned a negative edge cut");
+        
         result.global_edge_cut = static_cast<std::uint64_t>(cut);
         for (std::size_t cell = 0; cell < cells; ++cell) {
             const auto block = static_cast<std::size_t>(blocks[cell]);
@@ -184,8 +183,7 @@ void import_graph(kaminpar::dKaMinPar& partitioner, graph::CsrGraphView graph,
 /// @brief Partitions arbitrary contiguous rank ranges collectively on the MPI main thread.
 PartitionResult partition_graph(
     graph::CsrGraphView graph, std::span<const GlobalIndex> vertex_distribution,
-    mpi::CommView comm, const DKaMinParOptions& options) noexcept
-{
+    mpi::CommView comm, const DKaMinParOptions& options) noexcept {
     if (comm.is_null() || !mpi::is_active()) mpi::fatal("Partitioning requires active MPI");
     mpi::require_main_thread();
     return mpi::guarded([&] {
@@ -197,8 +195,7 @@ PartitionResult partition_graph(
 PartitionResult partition_graph(
     graph::CsrGraphView graph,
     const distribution::BlockDistribution<GlobalIndex>& ownership,
-    mpi::CommView comm, const DKaMinParOptions& options) noexcept
-{
+    mpi::CommView comm, const DKaMinParOptions& options) noexcept {
     if (ownership.parts() != comm.size()) mpi::fatal("Vertex ownership does not match the communicator");
     return mpi::guarded([&] {
         std::vector<GlobalIndex> endpoints(static_cast<std::size_t>(comm.size()) + 1);

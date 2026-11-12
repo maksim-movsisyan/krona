@@ -22,8 +22,7 @@ struct FieldSizes { std::size_t own_cells = 0, cells = 0, faces = 0, bfaces = 0,
 namespace detail {
 
 [[noreturn]] inline void field_error(std::string_view name, const char* reason,
-                                     std::source_location where = std::source_location::current()) noexcept
-{
+                                     std::source_location where = std::source_location::current()) noexcept {
     char message[512]{};
     const int length = static_cast<int>(name.size() < 256 ? name.size() : 256);
     std::snprintf(message, sizeof(message), "Fields: %s ('%.*s')", reason, length, name.data());
@@ -65,8 +64,7 @@ public:
     using const_view_type = FieldView<const value_type, Components, memory_space, array_layout>;
 
     FieldStorage(std::string name, std::size_t count, FieldLocation location, const Exec& exec)
-        : AbstractField(std::move(name), location)
-    {
+        : AbstractField(std::move(name), location) {
         execution::require_kokkos();
         constexpr auto bytes_per_entity = sizeof(T) * static_cast<std::size_t>(Components);
         mpi::require(count <= std::numeric_limits<std::size_t>::max() / bytes_per_entity,

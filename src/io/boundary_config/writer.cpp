@@ -13,8 +13,7 @@ namespace krona::io::boundary_config {
 namespace {
 
 /// @brief Suggests a supported physical type; an empty result requires an explicit user choice.
-[[nodiscard]] std::string_view suggested_type(std::string_view source) noexcept
-{
+[[nodiscard]] std::string_view suggested_type(std::string_view source) noexcept {
     if (source == "BCInflowSupersonic") return "SUPERSONIC_INLET";
     if (source == "BCOutflowSupersonic") return "SUPERSONIC_OUTLET";
     if (source == "BCInflow" || source == "BCInflowSubsonic") return "TOTAL_CONDITIONS_INLET";
@@ -27,8 +26,7 @@ namespace {
 }
 
 /// @brief Writes a TOML basic string, escaping quotes, backslashes and ASCII controls.
-void quoted(std::ostream& out, std::string_view value)
-{
+void quoted(std::ostream& out, std::string_view value) {
     constexpr char hex[] = "0123456789abcdef";
     out.put('"');
     for (const char byte : value) {
@@ -42,8 +40,7 @@ void quoted(std::ostream& out, std::string_view value)
 }
 
 /// @brief Emits only the commented parameter examples relevant to the suggested BC type.
-void parameter_examples(std::ostream& out, std::string_view type)
-{
+void parameter_examples(std::ostream& out, std::string_view type) {
     if (type == "TOTAL_CONDITIONS_INLET")
         out << "# total_pressure = 101325.0    # Total pressure [Pa]\n"
                "# total_temperature = 300.0    # Total temperature [K]\n"
@@ -70,8 +67,7 @@ void parameter_examples(std::ostream& out, std::string_view type)
 
 /// @brief Exports replicated patch metadata locally, checking both open and final close errors.
 void generate_bc_template_config(const mesh::host::MeshPart& mesh, const std::filesystem::path& output,
-                                 std::span<const std::uint64_t> global_patch_faces)
-{
+                                 std::span<const std::uint64_t> global_patch_faces) {
     if (output.empty() || mesh.rank != 0) return;
     if (mpi::is_active()) mpi::require_main_thread();
     mpi::require(global_patch_faces.size() == mesh.patches.size(), "BC template patch-count extent mismatch");

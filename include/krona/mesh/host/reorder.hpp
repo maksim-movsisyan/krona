@@ -10,7 +10,7 @@ namespace krona::mesh::host {
 enum class ReorderMethod : int { NONE = 0, HILBERT_SFC = 1, RCM = 2 };
 
 /// @brief Returns the stable CLI/diagnostic name of an ordering method.
-[[nodiscard]] inline const char* reorder_method_to_string(ReorderMethod method) noexcept
+[[nodiscard]] inline const char* reorder_method_to_string(ReorderMethod method) noexcept 
 {
     switch (method) {
         case ReorderMethod::NONE: return "NONE";

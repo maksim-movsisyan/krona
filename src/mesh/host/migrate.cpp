@@ -73,12 +73,16 @@ struct TargetLookup {
                                            std::span<const int> targets, mpi::CommView comm) {
     const auto rank = static_cast<std::size_t>(comm.rank());
     const auto first = source.cell_distribution[rank], last = source.cell_distribution[rank + 1];
+
+    // finding remote cells global indices
     std::vector<GlobalIndex> ids;
     for (const auto& face : faces)
         if (face.cell_b != invalid_cell_id && (face.cell_b < first || face.cell_b >= last))
             ids.push_back(face.cell_b);
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+
+    // Create TargetLookup; GidIndex remote is hash table: gid -> local id [0, ids.size)
     TargetLookup result{first, last, targets, cell_index(ids), {}};
     if (comm.size() == 1)
         return result;
@@ -87,13 +91,19 @@ struct TargetLookup {
     std::vector<std::size_t> counts(static_cast<std::size_t>(comm.size()), 0);
     for (const auto gid : ids)
         ++counts[static_cast<std::size_t>(original_owner(source.cell_distribution, gid))];
+    
     mpi::AlltoallvWorkspace work;
+    // Send destination-rank queries to the current owners of remote cells.
+    // Received GIDs identify local cells whose destinations other ranks need.
     auto requests = exchange(comm, layout(counts), std::move(ids), work);
     std::vector<int> answers;
     answers.reserve(requests.size());
     for (const auto gid : requests)
         answers.push_back(result.at(gid));
     release(requests);
+
+    // Receive the future owner rank for each requested remote cell_b,
+    // in the same order as the original requests.
     result.destinations = reply(comm, std::move(answers), work);
     return result;
 }
@@ -112,11 +122,14 @@ struct GlobalCells {
                                         std::vector<GlobalIndex>&& nodes, const Layout& send_nodes,
                                         std::span<const int> header_counts,
                                         std::span<const int> header_offsets) {
+    // initialize result
     GlobalCells result;
     result.ids.reserve(headers.size());
     result.table.types.reserve(headers.size());
     result.table.offsets.reserve(headers.size() + 1);
     static_cast<void>(local_count(headers.size()));
+
+    // count number of nodes of received cells from each peer
     std::vector<std::size_t> counts(header_counts.size(), 0);
     for (std::size_t peer = 0; peer < counts.size(); ++peer) {
         const auto first = static_cast<std::size_t>(header_offsets[peer]);
@@ -124,13 +137,16 @@ struct GlobalCells {
         for (auto i = first; i < last; ++i)
             counts[peer] += static_cast<std::size_t>(nodes_per_element(headers[i].type));
     }
+
     for (const auto& header : headers) {
         result.ids.push_back(header.gid);
         result.table.types.push_back(header.type);
-        result.table.offsets.push_back(result.table.offsets.back() +
+        // offsets[0] == 0 in initialization, see raw_mesh.
+        result.table.offsets.push_back(result.table.offsets.back() + 
                                        static_cast<std::size_t>(nodes_per_element(header.type)));
     }
     release(headers);
+
     if (comm.size() == 1)
         result.table.node_ids = std::move(nodes);
     else {
@@ -157,13 +173,19 @@ struct GlobalCells {
     }
     const auto peers = static_cast<std::size_t>(comm.size());
     std::vector<std::size_t> cell_counts(peers, 0), node_counts(peers, 0);
+
+    // count number of cells and nodes, that will be send to other ranks
     for (std::size_t cell = 0; cell < targets.size(); ++cell) {
         const auto peer = static_cast<std::size_t>(targets[cell]);
         ++cell_counts[peer];
         node_counts[peer] += source.cells.nodes(cell).size();
     }
+
+    // prepare layouts for exchange
     const auto cells = layout(cell_counts), nodes = layout(node_counts);
     auto cell_cursor = cells.offsets, node_cursor = nodes.offsets;
+    
+    // fill send buffers
     std::vector<CellHeader> headers(cells.size);
     std::vector<GlobalIndex> connectivity(nodes.size);
     for (std::size_t cell = 0; cell < targets.size(); ++cell) {
@@ -174,6 +196,7 @@ struct GlobalCells {
         std::copy(row.begin(), row.end(), connectivity.begin() + node_cursor[peer]);
         node_cursor[peer] += static_cast<int>(row.size());
     }
+
     // Free original topology before allocating receive connectivity.
     source.cells = ElementTable{};
     mpi::AlltoallvWorkspace work;
@@ -211,7 +234,10 @@ struct LocalFace {
                                                  mpi::CommView comm, std::array<std::uint64_t, 6>& totals) {
     std::vector<std::size_t> counts(static_cast<std::size_t>(comm.size()), 0);
     totals[1] = faces.size();
+
+    // count number of faces that curent rank will send to other ranks
     for (const auto& face : faces) {
+        // get rank-owners of cell_a and cell_b
         const int a = targets.at(face.cell_a), b = targets.at(face.cell_b);
         ++counts[static_cast<std::size_t>(a)];
         if (b >= 0 && a != b) {
@@ -224,6 +250,8 @@ struct LocalFace {
                 ++totals[3];
         }
     }
+
+    // creating send displacements and fill send buffer
     const auto plan = layout(counts);
     auto cursor = plan.offsets;
     std::vector<FacePacket> send(plan.size);
@@ -232,6 +260,7 @@ struct LocalFace {
         send[static_cast<std::size_t>(cursor[static_cast<std::size_t>(a)]++)] = {
             face.cell_a, face.cell_b, b < 0 ? face.patch : invalid_patch_id, b >= 0 && a != b ? b : -1,
             face.local_face_a};
+
         if (b >= 0 && a != b) {
             // Swap owner and neighbour; use cell_b's facet to preserve orientation.
             send[static_cast<std::size_t>(cursor[static_cast<std::size_t>(b)]++)] = {
@@ -251,12 +280,17 @@ struct LocalFace {
         return {};
     const auto peers = static_cast<std::size_t>(comm.size());
     std::vector<std::size_t> counts(peers, 0);
+
+    // fill ghost cells global indices (unique) and count number of my ghost cells for each rank-owner
     std::vector<GlobalIndex> ids;
     ids.reserve(ghosts.size());
     for (const auto& ghost : ghosts) {
         ++counts[static_cast<std::size_t>(ghost.donor)];
         ids.push_back(ghost.gid);
     }
+
+    // exchange ghost cells global indices
+    // requests contains curent rank cell indices, that other rank has as ghost cells
     mpi::AlltoallvWorkspace work;
     auto requests = exchange(comm, layout(counts), std::move(ids), work);
 
@@ -264,6 +298,7 @@ struct LocalFace {
     mesh.send_owned_local.reserve(requests.size());
     for (const auto gid : requests)
         mesh.send_owned_local.push_back(owned_index.at(gid));
+
     mesh.recv_ghost_local.resize(ghosts.size());
     std::iota(mesh.recv_ghost_local.begin(), mesh.recv_ghost_local.end(), mesh.n_own);
     for (std::size_t peer = 0; peer < peers; ++peer) {
@@ -274,6 +309,8 @@ struct LocalFace {
         mesh.send_offsets.push_back(mesh.send_offsets.back() +
                                     static_cast<std::size_t>(work.recv_counts[peer]));
     }
+
+    // count number of nodes, that curent rank should send to peers
     std::vector<std::size_t> node_counts(peers, 0);
     for (std::size_t peer = 0; peer < peers; ++peer) {
         const auto first = static_cast<std::size_t>(work.recv_displacements[peer]);
@@ -282,6 +319,7 @@ struct LocalFace {
             node_counts[peer] += owned.table.nodes(static_cast<std::size_t>(mesh.send_owned_local[i])).size();
     }
     const auto nodes = layout(node_counts);
+
     std::vector<CellHeader> headers;
     std::vector<GlobalIndex> connectivity;
     headers.reserve(requests.size());
@@ -302,6 +340,8 @@ struct LocalFace {
 /// @brief Numbers unique nodes and converts owned/ghost global connectivity to local CSR.
 void assemble_cells(GlobalCells& owned, GlobalCells& ghosts, std::span<const GhostEntry> donors,
                     MeshPart& mesh) {
+
+    // finding span for nodes
     GlobalIndex lo = std::numeric_limits<GlobalIndex>::max(), hi = -1;
     for (const auto& ids : {std::span<const GlobalIndex>{owned.table.node_ids},
                             std::span<const GlobalIndex>{ghosts.table.node_ids}})
@@ -311,6 +351,9 @@ void assemble_cells(GlobalCells& owned, GlobalCells& ghosts, std::span<const Gho
         }
     if (hi < lo)
         lo = 0;
+
+    // create hash map: global node id -> local node id
+    // mesh.n_cells is initial guess of hash map size
     GidIndex nodes(lo, hi, static_cast<std::size_t>(mesh.n_cells));
     for (const auto gid : owned.table.node_ids)
         if (nodes.insert(gid, 0) && !nodes.dense())
@@ -319,16 +362,21 @@ void assemble_cells(GlobalCells& owned, GlobalCells& ghosts, std::span<const Gho
     for (const auto gid : ghosts.table.node_ids)
         if (nodes.insert(gid, 1) && !nodes.dense())
             mesh.node_gid.push_back(gid);
+
     mesh.n_nodes_own = local_count(owned_nodes);
     mesh.n_nodes = local_count(nodes.size());
     if (nodes.dense()) {
         mesh.node_gid.resize(nodes.size());
+
+        // for dense hash table write_nodes writes [owned node ids -> ghost node ids] (ids are global)
         nodes.write_nodes(mesh.node_gid, owned_nodes);
     } else {
         const auto split = mesh.node_gid.begin() + mesh.n_nodes_own;
         std::sort(mesh.node_gid.begin(), split);
         std::sort(split, mesh.node_gid.end());
     }
+
+    // assignd local node indices
     for (std::size_t i = 0; i < mesh.node_gid.size(); ++i)
         nodes.assign(mesh.node_gid[i], static_cast<LocalIndex>(i));
 
@@ -454,6 +502,7 @@ void assemble_faces(std::vector<LocalFace>& faces, MeshPart& mesh) {
     for (const auto& face : faces) {
         const auto type = static_cast<std::size_t>(mesh.cell_type[static_cast<std::size_t>(face.owner)]);
         assert(face.facet < faces_per_type[type]);
+        
         const auto arity = face_nodes[type][face.facet];
         mesh.face_owner.push_back(face.owner);
         mesh.face_neigh.push_back(face.neighbour);
@@ -531,10 +580,13 @@ void global_statistics(MeshPart& mesh, std::array<std::uint64_t, 6> totals, mpi:
 /// @brief Runs ownership migration, halo construction and local topology assembly.
 [[nodiscard]] MeshPart migrate(MigrationSource& source, std::vector<FaceRecord>& faces,
                                std::span<const int> targets, mpi::CommView comm) {
+    // check input data
     check_source(source, targets, comm);
     for (const auto target : targets)
         if (target < 0 || target >= comm.size())
             mpi::fatal("Invalid cell migration destination rank");
+
+    // initialize result
     MeshPart mesh;
     mesh.rank = comm.rank();
     mesh.nprocs = comm.size();
@@ -546,11 +598,16 @@ void global_statistics(MeshPart& mesh, std::array<std::uint64_t, 6> totals, mpi:
     std::vector<FacePacket> received_faces;
     {
         auto destinations = resolve_targets(source, faces, targets, comm);
+        // receive my own cells
         owned = move_cells(source, targets, comm);
+        // receive my faces (all that my cells have, after that step each inter rank face are duplicated on each rank)
         received_faces = move_faces(faces, destinations, comm, totals);
         // Remote destination lookups expire before ghost and node storage is allocated.
     }
+
     mesh.n_own = local_count(owned.ids.size());
+
+    // get ghost cells indices and donor ranks
     std::vector<GhostEntry> ghost_entries;
     for (const auto& face : received_faces)
         if (face.donor >= 0)
@@ -558,15 +615,24 @@ void global_statistics(MeshPart& mesh, std::array<std::uint64_t, 6> totals, mpi:
     std::sort(ghost_entries.begin(), ghost_entries.end());
     ghost_entries.erase(std::unique(ghost_entries.begin(), ghost_entries.end()), ghost_entries.end());
     mesh.n_cells = local_count(owned.ids.size() + ghost_entries.size());
+
+
     GlobalCells ghosts;
     std::vector<LocalFace> local_faces;
     {
+        // creat hast table: global own cell id -> local own cell id
         auto owned_lookup = cell_index(owned.ids);
+        // receive my ghost cells (including connectivity)
         ghosts = fetch_ghosts(owned, owned_lookup, ghost_entries, mesh, comm);
+
+        // creat hast table: global ghost cell id -> local ghost cell id (from 0)
         auto ghost_lookup = cell_index(ghosts.ids);
+
+        // create local faces (with local owned/ghost cell indices)
         local_faces = localize_faces(received_faces, owned_lookup, ghost_lookup, mesh.n_own);
         // Cell-GID lookups die before the larger node-GID lookup is allocated.
     }
+
     assemble_cells(owned, ghosts, ghost_entries, mesh);
     release(ghost_entries);
     assemble_faces(local_faces, mesh);

@@ -11,9 +11,9 @@ namespace krona::boundary::profile {
 namespace detail {
 template<class T> inline constexpr bool is_vector = false;
 template<class R> inline constexpr bool is_vector<math::Vector3<R>> = true;
+
 template<class T>
-bool finite(const T& value)
-{
+bool finite(const T& value) {
     if constexpr (std::is_arithmetic_v<T>) return std::isfinite(value);
     else return math::isfinite(value);
 }
@@ -38,14 +38,13 @@ struct PatchValues {
     std::size_t extent = 0;
 
     template<class Context>
-    KOKKOS_INLINE_FUNCTION T operator()(const Context& c) const
-    {
+    KOKKOS_INLINE_FUNCTION T operator()(const Context& c) const {
         KOKKOS_ASSERT(c.face >= range.begin && c.face < range.end);
         return values(static_cast<std::size_t>(c.face-range.begin));
     }
+    
     template<class Exec>
-    void validate(PatchRange expected) const
-    {
+    void validate(PatchRange expected) const {
         static_assert(Kokkos::SpaceAccessibility<Exec, Space>::accessible);
         mpi::require(expected.patch_id == range.patch_id && expected.begin == range.begin &&
             expected.end == range.end && range.begin >= 0 && range.end >= range.begin,
@@ -59,8 +58,7 @@ struct PatchValues {
 
 /// @brief No allocation/copy/submission; buffers remain owned by the caller. Strides are preserved.
 template<class View>
-[[nodiscard]] auto patch_values(PatchRange range, View view)
-{
+[[nodiscard]] auto patch_values(PatchRange range, View view) {
     const auto d = fields::descriptor_from_view(view);
     using T = std::remove_const_t<typename View::value_type>;
     return PatchValues<T, typename View::memory_space>{{d.data, d.stride}, range, view.extent(0)};
@@ -68,16 +66,14 @@ template<class View>
 
 /// @brief Plain arithmetic parameters are constant; other providers implement provider(context).
 template<class Provider, class Context>
-KOKKOS_INLINE_FUNCTION decltype(auto) sample(const Provider& provider, const Context& context)
-{
+KOKKOS_INLINE_FUNCTION decltype(auto) sample(const Provider& provider, const Context& context) {
     if constexpr (std::is_arithmetic_v<Provider> || detail::is_vector<Provider>) return provider;
     else return provider(context);
 }
 
 /// @brief Host metadata only. A custom provider may implement validate<Exec>(PatchRange).
 template<class Exec, class Provider>
-void validate(const Provider& provider, PatchRange range)
-{
+void validate(const Provider& provider, PatchRange range) {
     if constexpr (std::is_arithmetic_v<Provider>)
         mpi::require(std::isfinite(provider), "Boundary profile: parameter must be finite");
     else if constexpr (detail::is_vector<Provider>)

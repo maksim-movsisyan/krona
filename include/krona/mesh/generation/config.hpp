@@ -68,7 +68,7 @@ struct BoundaryPatch {
 /// @brief Stores physical coordinates, block subdivisions and named faces.
 struct GeneratorConfig {
     std::string name{"Mesh"};
-    double scale{1.0}; // Applied while decoding TOML; retained as input metadata.
+    double scale{1.0};                      // Applied while decoding TOML; retained as input metadata.
     std::vector<Vec3> vertices;
     std::vector<MacroBlock> blocks;
     std::vector<BoundaryPatch> boundaries;

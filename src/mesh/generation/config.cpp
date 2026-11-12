@@ -16,8 +16,7 @@ namespace {
 /// @brief Reads a fixed-size list of nonnegative integer indices or counts.
 template <std::size_t N>
 [[nodiscard]] std::array<std::size_t, N> read_indices(const toml_config::TomlReader &reader,
-                                                      const toml::array &entries, std::string_view key) 
-{
+                                                      const toml::array &entries, std::string_view key) {
     if (entries.size() != N)
         reader.error("'" + std::string{key} + "' must contain " + std::to_string(N) + " integers");
 
@@ -34,8 +33,7 @@ template <std::size_t N>
 
 /// @brief Reads and scales one Cartesian macro vertex.
 [[nodiscard]] Vec3 read_vertex(const toml::node &node, std::size_t index, double scale,
-                               const toml_config::TomlReader &reader) 
-{
+                               const toml_config::TomlReader &reader) {
     const auto *coordinates = node.as_array();
     if (!coordinates || coordinates->size() != 3)
         reader.error("vertices[" + std::to_string(index) + "] must contain three numbers");
@@ -52,8 +50,7 @@ template <std::size_t N>
 }
 
 /// @brief Decodes mesh metadata and physical macro coordinates.
-void read_mesh(const toml::table &root, GeneratorConfig &result) 
-{
+void read_mesh(const toml::table &root, GeneratorConfig &result) {
     const toml_config::TomlReader reader{"Mesh generator [mesh]"};
     const auto &mesh = reader.table(root, "mesh", true);
     reader.check_keys(mesh, {"name", "scale", "vertices"});
@@ -68,8 +65,7 @@ void read_mesh(const toml::table &root, GeneratorConfig &result)
 }
 
 /// @brief Decodes a block's corner IDs, cell counts and optional grading.
-[[nodiscard]] MacroBlock read_block(const toml::node &node, std::size_t index) 
-{
+[[nodiscard]] MacroBlock read_block(const toml::node &node, std::size_t index) {
     const toml_config::TomlReader reader{"Mesh generator blocks[" + std::to_string(index) + "]"};
     const auto *table = node.as_table();
     if (!table) reader.error("entry must be a table");
@@ -95,8 +91,7 @@ void read_mesh(const toml::table &root, GeneratorConfig &result)
 }
 
 /// @brief Decodes one named patch and its macro-face vertex lists.
-[[nodiscard]] BoundaryPatch read_patch(const toml::node &node, std::size_t index) 
-{
+[[nodiscard]] BoundaryPatch read_patch(const toml::node &node, std::size_t index) {
     const toml_config::TomlReader reader{"Mesh generator boundaries[" + std::to_string(index) + "]"};
     const auto *table = node.as_table();
     if (!table) reader.error("entry must be a table");
@@ -115,8 +110,7 @@ void read_mesh(const toml::table &root, GeneratorConfig &result)
 }
 
 /// @brief Decodes the three sections and validates their combined values.
-[[nodiscard]] GeneratorConfig decode(const toml::table &root) 
-{
+[[nodiscard]] GeneratorConfig decode(const toml::table &root) {
     const toml_config::TomlReader reader{"Mesh generator"};
     reader.check_keys(root, {"mesh", "blocks", "boundaries"});
 
@@ -133,14 +127,13 @@ void read_mesh(const toml::table &root, GeneratorConfig &result)
     for (std::size_t i = 0; i < patches.size(); ++i)
         result.boundaries.push_back(read_patch(patches[i], i));
 
-    validate_generator_config(result);
+    validate_generator_config(result); 
     return result;
 }
 
 } // namespace
 
-GeneratorConfig parse_generator_config(const std::string &path, mpi::CommView comm) noexcept 
-{
+GeneratorConfig parse_generator_config(const std::string &path, mpi::CommView comm) noexcept {
     return mpi::guarded([&] {
         // Only the master accesses the file; every rank decodes identical text.
         const auto text = toml_config::read_broadcast(path, comm);

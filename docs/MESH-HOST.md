@@ -15,8 +15,7 @@ Use `RawMesh` while importing and distributing source connectivity. Use `MeshPar
 #include <cstdint>
 #include <vector>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     krona::mpi::Runtime runtime{argc, argv};
     return krona::mpi::guarded([&] {
         namespace host = krona::mesh::host;
@@ -50,7 +49,7 @@ int main(int argc, char** argv)
 }
 ```
 
-The reader returns a validated, grouped, geometric `MeshPart`; rebuilding its faces or metrics is unnecessary. Loading is collective and requires the saved MPI size/rank numbering, matching geometry precision and equally wide or wider index types. The HDF5 snapshot stores the base mesh; construct auxiliary caches separately after loading.
+The reader returns a validated, grouped, geometric `MeshPart`; rebuilding its faces or metrics is unnecessary. Loading is collective and requires the saved MPI size, matching geometry precision and equally wide or wider index types. The HDF5 snapshot stores the base mesh; construct auxiliary caches separately after loading.
 
 Keep the application workflow inside `mpi::guarded`: validation failures use `mpi::fatal`, and the guard converts escaping exceptions, including allocation failures, into a job-wide fatal error.
 

@@ -31,8 +31,7 @@ public:
     /// @brief Uses already attached mesh and optional caches; never builds topology or performs MPI.
     GradientOperator(mesh_view_type mesh_view, connectivity_view_type connectivity, 
                      geometry_view_type geometry, Options options, Exec exec = {})
-        : metrics_{mesh_view, connectivity, geometry, options}, exec_(exec)
-    {
+        : metrics_{mesh_view, connectivity, geometry, options}, exec_(exec) {
         mpi::guarded([&] {
             validate_descriptors();
             execution::complete(exec, [&](){
@@ -60,8 +59,7 @@ public:
     /// @brief Computes all input components; output component 3*c+axis is d(input_c)/d(axis).
     template<class T, int N, class InputSpace, class InputLayout, class U, class OutputSpace, class OutputLayout>
     void apply_async(fields::FieldView<T, N, InputSpace, InputLayout> input,
-                     fields::FieldView<U, 3*N, OutputSpace, OutputLayout> output, CellRange range = {}) const
-    {
+                     fields::FieldView<U, 3*N, OutputSpace, OutputLayout> output, CellRange range = {}) const {
         using Value = std::remove_const_t<T>;
         static_assert(std::is_same_v<Value, U> && std::is_floating_point_v<Value>);
         static_assert(Kokkos::SpaceAccessibility<Exec, InputSpace>::accessible &&
@@ -79,8 +77,7 @@ public:
 
     /// @brief Computes one scalar component into three rank-one Views, including strided subviews.
     template<class Input, class OutputX, class OutputY, class OutputZ>
-    void apply_component_async(Input input, OutputX x, OutputY y, OutputZ z, CellRange range = {}) const
-    {
+    void apply_component_async(Input input, OutputX x, OutputY y, OutputZ z, CellRange range = {}) const {
         apply_set_async(std::array{input}, std::array{x}, std::array{y}, std::array{z}, range);
     }
 
@@ -90,8 +87,7 @@ public:
                          const std::array<OutputX, N>& x,
                          const std::array<OutputY, N>& y, 
                          const std::array<OutputZ, N>& z, 
-                         CellRange range = {}) const
-    {
+                         CellRange range = {}) const {
         static_assert(N > 0);
         using T = std::remove_const_t<typename Input::value_type>;
         static_assert(std::is_floating_point_v<T>);
@@ -109,8 +105,7 @@ public:
     [[nodiscard]] const Exec& execution_space() const noexcept { return exec_; }
     [[nodiscard]] std::size_t required_input_size() const noexcept { return input_size_; }
     [[nodiscard]] std::size_t coefficient_bytes() const noexcept { return coefficients_.span() * sizeof(Coefficient); }
-    [[nodiscard]] const char* name() const noexcept
-    {
+    [[nodiscard]] const char* name() const noexcept {
         switch (scheme()) {
             case Scheme::GreenGaussCell: return "GREEN_GAUSS_CELL";
             case Scheme::GreenGaussFace: return "GREEN_GAUSS_FACE";
@@ -126,8 +121,7 @@ private:
     std::size_t input_size_ = 0;
 
     template<mesh::device::MeshData Data, mesh::AuxConnType ConnectivityMask, mesh::AuxGeomType GeometryMask>
-    void validate_selected(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
-    {
+    void validate_selected(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const {
         namespace validation = mesh::device::validation;
         // Compare checks CSR incidence here; CellGeometry is checked separately on owned cells.
         const auto result = validation::validate<Data, ConnectivityMask, GeometryMask, true>(
@@ -138,8 +132,7 @@ private:
                      "Gradient: invalid cell-to-face CSR or incidence");
     }
 
-    void validate_mesh(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const
-    {
+    void validate_mesh(mesh_view_type mesh_view, connectivity_view_type connectivity, geometry_view_type geometry) const {
         using MeshData = mesh::device::MeshData;
         using mesh::AuxConnType;
         using mesh::AuxGeomType;
@@ -169,15 +162,13 @@ private:
     }
 
     template<class View>
-    static void accessible_component()
-    {
+    static void accessible_component() {
         static_assert(Kokkos::is_view<View>::value && View::rank == 1);
         static_assert(Kokkos::SpaceAccessibility<Exec, typename View::memory_space>::accessible);
     }
 
     template<class T, class View>
-    fields::ComponentDescriptor<const T, memory_space> input_component(View view) const
-    {
+    fields::ComponentDescriptor<const T, memory_space> input_component(View view) const {
         accessible_component<View>();
         static_assert(std::is_same_v<std::remove_const_t<typename View::value_type>, T>);
         mpi::require(view.extent(0) >= input_size_, "Gradient: input must include owned, MPI ghost and boundary values");
@@ -186,8 +177,7 @@ private:
     }
 
     template<class T, class View>
-    fields::ComponentDescriptor<T, memory_space> output_component(View view) const
-    {
+    fields::ComponentDescriptor<T, memory_space> output_component(View view) const {
         accessible_component<View>();
         static_assert(std::is_same_v<typename View::value_type, T>, "Gradient output must be mutable and match input precision");
         mpi::require(view.extent(0) >= static_cast<std::size_t>(metrics_.mesh.sizes.n_own), "Gradient: output must contain all owned cells");
@@ -195,8 +185,7 @@ private:
         return {descriptor.data, descriptor.stride};
     }
 
-    CellRange resolve(CellRange range) const
-    {
+    CellRange resolve(CellRange range) const {
         if (range.end == -1) range.end = metrics_.mesh.sizes.n_own;
         mpi::require(range.begin >= 0 && range.begin <= range.end && range.end <= metrics_.mesh.sizes.n_own,
                      "Gradient: range must be an owned-cell interval");
@@ -204,8 +193,7 @@ private:
     }
 
     template<class T, std::size_t N>
-    void submit(detail::Batch<T, N, memory_space> batch, CellRange range) const
-    {
+    void submit(detail::Batch<T, N, memory_space> batch, CellRange range) const {
         if (range.begin == range.end) return;
         mpi::guarded([&] {
             const policy_type policy(exec_, range.begin, range.end);
@@ -227,8 +215,7 @@ private:
         });
     }
 
-    void validate_descriptors()
-    {
+    void validate_descriptors() {
         execution::require_kokkos();
         const auto& m = metrics_.mesh;
         const auto& s = m.sizes;

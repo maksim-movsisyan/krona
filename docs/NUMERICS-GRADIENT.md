@@ -8,8 +8,6 @@
 | `krona/numerics/gradient/gradient_operator.hpp` | Prepared gradient operator and asynchronous application methods. |
 | `krona/numerics/gradient/correction.hpp` | Borrowed gradient adapters and local geometric projections. No dependency from other modules (except fields). |
 
-The implementation separates compact mesh descriptors (`detail/data.hpp`), LS preparation and its unchanged 3-D SPD inverse (`detail/least_squares.hpp`), and application kernels (`detail/kernels.hpp`).
-
 ## Input and output
 
 Input components use the extended cell layout:

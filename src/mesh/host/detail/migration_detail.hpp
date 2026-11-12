@@ -14,15 +14,13 @@ namespace krona::mesh::host::migration_detail {
 
 /// @brief Releases a temporary vector's capacity at its last use.
 template<class T>
-void release(std::vector<T>& values)
-{
+void release(std::vector<T>& values) {
     // clear() would retain the backing allocation.
     std::vector<T>{}.swap(values);
 }
 
 /// @brief Narrows an entity count once before local indices are generated.
-[[nodiscard]] inline LocalIndex local_count(std::size_t count)
-{
+[[nodiscard]] inline LocalIndex local_count(std::size_t count) {
     if (!std::in_range<LocalIndex>(count)) mpi::fatal("Migrated mesh exceeds LocalIndex");
     return static_cast<LocalIndex>(count);
 }
@@ -34,8 +32,7 @@ struct Layout {
 };
 
 /// @brief Creates a packed MPI 3.1 layout, checking overflow before narrowing.
-[[nodiscard]] inline Layout layout(std::span<const std::size_t> counts)
-{
+[[nodiscard]] inline Layout layout(std::span<const std::size_t> counts) {
     Layout result;
     result.counts.resize(counts.size());
     result.offsets.resize(counts.size());
@@ -54,8 +51,7 @@ struct Layout {
 template<class T>
 [[nodiscard]] std::vector<T> exchange(
     mpi::CommView comm, const Layout& plan, std::vector<T>&& send,
-    mpi::AlltoallvWorkspace& work)
-{
+    mpi::AlltoallvWorkspace& work) {
     if (comm.size() == 1) {
         // A local transfer moves storage and performs no MPI calls.
         work.send_counts = work.recv_counts = plan.counts;
@@ -76,8 +72,7 @@ template<class T>
 /// @brief Returns one response per request using the known inverse layout.
 template<class T>
 [[nodiscard]] std::vector<T> reply(
-    mpi::CommView comm, std::vector<T>&& send, const mpi::AlltoallvWorkspace& work)
-{
+    mpi::CommView comm, std::vector<T>&& send, const mpi::AlltoallvWorkspace& work) {
     if (comm.size() == 1) return std::move(send);
     std::size_t size = 0;
     for (const auto count : work.send_counts) size += static_cast<std::size_t>(count);
@@ -99,8 +94,7 @@ template<class T>
 class GidIndex {
 public:
     /// @brief Chooses dense storage for compact ranges and reserves a sparse table otherwise.
-    GidIndex(GlobalIndex lo, GlobalIndex hi, std::size_t expected) : lo_(lo)
-    {
+    GidIndex(GlobalIndex lo, GlobalIndex hi, std::size_t expected) : lo_(lo) {
         const auto span = hi >= lo ? static_cast<std::uint64_t>(hi) -
                                     static_cast<std::uint64_t>(lo) + 1 : 0;
         dense_ = span / 4 + (span % 4 != 0) <= std::max<std::size_t>(expected, 1);
@@ -114,8 +108,7 @@ public:
     }
 
     /// @brief Inserts an unseen ID; node markers and local indices are nonnegative.
-    bool insert(GlobalIndex gid, LocalIndex value)
-    {
+    bool insert(GlobalIndex gid, LocalIndex value) {
         auto slot = find_slot(gid);
         assert(slot < values_.size());
         if (values_[slot] != invalid_local_index) return false;
@@ -130,8 +123,7 @@ public:
     }
 
     /// @brief Resolves an existing ID, rejecting a broken ownership or connectivity contract.
-    [[nodiscard]] LocalIndex at(GlobalIndex gid) const
-    {
+    [[nodiscard]] LocalIndex at(GlobalIndex gid) const {
         const auto slot = find_slot(gid);
         if (slot == values_.size() || values_[slot] == invalid_local_index)
             throw std::runtime_error("Missing GID in migrated mesh lookup");
@@ -139,8 +131,7 @@ public:
     }
 
     /// @brief Replaces a node marker with its final local index.
-    void assign(GlobalIndex gid, LocalIndex value)
-    {
+    void assign(GlobalIndex gid, LocalIndex value) {
         const auto slot = find_slot(gid);
         assert(slot < values_.size() && values_[slot] != invalid_local_index);
         values_[slot] = value;
@@ -153,8 +144,7 @@ public:
     [[nodiscard]] bool dense() const noexcept { return dense_; }
 
     /// @brief Emits owned-used marker 0 before ghost-only marker 1, each in GID order.
-    void write_nodes(std::span<GlobalIndex> ids, std::size_t owned) const
-    {
+    void write_nodes(std::span<GlobalIndex> ids, std::size_t owned) const {
         assert(dense_ && ids.size() == size_);
         std::size_t first = 0, second = owned;
         for (std::size_t i = 0; i < values_.size(); ++i) {
@@ -166,8 +156,7 @@ public:
 
 private:
     /// @brief Mixes structured mesh IDs before sparse table probing.
-    [[nodiscard]] static std::uint64_t hash(GlobalIndex gid) noexcept
-    {
+    [[nodiscard]] static std::uint64_t hash(GlobalIndex gid) noexcept {
         auto value = static_cast<std::uint64_t>(gid);
         value ^= value >> 30; value *= UINT64_C(0xbf58476d1ce4e5b9);
         value ^= value >> 27; value *= UINT64_C(0x94d049bb133111eb);
@@ -175,8 +164,7 @@ private:
     }
 
     /// @brief Finds an occupied or empty slot; out-of-range dense IDs return a sentinel.
-    [[nodiscard]] std::size_t find_slot(GlobalIndex gid) const noexcept
-    {
+    [[nodiscard]] std::size_t find_slot(GlobalIndex gid) const noexcept {
         if (dense_) {
             if (gid < lo_ || static_cast<std::uint64_t>(gid - lo_) >= values_.size())
                 return values_.size();
@@ -190,8 +178,7 @@ private:
     }
 
     /// @brief Grows sparse storage geometrically without per-entry allocations.
-    void grow()
-    {
+    void grow() {
         auto keys = std::move(keys_);
         auto values = std::move(values_);
         if (values.size() > values.max_size() / 2)
@@ -214,8 +201,7 @@ private:
 };
 
 /// @brief Builds a fixed cell lookup from final ordered GIDs.
-[[nodiscard]] inline GidIndex cell_index(std::span<const GlobalIndex> ids)
-{
+[[nodiscard]] inline GidIndex cell_index(std::span<const GlobalIndex> ids) {
     const auto [lo, hi] = std::minmax_element(ids.begin(), ids.end());
     GidIndex result(ids.empty() ? 0 : *lo, ids.empty() ? -1 : *hi, ids.size());
     static_cast<void>(local_count(ids.size()));

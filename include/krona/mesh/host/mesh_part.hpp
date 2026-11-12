@@ -27,11 +27,11 @@ struct MeshPart {
     // [0, n_own) are owned cells (SFC or RCM ordered for cache locality).
     // [n_own, n_cells) are ghost cells received from neighbours.
     LocalIndex n_own = 0, n_cells = 0;
-    std::vector<CellType> cell_type;
-    std::vector<GlobalIndex> cell_gid;
+    std::vector<CellType> cell_type;                            // cell types [0,n_own), [n_own, n_cells)
+    std::vector<GlobalIndex> cell_gid;                          // cell global indices [0,n_own), [n_own, n_cells)
     std::vector<int> cell_donor;                                // -1 for owned cells; otherwise the new owner rank.
     std::vector<std::size_t> cell_nodes_offsets{0};
-    std::vector<LocalIndex> cell_nodes;
+    std::vector<LocalIndex> cell_nodes;                         // local node indices, including ghost nodes
 
 
     // Nodes
@@ -39,7 +39,7 @@ struct MeshPart {
     // [n_nodes_own, n_nodes) are nodes used by ghost cells.
     LocalIndex n_nodes_own = 0, n_nodes = 0;
     std::vector<GlobalIndex> node_gid;
-    std::vector<GeometryReal> node_x, node_y, node_z;
+    std::vector<GeometryReal> node_x, node_y, node_z;           // node coordinates, including purley ghost nodes
 
     
     // Faces
@@ -48,9 +48,9 @@ struct MeshPart {
     std::vector<LocalIndex> face_owner, face_neigh;
     std::vector<CellType> face_type;
     std::vector<PatchId> face_patch;
-    std::vector<std::uint8_t> face_local_index;             // Facet of the current owner cell.
+    std::vector<std::uint8_t> face_local_index;             // Facet of the current owner cell (see cgns tables)
     std::vector<std::size_t> face_nodes_offsets{0};
-    std::vector<LocalIndex> face_nodes;                     // Oriented CGNS facet order, relative to owner.
+    std::vector<LocalIndex> face_nodes;                     // Oriented CGNS facet order, relative to owner (nodes indices are local)
 
     // Valid ranges only after the separate face-grouping/reordering stage.
     // [0,n_internal_faces): owned-owned; [n_internal_faces,n_inner_faces): owned-ghost;

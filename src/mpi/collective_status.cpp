@@ -12,8 +12,7 @@ namespace krona::mpi {
 void set_local_error(
     LocalError& local,
     std::string_view message,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     // Preserve the original failure if several checks fail on this rank.
     if (local.failed) {
         return;
@@ -35,8 +34,7 @@ void require_collective_success(
     CommView comm,
     const LocalError& local,
     std::string_view stage,
-    std::source_location where) noexcept
-{
+    std::source_location where) noexcept {
     require(!comm.is_null(),"Collective status checking requires a live communicator", where);
 
     // The communicator size is greater than every valid rank.

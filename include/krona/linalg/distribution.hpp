@@ -21,8 +21,7 @@ public:
     using memory_space = typename IndexTypes<Exec>::memory_space;
 
     /// @brief Preserves the supplied local row order; GIDs must be globally unique.
-    Distribution(std::span<const GlobalOrdinal> owned_gids, mpi::CommView comm)
-    {
+    Distribution(std::span<const GlobalOrdinal> owned_gids, mpi::CommView comm) {
         mpi::guarded([&] {
             mpi::require(Tpetra::isInitialized(), "Linalg: initialize Tpetra before constructing distributions");
             mpi::require(!comm.is_null(), "Linalg: null communicator");
@@ -45,8 +44,7 @@ public:
 
     [[nodiscard]] std::size_t local_size() const noexcept { return map_->getLocalNumElements(); }
     [[nodiscard]] Tpetra::global_size_t global_size() const noexcept { return map_->getGlobalNumElements(); }
-    [[nodiscard]] GlobalOrdinal global_id(LocalOrdinal row) const
-    {
+    [[nodiscard]] GlobalOrdinal global_id(LocalOrdinal row) const {
         mpi::require(row >= 0 && static_cast<std::size_t>(row) < local_size(), "Linalg: invalid owned row");
         return map_->getGlobalElement(row);
     }
@@ -54,8 +52,7 @@ public:
 
     /// @brief Collective cell-major expansion: point_gid = block_gid*components + component.
     /// Preserves local block order; one component shares the original map.
-    [[nodiscard]] Distribution expanded(LocalOrdinal components) const
-    {
+    [[nodiscard]] Distribution expanded(LocalOrdinal components) const {
         return mpi::guarded([&] {
             mpi::require(components > 0, "Linalg: nonpositive component count");
             LocalOrdinal minimum = 0, maximum = 0;

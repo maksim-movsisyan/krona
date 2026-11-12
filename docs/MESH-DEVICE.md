@@ -28,8 +28,7 @@ This example loads a prepared HDF5 mesh, constructs host caches, attaches them a
 #include <krona/mpi/error.hpp>
 #include <Kokkos_Core.hpp>
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
     krona::mpi::Runtime runtime{argc, argv};
     return krona::mpi::guarded([&] {
         Kokkos::ScopeGuard kokkos{argc, argv};

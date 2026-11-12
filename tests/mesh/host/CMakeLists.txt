@@ -1,7 +1,7 @@
 add_executable(krona_test_mesh_host test_mesh.cpp)
 target_link_libraries(krona_test_mesh_host PRIVATE krona_test_support_host_only krona::mesh_host)
 
-# Four ranks exceed the three-cube and two-cell extrusion fixtures.
+# Four ranks exceed the three-cube and two-cell extrusion fixtures
 foreach(ranks IN ITEMS 1 2 4)
     foreach(case IN ITEMS topology batching unlabelled migration unequal_ownership geometry
                           geometry_scales reordering auxiliary_connectivity auxiliary_geometry

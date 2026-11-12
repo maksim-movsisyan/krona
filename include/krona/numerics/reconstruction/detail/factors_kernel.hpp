@@ -9,15 +9,13 @@ namespace krona::numerics::reconstruction::detail {
 // Runtime access to a heterogeneous fields::pack returns a value. Store through
 // the typed component instead, so each destination keeps its own scalar type.
 template<std::size_t C, class Output>
-KOKKOS_INLINE_FUNCTION decltype(auto) factor_destination(const Output& output, std::size_t cell)
-{
+KOKKOS_INLINE_FUNCTION decltype(auto) factor_destination(const Output& output, std::size_t cell) {
     if constexpr (requires { output.template get<C>(cell); }) return output.template get<C>(cell);
     else return output(cell, C);
 }
 
 template<std::size_t C, class Output, class R>
-KOKKOS_INLINE_FUNCTION void store_factor(const Output& output, std::size_t cell, R factor)
-{
+KOKKOS_INLINE_FUNCTION void store_factor(const Output& output, std::size_t cell, R factor) {
     using Reference = decltype(factor_destination<C>(output, cell));
     using T = std::remove_reference_t<Reference>;
     static_assert(std::is_lvalue_reference_v<Reference> && !std::is_const_v<T> && std::is_floating_point_v<T>,
@@ -37,8 +35,7 @@ KOKKOS_INLINE_FUNCTION void store_factors(const Output& output, std::size_t cell
 template<class R, class Stencil, class D, class Output, class Limiter, class Scheme, class Coupling>
 struct PrepareFactors {
     Stencil stencil; D data; Output output; Limiter limiter; Scheme scheme;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t cell) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t cell) const {
         constexpr auto N = D::components;
         Kokkos::Array<R, N> base{}, minimum{}, maximum{}, theta{};
         for (std::size_t c = 0; c < N; ++c) {

@@ -11,7 +11,8 @@
 namespace krona::mesh::device::detail {
 
 /// @brief Shared transfer mechanism; no host cache is built or modified here.
-template <class Exec> struct ArrayTransfer {
+template <class Exec> 
+struct ArrayTransfer {
     using memory_space = typename Exec::memory_space;
     static constexpr bool borrows_host = std::is_same_v<memory_space, Kokkos::HostSpace>;
 
@@ -34,8 +35,7 @@ template <class Exec> struct ArrayTransfer {
 
     /// @brief Completes queued device uploads; host borrowing requires no transfer fence.
     static void finish(const Exec& exec) {
-        if constexpr (!borrows_host)
-            exec.fence("KRONA mesh upload complete");
+        if constexpr (!borrows_host) exec.fence("KRONA mesh upload complete");
     }
 };
 

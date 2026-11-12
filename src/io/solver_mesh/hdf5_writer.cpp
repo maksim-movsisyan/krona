@@ -10,8 +10,7 @@ namespace krona::io::solver_mesh {
 
 /// @brief Writes the complete solver snapshot using one directory exchange and direct SoA I/O.
 void export_mesh_hdf5(const mesh::host::MeshPart& m, const std::filesystem::path& path,
-                      mpi::CommView comm, std::span<const int> part2rank)
-{
+                      mpi::CommView comm, std::span<const int> part2rank) {
     using namespace detail;
     auto access = file_access(comm);
     mpi::require(!path.empty(), "Solver mesh output path is empty");
@@ -54,10 +53,12 @@ void export_mesh_hdf5(const mesh::host::MeshPart& m, const std::filesystem::path
     mpi::check(MPI_Allgather(row.data(), static_cast<int>(row_size), MPI_UINT64_T,
                             rank_rows.data(), static_cast<int>(row_size), MPI_UINT64_T,
                             comm.native()), "MPI_Allgather(mesh file directory)");
+
     std::vector<U64> directory(rank_rows.size());
     for (int p = 0; p < comm.size(); ++p)
         std::copy_n(rank_rows.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(part2rank[static_cast<std::size_t>(p)]) * row_size),
                     row_size, directory.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(p) * row_size));
+
     const Layout layout{directory, part, comm.size()};
     rank_rows.clear();
     rank_rows.shrink_to_fit();
@@ -71,6 +72,7 @@ void export_mesh_hdf5(const mesh::host::MeshPart& m, const std::filesystem::path
             string_offsets.push_back(string_bytes.size());
         }
     }
+    
     const std::array<U64, header_size> header{
         magic, version, static_cast<U64>(comm.size()), sizeof(LocalIndex) * 8,
         sizeof(GlobalIndex) * 8, sizeof(GeometryReal) * 8, m.patches.size(),

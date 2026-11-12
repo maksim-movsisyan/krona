@@ -1,5 +1,5 @@
 #include "common/test_support.hpp"
-#include <krona/boundary/physical/manager.hpp>
+#include <krona/boundary/physical/tabulated_config.hpp>
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
@@ -209,6 +209,56 @@ void direct_factories(const Exec& exec)
     });
     const auto h=snapshot(exec,difference);
     for(int c=0;c<8;++c)near(h(0,c),T{0},static_cast<T>(1e-3),"Profiled and numeric characteristic closures agree");
+}
+
+/// @brief Loads mixed scalar and vector profiles, including a reverse-flow reservoir.
+void tabulated_case(const Exec& exec)
+{
+    const auto comm = krona::mpi::CommView::world();
+    const auto path = comm.rank() == 0 ? std::filesystem::path{"data/tabulated.toml"} : std::filesystem::path{};
+    const auto config = ph::read_config(path, comm);
+    auto host = fixture();
+    host.rank = comm.rank();
+    host.nprocs = comm.size();
+    host.n_bfaces_g = 4 * static_cast<std::uint64_t>(comm.size());
+    host.n_labeled_bfaces_g = 3 * static_cast<std::uint64_t>(comm.size());
+    if (comm.rank() != 0) host.face_patch = {1, 1, 1, -1};
+    krona::mesh::device::MeshStorage<Exec> mesh(host, {.data=mesh_data}, exec);
+    bc::BoundaryLayout<Exec, R> layout(host, mesh.view(), exec);
+    ph::TabulatedManager<Model, Exec, R> boundary(layout, Model{});
+    ph::configure_tabulated(boundary, config, host, comm);
+    boundary.finalize();
+    Fields fields(exec, layout.required_field_size());
+    Kokkos::deep_copy(exec, fields.u, R{-50});
+    Kokkos::deep_copy(exec, fields.v, R{0});
+    Kokkos::deep_copy(exec, fields.w, R{0});
+    ph::Status<Exec> status(exec);
+    status.begin_async();
+    boundary.apply_async(fields.views(), status);
+    status.check();
+
+    const auto temperature = snapshot(exec, fields.T);
+    const auto uy = snapshot(exec, fields.v);
+    if (comm.rank() == 0) {
+        near(temperature(3), R{350}, tol, "First wall face CSV temperature");
+        near(temperature(4), R{370}, tol, "Second wall face CSV temperature");
+        near(uy(3), R{2}, tol, "First wall face CSV velocity component");
+        near(uy(4), R{6}, tol, "Second wall face CSV velocity component");
+    }
+
+    bc::FaceContext<R> context;
+    context.nx = 1;
+    context.distance = 2;
+    const ph::Primitive<R, true> inside{100000, {-50, 0, 0}, 300};
+    const ph::SupersonicInlet<R> inlet{120000, 280, {}, 4, {-1, 0, 0}};
+    const auto reference_inlet = ph::evaluate(inlet, context, inside, Model{});
+    near(snapshot(exec, fields.u)(5), reference_inlet.face.velocity.x, tol, "CSV Mach number selects the inlet velocity");
+
+    ph::Backflow<R> backflow;
+    backflow.mode = ph::BackflowMode::TotalConditions;
+    backflow.reservoir = {130000, 380, {-1, 0, 0}, false};
+    const auto reference_outlet = ph::evaluate(ph::PressureOutlet<R>{90000, backflow}, context, inside, Model{});
+    near(temperature(6), reference_outlet.face.temperature, tol, "CSV reservoir temperature during backflow");
 }
 
 /// @brief Runs characteristic-factory equivalence checks in float and double.
@@ -428,6 +478,7 @@ int main(int argc,char**argv)
 {
     constexpr std::array cases{Case{"walls",walls_case},Case{"arrays",arrays_case},Case{"heat_flux",heat_flux_case},Case{"liquid",liquid_case},
         Case{"factories",factories_case},Case{"shared",shared_case},Case{"lambda",lambda_case},Case{"mechanical_projection",mechanical_projection_case},Case{"once",once_case},Case{"empty",empty_case},Case{"distributed",distributed_case},
+        Case{"tabulated",tabulated_case},
         Case{"invalid_profile",invalid_profile_case},Case{"invalid_direction",invalid_direction_case},Case{"dirty",dirty_case},Case{"short_array",short_array_case},
         Case{"wrong_range",wrong_range_case},Case{"missing_law",missing_law_case},Case{"incompatible",incompatible_case},Case{"interior",interior_case},Case{"output",output_case},Case{"checked_custom",checked_custom_case},Case{"backflow",backflow_case}};
     return krona::test::run(argc,argv,"physical_profiles",cases);

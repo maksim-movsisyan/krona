@@ -5,7 +5,7 @@
 
 namespace krona::apps::mesh_generator {
 
-/// @brief Prints command-line syntax to the selected stream.
+/// @brief Prints command-line syntax to the selected stream. 
 void usage(std::FILE *stream) noexcept {
     std::fputs("KRONA distributed mesh generator\n"
                "\n"

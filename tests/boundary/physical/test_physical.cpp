@@ -431,7 +431,7 @@ void visitation_case(const Exec& exec)
 void configuration_case(const Exec& exec)
 {
     ph::Status<Exec> status(exec); status.begin_async();
-    const auto loaded=ph::read_config(KRONA_PHYSICAL_TEST_DATA);
+    const auto loaded=ph::read_config(KRONA_PHYSICAL_TEST_DATA,krona::mpi::CommView::world());
     std::ifstream input(KRONA_PHYSICAL_TEST_DATA);check(input.is_open(),"Open physical TOML fixture");
     const std::string text{std::istreambuf_iterator<char>{input},std::istreambuf_iterator<char>{}};
     const auto parsed=ph::parse_config(text);
@@ -613,7 +613,7 @@ void reject_duplicate(const Exec&)
 void reject_name(const Exec& exec)
 {
     const auto m=fixture();krona::mesh::device::MeshStorage<Exec> mesh(m,{.data=selection},exec);
-    auto config=ph::read_config(KRONA_PHYSICAL_TEST_DATA);config.patches[0].name="wrong";
+    auto config=ph::read_config(KRONA_PHYSICAL_TEST_DATA,krona::mpi::CommView::world());config.patches[0].name="wrong";
     krona::boundary::BoundaryLayout<Exec,Real> manager_layout(m,mesh.view(),exec);
     ph::Manager<GasModel,Exec> manager(manager_layout,gas_model(),config); manager.finalize();
 }

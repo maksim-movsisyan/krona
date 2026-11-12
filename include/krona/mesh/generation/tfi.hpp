@@ -11,9 +11,8 @@ namespace krona::mesh::generation {
 /// @brief Evaluates straight-edge trilinear block geometry on the host.
 class TFI {
 public:
-    /// @brief Checks the normalized trilinear Jacobian at one parametric point.
-    [[nodiscard]] static bool positive_jacobian(const std::array<Vec3, 8> &p, double u, double v, double w) noexcept 
-    {
+    /// @brief Checks the normalized trilinear Jacobian at one parametric point. 
+    [[nodiscard]] static bool positive_jacobian(const std::array<Vec3, 8> &p, double u, double v, double w) noexcept {
         // Differentiate the trilinear map along each local axis.
         const Vec3 du = (p[1] - p[0]) * ((1 - v) * (1 - w)) + (p[2] - p[3]) * (v * (1 - w)) +
                         (p[5] - p[4]) * ((1 - v) * w) + (p[6] - p[7]) * (v * w);
@@ -32,15 +31,13 @@ public:
     }
 
     /// @brief Interpolates a straight edge at s in [0,1].
-    [[nodiscard]] static constexpr Vec3 interpolate_edge(const Vec3 &p0, const Vec3 &p1, double s) noexcept 
-    {
+    [[nodiscard]] static constexpr Vec3 interpolate_edge(const Vec3 &p0, const Vec3 &p1, double s) noexcept {
         return p0 * (1.0 - s) + p1 * s;
     }
 
     /// @brief Interpolates a bilinear quad at u,v in [0,1].
     // Vertices order: 0: (0,0), 1: (1,0), 2: (1,1), 3: (0,1)
-    [[nodiscard]] static constexpr Vec3 interpolate_quad(const std::array<Vec3, 4> &corners, double u, double v) noexcept 
-    {
+    [[nodiscard]] static constexpr Vec3 interpolate_quad(const std::array<Vec3, 4> &corners, double u, double v) noexcept {
         const double n0 = (1.0 - u) * (1.0 - v);
         const double n1 = u * (1.0 - v);
         const double n2 = u * v;
@@ -55,8 +52,7 @@ public:
     //   Bottom plane (zeta = 0): 0:(0,0,0), 1:(1,0,0), 2:(1,1,0), 3:(0,1,0)
     //   Top plane    (zeta = 1): 4:(0,0,1), 5:(1,0,1), 6:(1,1,1), 7:(0,1,1)
     [[nodiscard]] static constexpr Vec3 interpolate_hex(const std::array<Vec3, 8> &corners, 
-                                                        double xi, double eta, double zeta) noexcept 
-    {
+                                                        double xi, double eta, double zeta) noexcept {
         const double one_minus_xi = 1.0 - xi;
         const double one_minus_eta = 1.0 - eta;
         const double one_minus_zeta = 1.0 - zeta;

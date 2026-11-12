@@ -60,6 +60,7 @@ struct DarwishMoukalled {
     template<class R> KOKKOS_INLINE_FUNCTION R operator()(R gradient_along_span, R jump) const
     { return R{2}*(gradient_along_span/jump)-R{1}; } // Caller handles an exactly zero jump.
 };
+
 struct NoSkewCorrection {
     template<class R, class G, class V>
     KOKKOS_INLINE_FUNCTION R operator()(G, V, V, R) const { return R{0}; }
@@ -74,8 +75,7 @@ struct LinearSkewCorrection {
 
 namespace detail {
 template<class R, class S>
-KOKKOS_INLINE_FUNCTION R face_fraction(const S& side)
-{
+KOKKOS_INLINE_FUNCTION R face_fraction(const S& side) {
     R fraction = static_cast<R>(side.fraction);
     if (fraction < R{0}) {
         const R length2 = dot_as<R>(side.span, side.span);
@@ -96,8 +96,7 @@ struct MusclKappa {
     Parameter kappa = Parameter{1}/Parameter{3};
     Skew skew{};
     template<class R, class S, class D>
-    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const
-    {
+    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const {
         const auto gradient = d.gradients(side.cell, c);
         const R jump = static_cast<R>(d.values(side.other, c))-static_cast<R>(d.values(side.cell, c));
         const R fraction = detail::face_fraction<R>(side), k = static_cast<R>(kappa);
@@ -115,8 +114,7 @@ struct Tvd {
     static constexpr unsigned requirements = Gradients | OtherValues;
     Limiter limiter{}; Ratio ratio{}; Skew skew{};
     template<class R, class S, class D>
-    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const
-    {
+    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const {
         const R base = static_cast<R>(d.values(side.cell, c));
         const R jump = static_cast<R>(d.values(side.other, c))-base;
         const auto gradient = d.gradients(side.cell, c);
@@ -144,8 +142,7 @@ struct ThreePointStencil {
 template<class R>
 KOKKOS_INLINE_FUNCTION auto cell_average_quick_stencil(Kokkos::Array<std::size_t, 3> samples,
     Kokkos::Array<R, 3> centres, Kokkos::Array<R, 3> variances, R target,
-    R tolerance = R{64}*Kokkos::epsilon_v<R>)
-{
+    R tolerance = R{64}*Kokkos::epsilon_v<R>) {
     const R nan = Kokkos::quiet_NaN_v<R>;
     ThreePointStencil<R> result{samples[1], samples, {nan, nan, nan}, false};
     if (!(tolerance >= R{0}) || !Kokkos::isfinite(tolerance) || !Kokkos::isfinite(target)) return result;
@@ -174,8 +171,7 @@ KOKKOS_INLINE_FUNCTION auto point_quick_stencil(Kokkos::Array<std::size_t, 3> sa
 struct Quick {
     static constexpr unsigned requirements = OtherValues;
     template<class R, class S, class D>
-    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const
-    {
+    KOKKOS_INLINE_FUNCTION R increment(const S& side, const D& d, std::size_t c) const {
         KOKKOS_ASSERT(side.valid);
         const R base = static_cast<R>(d.values(side.cell, c));
         return static_cast<R>(side.weights[0])*(static_cast<R>(d.values(side.samples[0], c))-base) +
