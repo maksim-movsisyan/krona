@@ -20,8 +20,7 @@ struct OwnerCellCoefficient {
     static_assert(Kokkos::is_view<View>::value && View::rank == 1);
     View values;
     template<class Context>
-    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
-    {
+    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const {
         if constexpr (requires { c.neighbour; }) { KOKKOS_ASSERT(c.neighbour < 0); }
         return values(static_cast<std::size_t>(c.owner));
     }
@@ -64,8 +63,7 @@ struct InterpolatedCellCoefficient {
     Interpolation interpolation{};
 
     template<class Context>
-    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const
-    {
+    KOKKOS_INLINE_FUNCTION auto operator()(const Context& c) const {
         using Real = std::common_type_t<typename View::non_const_value_type, decltype(c.distance)>;
         const Real owner = static_cast<Real>(values(static_cast<std::size_t>(c.owner)));
         if constexpr (requires { c.neighbour; c.owner_weight; }) {
@@ -87,8 +85,7 @@ struct IsotropicDiffusion {
     Coefficient coefficient;
 
     template<class Context, class Value>
-    KOKKOS_INLINE_FUNCTION auto normal_gradient(const Context& c, Value outward_flux) const
-    {
+    KOKKOS_INLINE_FUNCTION auto normal_gradient(const Context& c, Value outward_flux) const {
         using Real = std::common_type_t<decltype(coefficient(c)), Value>;
         static_assert(std::is_floating_point_v<Real>);
         const Real value = static_cast<Real>(coefficient(c));
@@ -97,8 +94,7 @@ struct IsotropicDiffusion {
     }
 
     template<class Context, class Value>
-    KOKKOS_INLINE_FUNCTION auto outward_flux(const Context& c, Value normal_gradient_value) const
-    {
+    KOKKOS_INLINE_FUNCTION auto outward_flux(const Context& c, Value normal_gradient_value) const {
         using Real = std::common_type_t<decltype(coefficient(c)), Value>;
         static_assert(std::is_floating_point_v<Real>);
         const Real value = static_cast<Real>(coefficient(c));

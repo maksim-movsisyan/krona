@@ -31,8 +31,7 @@ public:
     /// Scalar CSR and strided diagonal-component BSR slices use the same face-entry map.
     template<class Target, class Boundary, class Flux, class Reconstruction = NoReconstruction, class Inflow = FixedValueInflow>
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status, Flux flux,
-        Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
-    {
+        Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, flux, reconstruction, inflow, time);
             const auto m = plan_.mesh_view();
@@ -62,8 +61,7 @@ public:
     /// Field/reconstruction inputs must not overlap output, including strided/partial aliases.
     template<class Field, class Output, class Boundary, class Flux, class Reconstruction = NoReconstruction, class Inflow = FixedValueInflow>
     void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        Flux flux, Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const
-    {
+        Flux flux, Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, flux, reconstruction, inflow, time);
             const auto m = plan_.mesh_view();
@@ -90,8 +88,7 @@ public:
     /// Restore the frozen base RHS/residual before each correction update. Rebuild A if mass flux changes.
     template<class Output, class Boundary, class Flux, class Reconstruction>
     void add_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        Flux flux, Reconstruction reconstruction, Real time = 0) const
-    {
+        Flux flux, Reconstruction reconstruction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, flux, reconstruction, FixedValueInflow{}, time);
             const auto m = plan_.mesh_view();
@@ -122,8 +119,7 @@ private:
     { scalar::detail::validate_view<Exec>(flux.values, static_cast<std::size_t>(plan_.mesh_view().sizes.n_faces)); }
     template<class Boundary, class Flux, class Reconstruction, class Inflow>
     void validate_inputs(const Boundary& boundary, const Flux& flux, const Reconstruction& reconstruction,
-        const Inflow&, Real time) const
-    {
+        const Inflow&, Real time) const {
         static_assert(!std::is_arithmetic_v<Reconstruction> && !std::is_arithmetic_v<Inflow>,
             "Pass time after reconstruction and inflow policies");
         mpi::require(std::isfinite(time), "Scalar convection: time must be finite");

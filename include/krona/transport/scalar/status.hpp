@@ -17,8 +17,7 @@ KOKKOS_INLINE_FUNCTION void flag(Flags flags, AssemblyFlag index)
 { Kokkos::atomic_exchange(&flags(static_cast<int>(index)), 1); }
 
 template<class View, class Real, class Flags>
-KOKKOS_INLINE_FUNCTION void add_checked(View view, std::size_t i, Real increment, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION void add_checked(View view, std::size_t i, Real increment, Flags flags) {
     using Value = typename View::non_const_value_type;
     const Value value = static_cast<Value>(increment);
     const Value result = view(i)+value;
@@ -28,8 +27,7 @@ KOKKOS_INLINE_FUNCTION void add_checked(View view, std::size_t i, Real increment
     view(i) = result;
 }
 template<class View, class Real, class Flags>
-KOKKOS_INLINE_FUNCTION void atomic_add_checked(View view, std::size_t i, Real increment, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION void atomic_add_checked(View view, std::size_t i, Real increment, Flags flags) {
     using Value = typename View::non_const_value_type;
     const Value value = static_cast<Value>(increment);
     if (!Kokkos::isfinite(increment) || !Kokkos::isfinite(value)) { flag(flags, BadSystem); return; }
@@ -56,15 +54,13 @@ public:
     AssemblyStatus& operator=(const AssemblyStatus&) = delete;
     ~AssemblyStatus() { if (pending_) exec_.fence("Transport: pending assembly completed"); }
 
-    void begin_async()
-    {
+    void begin_async() {
         execution::require_kokkos();
         mpi::require(!pending_, "Scalar transport: assembly pending; call check()");
         pending_ = true;
         Kokkos::deep_copy(exec_, flags_, 0);
     }
-    [[nodiscard]] flags_type device_flags(const Exec& exec) const
-    {
+    [[nodiscard]] flags_type device_flags(const Exec& exec) const {
         mpi::require(pending_, "Scalar transport: call begin_async() before adding contributions");
         mpi::require(exec == exec_, "Scalar transport: assembly execution instance mismatch");
         return flags_;
@@ -73,8 +69,7 @@ public:
     [[nodiscard]] bool pending() const noexcept { return pending_; }
 
     /// @brief Explicit blocking collective diagnostics; no anchor/whole-system diagonal requirement here.
-    [[nodiscard]] AssemblyReport check(mpi::CommView comm)
-    {
+    [[nodiscard]] AssemblyReport check(mpi::CommView comm) {
         mpi::require(pending_, "Scalar transport: no pending assembly");
         Kokkos::deep_copy(exec_, host_, flags_);
         exec_.fence("Transport: assembly diagnostics ready");

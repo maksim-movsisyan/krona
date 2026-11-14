@@ -15,22 +15,19 @@ using scalar::detail::BadReconstruction;
 using scalar::detail::BadSystem;
 
 template<class Real, class Flux, class Context, class Flags>
-KOKKOS_INLINE_FUNCTION Real mass_flux(const Flux& flux, const Context& c, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION Real mass_flux(const Flux& flux, const Context& c, Flags flags) {
     const Real m = static_cast<Real>(flux(c));
     if (!Kokkos::isfinite(m)) { flag(flags, BadMassFlux); return Real{0}; }
     return m;
 }
 template<class Value, class Real, class Flags>
-KOKKOS_INLINE_FUNCTION bool representable_flux(Real m, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION bool representable_flux(Real m, Flags flags) {
     const auto value = static_cast<Value>(m);
     if (!Kokkos::isfinite(value) || value == Value{0}) { flag(flags, BadSystem); return false; }
     return true;
 }
 template<class Real, class R, class Context, class Flags>
-KOKKOS_INLINE_FUNCTION Real interior_increment(const R& reconstruction, const Context& c, Real m, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION Real interior_increment(const R& reconstruction, const Context& c, Real m, Flags flags) {
     if constexpr (!reconstructed<R>) return Real{0};
     else {
         const Real delta = static_cast<Real>(reconstruction.interior(c, m > Real{0}));
@@ -39,8 +36,7 @@ KOKKOS_INLINE_FUNCTION Real interior_increment(const R& reconstruction, const Co
     }
 }
 template<class Real, class R, class Context, class Flags>
-KOKKOS_INLINE_FUNCTION Real boundary_increment(const R& reconstruction, const Context& c, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION Real boundary_increment(const R& reconstruction, const Context& c, Flags flags) {
     if constexpr (!reconstructed<R>) return Real{0};
     else {
         const Real delta = static_cast<Real>(reconstruction.boundary(c));
@@ -49,8 +45,7 @@ KOKKOS_INLINE_FUNCTION Real boundary_increment(const R& reconstruction, const Co
     }
 }
 template<class Real, class Inflow, class Context, class Condition, class Flags>
-KOKKOS_INLINE_FUNCTION Real inflow_value(const Inflow& inflow, const Context& c, const Condition& condition, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION Real inflow_value(const Inflow& inflow, const Context& c, const Condition& condition, Flags flags) {
     const Real value = static_cast<Real>(inflow(c, condition));
     if (!Kokkos::isfinite(value)) { flag(flags, BadInflow); return Real{0}; }
     return value;
@@ -60,9 +55,8 @@ KOKKOS_INLINE_FUNCTION Real inflow_value(const Inflow& inflow, const Context& c,
 template<class Space, class Real, class Target, class Flux, class Reconstruction, class Flags>
 struct AddRows {
     RowData<Space> data; Target target; Flux flux; Reconstruction reconstruction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         using Value = typename decltype(target.values)::non_const_value_type;
         Real diagonal = 0, rhs = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
@@ -75,7 +69,7 @@ struct AddRows {
             const Real outward = owner ? m : -m;
             if (outward > Real{0}) diagonal += outward;
             else {
-                const auto f = static_cast<std::size_t>(face);
+                const std::size_t f = static_cast<std::size_t>(face);
                 const auto entry = owner ? target.entries.owner_entries(f) : target.entries.neighbour_entries(f);
                 add_checked(target.values, entry, outward, flags);
             }
@@ -86,18 +80,16 @@ struct AddRows {
         if constexpr (reconstructed<Reconstruction>) add_checked(target.rhs, i, rhs, flags);
     }
 };
-
 template<class Space, class Real, class Target, class Condition, class Flux, class Reconstruction, class Inflow, class Flags>
 struct AddBoundary {
     boundary::GeometryView<Space> geometry; Target target; Condition condition; Flux flux;
     Reconstruction reconstruction; Inflow inflow; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const Real m = mass_flux<Real>(flux, c, flags);
         using Value = typename decltype(target.values)::non_const_value_type;
         if (m == Real{0} || !representable_flux<Value>(m, flags)) return;
-        const auto i = static_cast<std::size_t>(c.owner);
+        const std::size_t i = static_cast<std::size_t>(c.owner);
         if (m > Real{0}) {
             atomic_add_checked(target.values, target.entries.diagonal(i), m, flags);
             if constexpr (reconstructed<Reconstruction>)
@@ -109,9 +101,8 @@ struct AddBoundary {
 template<class Space, class Real, class Field, class Output, class Flux, class Reconstruction, class Flags>
 struct ResidualRows {
     RowData<Space> data; Field field; Output output; Flux flux; Reconstruction reconstruction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         Real residual = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
@@ -131,12 +122,11 @@ template<class Space, class Real, class Field, class Output, class Condition, cl
 struct ResidualBoundary {
     boundary::GeometryView<Space> geometry; Field field; Output output; Condition condition; Flux flux;
     Reconstruction reconstruction; Inflow inflow; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const Real m = mass_flux<Real>(flux, c, flags);
         if (m == Real{0}) return;
-        const auto i = static_cast<std::size_t>(c.owner);
+        const std::size_t i = static_cast<std::size_t>(c.owner);
         const Real value = m > Real{0} ? static_cast<Real>(field(i))+boundary_increment<Real>(reconstruction, c, flags) :
             inflow_value<Real>(inflow, c, condition, flags);
         atomic_add_checked(output, i, -m*value, flags);
@@ -146,9 +136,8 @@ struct ResidualBoundary {
 template<class Space, class Real, class Output, class Flux, class Reconstruction, class Flags>
 struct CorrectionRows {
     RowData<Space> data; Output output; Flux flux; Reconstruction reconstruction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         Real rhs = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
@@ -163,8 +152,7 @@ struct CorrectionRows {
 template<class Space, class Real, class Output, class Flux, class Reconstruction, class Flags>
 struct CorrectionBoundary {
     boundary::GeometryView<Space> geometry; Output output; Flux flux; Reconstruction reconstruction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const Real m = mass_flux<Real>(flux, c, flags);
         if (m > Real{0}) atomic_add_checked(output, static_cast<std::size_t>(c.owner),

@@ -32,12 +32,11 @@ public:
     /// @brief Gradients are borrowed inputs; no reconstruction, allocation, fence or MPI is performed.
     template<class Target, class Boundary, class Coefficient, class Correction> requires (!std::is_arithmetic_v<Correction>)
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
-    {
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();
-            const auto rows = static_cast<std::size_t>(mesh.sizes.n_own);
+            const std::size_t rows = static_cast<std::size_t>(mesh.sizes.n_own);
             scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
             scalar::detail::validate_output<Exec>(target.rhs, rows);
             mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
@@ -68,8 +67,7 @@ public:
     template<class Field, class Output, class Boundary, class Coefficient, class Correction>
         requires (!std::is_arithmetic_v<Correction>)
     void add_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
-    {
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();
@@ -95,8 +93,7 @@ public:
     /// Coefficients/conditions must match that base system, and boundary matrix slopes must not depend on increment.
     template<class Output, class Boundary, class Coefficient, class Correction>
     void add_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const
-    {
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();
@@ -126,8 +123,7 @@ public:
     template<class Field, class Boundary, class Coefficient, class Source, class Correction>
         requires (!std::is_arithmetic_v<Correction>)
     [[nodiscard]] BalanceResult balance(Field field, const Boundary& boundary,
-        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const
-    {
+        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const {
         return mpi::guarded([&]() -> BalanceResult {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();

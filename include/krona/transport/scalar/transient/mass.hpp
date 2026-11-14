@@ -27,8 +27,7 @@ struct DensityVolumeMass {
     Volumes volumes;
     Density density;
     template<class Real = ComputeReal>
-    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION Real operator()(std::size_t i) const {
         static_assert(std::is_floating_point_v<Real>);
         const Real rho = static_cast<Real>(density_at(i));
         const Real volume = static_cast<Real>(volumes(i));
@@ -38,8 +37,7 @@ struct DensityVolumeMass {
         return rho*volume;
     }
 private:
-    KOKKOS_INLINE_FUNCTION auto density_at(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION auto density_at(std::size_t i) const {
         if constexpr (std::is_arithmetic_v<Density>) return density;
         else return density(i);
     }
@@ -69,16 +67,14 @@ template<class Exec, class View>
 void validate_mass(CellMass<View> mass, std::size_t count)
 { scalar::detail::validate_view<Exec>(mass.values, count); }
 template<class Exec, class V, class D>
-void validate_mass(DensityVolumeMass<V, D> mass, std::size_t count)
-{
+void validate_mass(DensityVolumeMass<V, D> mass, std::size_t count) {
     scalar::detail::validate_view<Exec>(mass.volumes, count);
     if constexpr (!std::is_arithmetic_v<D>) scalar::detail::validate_view<Exec>(mass.density, count);
 }
 template<class Exec>
 void validate_history(NoHistory, std::size_t) {}
 template<class Exec, class L, class T>
-void validate_history(const History<L, T>& history, std::size_t count)
-{
+void validate_history(const History<L, T>& history, std::size_t count) {
     validate_mass<Exec>(history.level.mass, count);
     scalar::detail::validate_view<Exec>(history.level.field, count);
     validate_history<Exec>(history.tail, count);
@@ -88,8 +84,7 @@ void validate_history(const History<L, T>& history, std::size_t count)
 /// @brief Newest accepted layer first. No snapshots, copies, allocation or history rotation.
 inline auto time_history() { return detail::NoHistory{}; }
 template<class Level, class... Rest>
-auto time_history(Level level, Rest... rest)
-{
+auto time_history(Level level, Rest... rest) {
     auto tail = time_history(rest...);
     return detail::History<Level, decltype(tail)>{level, tail};
 }

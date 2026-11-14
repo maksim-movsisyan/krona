@@ -14,8 +14,7 @@ struct Coefficients {
     Real thermal_conductivity = 0;
 
     /// @brief Optional pointwise check; zero coefficients are allowed.
-    KOKKOS_INLINE_FUNCTION bool valid() const
-    {
+    KOKKOS_INLINE_FUNCTION bool valid() const {
         return Kokkos::isfinite(dynamic_viscosity) && dynamic_viscosity >= Real{0} &&
                Kokkos::isfinite(thermal_conductivity) && thermal_conductivity >= Real{0};
     }

@@ -26,8 +26,7 @@ struct UniformMassFlux {
 /// if actually encountered on inflow; zero-flux/outflow faces never access this policy.
 struct FixedValueInflow {
     template<class Real, class Condition>
-    KOKKOS_INLINE_FUNCTION Real operator()(const boundary::FaceContext<Real>& c, const Condition& condition) const
-    {
+    KOKKOS_INLINE_FUNCTION Real operator()(const boundary::FaceContext<Real>& c, const Condition& condition) const {
         if constexpr (boundary::scalar::is_fixed_value<Condition>)
             return static_cast<Real>(boundary::profile::sample(condition.value, c));
         else return Kokkos::quiet_NaN_v<Real>;

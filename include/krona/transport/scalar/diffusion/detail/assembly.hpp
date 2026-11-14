@@ -22,11 +22,10 @@ using scalar::detail::HasAnchor;
 template<class Real> struct InteriorFlux { Real conductance = 0, constant = 0; };
 template<class Real, class Space, class Law, class Correction, class Flags>
 KOKKOS_INLINE_FUNCTION InteriorFlux<Real> interior_flux(const RowData<Space>& data, LocalIndex face,
-    const Law& law, const Correction& correction, Flags flags, Real time)
-{
+    const Law& law, const Correction& correction, Flags flags, Real time) {
     const auto c = interior_context<Real>(data, face, time);
     const Real coefficient = static_cast<Real>(law.coefficient(c));
-    const auto f = static_cast<std::size_t>(face);
+    const std::size_t f = static_cast<std::size_t>(face);
     const Real a = coefficient*static_cast<Real>(data.area_over_distance(f));
     if (!Kokkos::isfinite(coefficient) || !(coefficient > Real{0}) || !Kokkos::isfinite(a) || !(a > Real{0})) {
         flag(flags, BadDiffusion); return {};
@@ -48,8 +47,7 @@ template<class Real> struct AffineFlux { Real owner = 0, constant = 0; };
 // CorrectionOnly subtracts the zero-increment boundary RHS and requires its matrix slope to stay fixed.
 template<bool CorrectionOnly = false, class Real, class Condition, class Law, class Correction, class Flags>
 KOKKOS_INLINE_FUNCTION AffineFlux<Real> boundary_flux(const boundary::FaceContext<Real>& c,
-    const Condition& condition, const Law& law, const Correction& correction, Flags flags)
-{
+    const Condition& condition, const Law& law, const Correction& correction, Flags flags) {
     const Real coefficient = static_cast<Real>(law.coefficient(c));
     if (!Kokkos::isfinite(coefficient) || !(coefficient > Real{0})) {
         flag(flags, BadDiffusion); return {};
@@ -81,9 +79,8 @@ KOKKOS_INLINE_FUNCTION AffineFlux<Real> boundary_flux(const boundary::FaceContex
 template<class Space, class Real, class Target, class Law, class Correction, class Flags>
 struct AddRows {
     RowData<Space> data; Target target; Law law; Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         using Value = typename decltype(target.values)::non_const_value_type;
         Real diagonal = 0, explicit_rhs = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
@@ -95,7 +92,7 @@ struct AddRows {
             if (!Kokkos::isfinite(static_cast<Value>(a)) || !(static_cast<Value>(a) > Value{0})) {
                 flag(flags, BadSystem); continue;
             }
-            const auto f = static_cast<std::size_t>(face);
+            const std::size_t f = static_cast<std::size_t>(face);
             const bool owner = data.face_owner(f) == cell;
             const auto entry = owner ? target.entries.owner_entries(f) : target.entries.neighbour_entries(f);
             add_checked(target.values, entry, -a, flags);
@@ -111,15 +108,14 @@ template<class Space, class Real, class Target, class Condition, class Law, clas
 struct AddBoundary {
     boundary::GeometryView<Space> geometry; Target target; Condition condition; Law law;
     Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const auto flux = boundary_flux(c, condition, law, correction, flags);
         using Value = typename decltype(target.values)::non_const_value_type;
         if (flux.owner > Real{0} && !(static_cast<Value>(flux.owner) > Value{0})) {
             flag(flags, BadSystem); return;
         }
-        const auto i = static_cast<std::size_t>(c.owner);
+        const std::size_t i = static_cast<std::size_t>(c.owner);
         atomic_add_checked(target.values, target.entries.diagonal(i), flux.owner, flags);
         atomic_add_checked(target.rhs, i, -flux.constant, flags);
     }
@@ -129,16 +125,15 @@ struct AddBoundary {
 template<class Space, class Real, class Field, class Output, class Law, class Correction, class Flags>
 struct ResidualRows {
     RowData<Space> data; Field field; Output output; Law law; Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         const Real own = static_cast<Real>(field(i));
         if (!Kokkos::isfinite(own)) { flag(flags, BadSystem); return; }
         Real residual = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
             if (face >= data.n_inner_faces) continue;
-            const auto f = static_cast<std::size_t>(face);
+            const std::size_t f = static_cast<std::size_t>(face);
             const bool owner = data.face_owner(f) == cell;
             const auto other = owner ? data.face_neigh(f) : data.face_owner(f);
             const Real value = static_cast<Real>(field(static_cast<std::size_t>(other)));
@@ -154,11 +149,10 @@ template<class Space, class Real, class Field, class Output, class Condition, cl
 struct ResidualBoundary {
     boundary::GeometryView<Space> geometry; Field field; Output output;
     Condition condition; Law law; Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const auto flux = boundary_flux(c, condition, law, correction, flags);
-        const auto i = static_cast<std::size_t>(c.owner);
+        const std::size_t i = static_cast<std::size_t>(c.owner);
         const Real value = flux.owner == Real{0} ? flux.constant :
             flux.owner*static_cast<Real>(field(i))+flux.constant;
         atomic_add_checked(output, i, -value, flags);
@@ -169,14 +163,13 @@ struct ResidualBoundary {
 template<class Space, class Real, class Output, class Law, class Correction, class Flags>
 struct CorrectionRows {
     RowData<Space> data; Output output; Law law; Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
         Real value = 0;
-        const auto i = static_cast<std::size_t>(cell);
+        const std::size_t i = static_cast<std::size_t>(cell);
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
             if (face >= data.n_inner_faces) continue;
-            const auto f = static_cast<std::size_t>(face);
+            const std::size_t f = static_cast<std::size_t>(face);
             const auto flux = interior_flux<Real>(data, face, law, correction, flags, time);
             value += data.face_owner(f) == cell ? -flux.constant : flux.constant;
         }
@@ -188,8 +181,7 @@ template<class Space, class Real, class Output, class Condition, class Law, clas
 struct CorrectionBoundary {
     boundary::GeometryView<Space> geometry; Output output; Condition condition; Law law;
     Correction correction; Flags flags; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const auto c = geometry.template context<Real>(face, time);
         const auto flux = boundary_flux<true>(c, condition, law, correction, flags);
         atomic_add_checked(output, static_cast<std::size_t>(c.owner), -flux.constant, flags);
@@ -199,9 +191,8 @@ struct CorrectionBoundary {
 template<class Space, class Source>
 struct IntegrateSource {
     mesh::device::MeshView<Space> mesh; Source source;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, AccumulationReal& sum) const
-    {
-        const auto i = static_cast<std::size_t>(cell);
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, AccumulationReal& sum) const {
+        const std::size_t i = static_cast<std::size_t>(cell);
         sum += static_cast<AccumulationReal>(source(i))*static_cast<AccumulationReal>(mesh.geometry.cell_volume(i));
     }
 };
@@ -209,8 +200,7 @@ struct IntegrateSource {
 template<class Space, class Real, class Condition, class Law, class Field, class Correction>
 struct IntegrateBoundary {
     boundary::GeometryView<Space> geometry; Condition condition; Law law; Field field; Correction correction; Real time;
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, AccumulationReal& sum) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, AccumulationReal& sum) const {
         const auto c = geometry.template context<Real>(face, time);
         const auto r = boundary::scalar::make_relation(condition, c, static_cast<Real>(correction(c)), law);
         sum += static_cast<AccumulationReal>(c.area)*static_cast<AccumulationReal>(

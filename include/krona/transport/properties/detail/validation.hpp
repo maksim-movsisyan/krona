@@ -16,8 +16,7 @@ inline bool positive(T value)
 /// @brief Custom policies without parameters need not implement validate().
 /// Exceptions from user validators follow the distributed fatal-error policy.
 template<class Model>
-inline void validate(const Model& model) noexcept
-{
+inline void validate(const Model& model) noexcept {
     if constexpr (requires { model.validate(); })
         mpi::guarded([&] { model.validate(); });
 }

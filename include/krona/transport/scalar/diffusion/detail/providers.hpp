@@ -33,8 +33,7 @@ struct RowData {
 
 template<class Space>
 auto row_data(mesh::device::MeshView<Space> mesh, mesh::device::AuxConnectivityView<Space> connectivity,
-              mesh::device::AuxGeometryView<Space> geometry)
-{
+              mesh::device::AuxGeometryView<Space> geometry) {
     const auto& g = mesh.geometry;
     return RowData<Space>{mesh.sizes.n_inner_faces, mesh.connectivity.face_owner, mesh.connectivity.face_neigh,
         connectivity.cell_faces, connectivity.cell_faces_offsets, g.cell_volume,
@@ -45,8 +44,7 @@ auto row_data(mesh::device::MeshView<Space> mesh, mesh::device::AuxConnectivityV
 }
 
 template<class Exec, class Real, class Correction>
-void validate_correction(const DiffusionPlan<Exec, Real>& plan, const Correction& correction)
-{
+void validate_correction(const DiffusionPlan<Exec, Real>& plan, const Correction& correction) {
     if constexpr (corrected<Correction>) {
         const auto mesh = plan.mesh_view();
         const auto geometry = plan.geometry_view();
@@ -63,8 +61,7 @@ void validate_correction(const DiffusionPlan<Exec, Real>& plan, const Correction
 }
 
 template<class Real, class Space>
-KOKKOS_INLINE_FUNCTION auto interior_context(const RowData<Space>& data, LocalIndex face, Real time)
-{
+KOKKOS_INLINE_FUNCTION auto interior_context(const RowData<Space>& data, LocalIndex face, Real time) {
     const std::size_t f = static_cast<std::size_t>(face);
     return InteriorFaceContext<Real>{face, data.face_owner(f), data.face_neigh(f),
         static_cast<Real>(data.face_x(f)), static_cast<Real>(data.face_y(f)), static_cast<Real>(data.face_z(f)),
@@ -78,23 +75,20 @@ template<class Exec, class Real, class View>
 void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, FaceCoefficient<View> c)
 { scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_faces)); }
 template<class Exec, class Real, class View>
-void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, OwnerCellCoefficient<View> c)
-{
+void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, OwnerCellCoefficient<View> c) {
     mpi::require(plan.mesh_view().sizes.n_inner_faces == 0,
         "Scalar diffusion: OwnerCellCoefficient is exterior-only; use InterpolatedCellCoefficient for interior faces");
     scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_own));
 }
 template<class Exec, class Real, class View, class Interpolation>
-void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, InterpolatedCellCoefficient<View, Interpolation> c)
-{
+void validate_coefficient(const DiffusionPlan<Exec, Real>& plan, InterpolatedCellCoefficient<View, Interpolation> c) {
     scalar::detail::validate_view<Exec>(c.values, static_cast<std::size_t>(plan.mesh_view().sizes.n_cells));
     mpi::require(plan.mesh_view().sizes.n_inner_faces == 0 || plan.geometry_view().has_face_interp_weights(),
         "Scalar diffusion: cell coefficients require attached FaceInterpolationWeights");
 }
 
 template<class Exec, class Real, class Boundary>
-void validate_boundary(const DiffusionPlan<Exec, Real>& plan, const Boundary& boundary)
-{
+void validate_boundary(const DiffusionPlan<Exec, Real>& plan, const Boundary& boundary) {
     const auto m = plan.mesh_view();
     const auto b = boundary.geometry_view();
     const auto& g = m.geometry;

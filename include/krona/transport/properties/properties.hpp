@@ -11,15 +11,13 @@ struct TransportProperties {
     Viscosity viscosity;
     Conductivity conductivity;
 
-    void validate() const noexcept
-    {
+    void validate() const noexcept {
         detail::validate(viscosity);
         detail::validate(conductivity);
     }
 
     template<class Real = ComputeReal, class State>
-    KOKKOS_INLINE_FUNCTION Coefficients<Real> evaluate(const State& state) const
-    {
+    KOKKOS_INLINE_FUNCTION Coefficients<Real> evaluate(const State& state) const {
         const Real mu = static_cast<Real>(viscosity.template evaluate<Real>(state));
         const Real lambda = static_cast<Real>(conductivity.template evaluate<Real>(state, mu));
         return {mu, lambda};

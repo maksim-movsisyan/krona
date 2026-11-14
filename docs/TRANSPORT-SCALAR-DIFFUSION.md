@@ -6,26 +6,26 @@
 
 The steady equation is
 
-\[
+$$
 -\nabla\cdot(\Gamma\nabla\phi)=s,
 \qquad q_n=-\Gamma\nabla\phi\cdot\mathbf n.
-\]
+$$
 
 Here `s` is a source **per unit volume**, and `q_n` is an outward flux **per unit face area**. The operator uses integrated cell equations:
 
-\[
+$$
 A\phi=b,\qquad r=b-A\phi=s_iV_i-\sum_f Q_{i,f}^{\mathrm{out}}.
-\]
+$$
 
 Face areas and source volumes are included once. **Neither assembly nor the residual divides by cell volume.** If an explicit update needs a rate per unit volume, divide the resulting integrated residual by `V_i` in the application.
 
 For an uncorrected inner face, with owner `O`, neighbour `N` and unit normal from `O` to `N`:
 
-\[
+$$
 h=(\mathbf x_N-\mathbf x_O)\cdot\mathbf n>0,
 \quad a_f=\Gamma_f A_f/h,
 \quad Q_{O\to N}=a_f(\phi_O-\phi_N).
-\]
+$$
 
 Each owned row receives `+a_f` on its diagonal and `-a_f` in the neighbour column. Its residual receives minus its outward flux. A ghost neighbour contributes a column/input value; its row is assembled on its owning rank.
 
@@ -280,11 +280,11 @@ This example **adds** a corrected contribution; use it instead of an uncorrected
 
 `numerics::gradient::GradientCorrection` interpolates inner gradients using the actual owner weight, not an assumed midpoint. With `d = x_N - x_O`, `h = d · n`:
 
-\[
+$$
 \mathbf T_f=A_f(\mathbf n-\mathbf d/h),\qquad
 \mathbf g_f=w\mathbf g_O+(1-w)\mathbf g_N,
 \qquad Q_{O\to N}=a_f(\phi_O-\phi_N)-\Gamma_f\mathbf T_f\cdot\mathbf g_f.
-\]
+$$
 
 The gradient contribution is explicit: built-in boundary conditions and the inner stencil retain the uncorrected matrix, while the RHS changes. At boundaries, the same provider returns the reconstruction increment `(x_face - x_owner - h*n) · gradient_owner` used by scalar boundary relations. These boundary increments and the integrated inner correction have different geometric factors.
 

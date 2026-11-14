@@ -12,8 +12,7 @@ inline constexpr bool corrected = !std::is_same_v<std::remove_cvref_t<C>, numeri
 /// @brief Recognizes the common gradient adapter and optional custom-provider metadata.
 /// A provider without metadata remains responsible for its storage and execution-space contracts.
 template<class Exec, class Gradients>
-void validate_gradients(const Gradients& gradients, std::size_t count)
-{
+void validate_gradients(const Gradients& gradients, std::size_t count) {
     if constexpr (requires { gradients.template validate<Exec>(count); }) {
         mpi::guarded([&] { gradients.template validate<Exec>(count); });
     } else {

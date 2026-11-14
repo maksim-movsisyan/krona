@@ -25,8 +25,7 @@ KOKKOS_INLINE_FUNCTION Real mass_value(const DensityVolumeMass<Volumes, Density>
 { return mass.template operator()<Real>(i); }
 
 template<class Real, class Mass, class Flags>
-KOKKOS_INLINE_FUNCTION Real read_mass(Mass mass, std::size_t i, Flags flags)
-{
+KOKKOS_INLINE_FUNCTION Real read_mass(Mass mass, std::size_t i, Flags flags) {
     const Real value = mass_value<Real>(mass, i);
     if (!Kokkos::isfinite(value) || !(value > Real{0})) {
         flag(flags, BadTemporalMass); return Real{0};
@@ -36,8 +35,7 @@ KOKKOS_INLINE_FUNCTION Real read_mass(Mass mass, std::size_t i, Flags flags)
  
 template<class Level, class Tail>
 template<class Real, std::size_t J, class Weights, class Flags>
-KOKKOS_INLINE_FUNCTION Real History<Level, Tail>::rhs(std::size_t i, const Weights& weights, Flags flags) const
-{
+KOKKOS_INLINE_FUNCTION Real History<Level, Tail>::rhs(std::size_t i, const Weights& weights, Flags flags) const {
     const Real mass = read_mass<Real>(level.mass, i, flags);
     const Real value = static_cast<Real>(level.field(i));
     if (!Kokkos::isfinite(value)) { flag(flags, BadTemporalState); return Real{0}; }
@@ -49,8 +47,7 @@ KOKKOS_INLINE_FUNCTION Real History<Level, Tail>::rhs(std::size_t i, const Weigh
 template<class Real, class Target, class Weights, class Mass, class History, class Flags>
 struct AddSystem {
     Target target; Weights weights; Mass mass; History history; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
         const std::size_t entry = static_cast<std::size_t>(target.entries.diagonal(i));
         if (entry >= target.values.extent(0)) { flag(flags, BadSystem); return; }
         const Real diagonal = weights[0]*read_mass<Real>(mass, i, flags);
@@ -64,8 +61,7 @@ struct AddSystem {
 template<class Real, class Field, class Output, class Weights, class Mass, class History, class Flags>
 struct AddResidual {
     Field field; Output output; Weights weights; Mass mass; History history; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
         const Real current_mass = read_mass<Real>(mass, i, flags);
         const Real value = static_cast<Real>(field(i));
         if (!Kokkos::isfinite(value)) { flag(flags, BadTemporalState); return; }
@@ -94,8 +90,7 @@ public:
     /// Diagonal entries must be distinct, valid native graph entries, one per owned row.
     template<class Target, class C, std::size_t N, class Mass, class History>
     void add_system_async(Target target, AssemblyStatus<Exec>& status,
-        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const
-    {
+        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const {
         mpi::guarded([&] {
             const auto weights = validate(derivative, mass, history);
             scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
@@ -114,8 +109,7 @@ public:
     /// No ghosts are read. No resets, allocation, fence, MPI, commit or history rotation.
     template<class Field, class Output, class C, std::size_t N, class Mass, class History>
     void add_residual_async(Field field, Output output, AssemblyStatus<Exec>& status,
-        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const
-    {
+        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const {
         mpi::guarded([&] {
             const auto weights = validate(derivative, mass, history);
             scalar::detail::validate_view<Exec>(field, owned_);
@@ -136,8 +130,7 @@ private:
     Exec exec_;
 
     template<class C, std::size_t N, class Mass, class History>
-    auto validate(numerics::time::Derivative<C, N> derivative, const Mass& mass, const History& history) const
-    {
+    auto validate(numerics::time::Derivative<C, N> derivative, const Mass& mass, const History& history) const {
         static_assert(N == History::size, "Time derivative requires exactly one input layer per history coefficient");
         Kokkos::Array<Real, N+1> weights;
         for (std::size_t j = 0; j <= N; ++j) {

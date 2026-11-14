@@ -17,10 +17,9 @@ struct ValidateMetric {
     mesh::device::AuxGeometryView<Space> geometry;
     DiffusionOptions options;
 
-    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const
-    {
-        const auto f = static_cast<std::size_t>(face);
-        const auto i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
+    KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face, std::size_t& bad) const {
+        const std::size_t f = static_cast<std::size_t>(face);
+        const std::size_t i = static_cast<std::size_t>(mesh.connectivity.face_owner(f));
         const auto neighbour = mesh.connectivity.face_neigh(f);
         const auto j = neighbour < 0 ? std::size_t{0} : static_cast<std::size_t>(neighbour);
         const auto& g = mesh.geometry;
@@ -69,8 +68,7 @@ template<class Exec, class Real>
 void validate_plan(mesh::device::MeshView<typename Exec::memory_space> mesh_view,
     mesh::device::AuxConnectivityView<typename Exec::memory_space> connectivity,
     mesh::device::AuxGeometryView<typename Exec::memory_space> geometry,
-    mpi::CommView comm, const Exec& exec, DiffusionOptions options)
-{
+    mpi::CommView comm, const Exec& exec, DiffusionOptions options) {
     mpi::guarded([&] {
         execution::require_kokkos();
         const auto& s = mesh_view.sizes;

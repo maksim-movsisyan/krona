@@ -24,8 +24,7 @@ public:
 
     ConvectionPlan(Mesh mesh_view, Connectivity connectivity,
         mpi::CommView comm, Exec exec = {})
-        : mesh_(mesh_view), connectivity_(connectivity), comm_(comm), exec_(exec)
-    {
+        : mesh_(mesh_view), connectivity_(connectivity), comm_(comm), exec_(exec) {
         mpi::guarded([&] {
             execution::require_kokkos();
             mpi::require(comm.native() != MPI_COMM_NULL, "Scalar convection: null communicator");

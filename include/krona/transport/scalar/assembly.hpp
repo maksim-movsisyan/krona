@@ -12,8 +12,7 @@ namespace krona::transport::scalar {
 /// The assembly plan must describe the same local cell/face numbering as the spatial operator.
 template<class Matrix, class Exec = typename Matrix::execution_space>
 [[nodiscard]] auto make_system_view(Matrix& matrix, linalg::Vector<typename Matrix::scalar_type, Exec>& rhs,
-    const linalg::FaceAssemblyPlan<Exec>& assembly, const Exec& exec = {}, linalg::LocalOrdinal component = 0)
-{
+    const linalg::FaceAssemblyPlan<Exec>& assembly, const Exec& exec = {}, linalg::LocalOrdinal component = 0) {
     mpi::require(matrix.pattern().native().getRawPtr() == assembly.pattern().native().getRawPtr(),
                  "Scalar transport: matrix must share the face assembly graph");
     mpi::require(rhs.distribution().native().getRawPtr() == matrix.distribution().native().getRawPtr(),

@@ -21,8 +21,7 @@ struct Reconstruction {
     std::size_t component = 0;
 
     template<class Real>
-    KOKKOS_INLINE_FUNCTION Real interior(const InteriorFaceContext<Real>& c, bool from_owner) const
-    {
+    KOKKOS_INLINE_FUNCTION Real interior(const InteriorFaceContext<Real>& c, bool from_owner) const {
         const auto face = face_stencil(static_cast<std::size_t>(c.face));
         if (from_owner) return scheme.template increment<Real>(face.left, data, component);
         return scheme.template increment<Real>(face.right, data, component);
@@ -31,8 +30,7 @@ struct Reconstruction {
     KOKKOS_INLINE_FUNCTION Real boundary(const boundary::FaceContext<Real>& c) const
     { return outflow.template increment<Real>(stencil.boundary_side(static_cast<std::size_t>(c.face)), data, component); }
 private:
-    KOKKOS_INLINE_FUNCTION auto face_stencil(std::size_t f) const
-    {
+    KOKKOS_INLINE_FUNCTION auto face_stencil(std::size_t f) const {
         if constexpr (requires { stencil.template face<Scheme>(f); })
             return stencil.template face<Scheme>(f);
         else return stencil.face(f);
@@ -43,8 +41,7 @@ private:
 template<class Exec, class Real, class Scheme, class Data, class OutflowScheme>
     requires requires { OutflowScheme::requirements; }
 auto make_reconstruction(const ConvectionPlan<Exec, Real>& plan, Scheme scheme, Data data,
-    OutflowScheme outflow, std::size_t component = 0)
-{
+    OutflowScheme outflow, std::size_t component = 0) {
     namespace rec = numerics::reconstruction;
     static_assert(!std::is_same_v<Scheme, rec::Quick>, "QUICK requires an explicit stencil provider");
     static_assert((OutflowScheme::requirements & rec::OtherValues) == 0,
@@ -59,8 +56,7 @@ auto make_reconstruction(const ConvectionPlan<Exec, Real>& plan, Scheme scheme, 
 /// Other schemes use the same polynomial at outflow. Override the outflow scheme explicitly above.
 template<class Exec, class Real, class Scheme, class Data>
 auto make_reconstruction(const ConvectionPlan<Exec, Real>& plan, Scheme scheme, Data data,
-    std::size_t component = 0)
-{
+    std::size_t component = 0) {
     namespace rec = numerics::reconstruction;
     if constexpr ((Scheme::requirements & rec::OtherValues) != 0)
         return make_reconstruction(plan, scheme, data, rec::LimitedLinear{}, component);
@@ -77,8 +73,7 @@ namespace detail {
 template<class R> inline constexpr bool reconstructed = !std::is_same_v<R, NoReconstruction>;
 
 template<class Exec, class Input>
-void validate_reconstruction_input(const Input& input, std::size_t cells)
-{
+void validate_reconstruction_input(const Input& input, std::size_t cells) {
     if constexpr (requires { typename Input::memory_space; })
         static_assert(Kokkos::SpaceAccessibility<Exec, typename Input::memory_space>::accessible);
     if constexpr (requires { input.size(); })
@@ -86,8 +81,7 @@ void validate_reconstruction_input(const Input& input, std::size_t cells)
 }
 template<class Exec, class R> void validate_reconstruction(const R&, std::size_t) {}
 template<class Exec, class Scheme, class Data, class Stencil, class OutflowScheme>
-void validate_reconstruction(const Reconstruction<Scheme, Data, Stencil, OutflowScheme>& r, std::size_t cells)
-{
+void validate_reconstruction(const Reconstruction<Scheme, Data, Stencil, OutflowScheme>& r, std::size_t cells) {
     namespace rec = numerics::reconstruction;
     mpi::require(r.component < Data::components, "Scalar convection: invalid reconstruction component");
     if constexpr (requires { typename Stencil::memory_space; })

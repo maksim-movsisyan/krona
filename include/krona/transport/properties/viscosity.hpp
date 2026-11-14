@@ -10,15 +10,13 @@ template<class Parameter = ComputeReal>
 struct ConstantViscosity {
     Parameter value = 0;
 
-    void validate() const noexcept
-    {
+    void validate() const noexcept {
         mpi::require(detail::nonnegative(value),
             "Transport properties: constant dynamic viscosity must be finite and nonnegative");
     }
 
     template<class Real = ComputeReal, class State>
-    KOKKOS_INLINE_FUNCTION Real evaluate(const State&) const
-    {
+    KOKKOS_INLINE_FUNCTION Real evaluate(const State&) const {
         static_assert(std::is_floating_point_v<Real>);
         return static_cast<Real>(value);
     }
@@ -32,8 +30,7 @@ struct SutherlandViscosity {
     Parameter reference_temperature = 0;
     Parameter sutherland_temperature = 0;
 
-    void validate() const noexcept
-    {
+    void validate() const noexcept {
         mpi::require(detail::positive(reference_viscosity) &&
                      detail::positive(reference_temperature) &&
                      detail::nonnegative(sutherland_temperature),
@@ -41,8 +38,7 @@ struct SutherlandViscosity {
     }
 
     template<class Real = ComputeReal, class State>
-    KOKKOS_INLINE_FUNCTION Real evaluate(const State& state) const
-    {
+    KOKKOS_INLINE_FUNCTION Real evaluate(const State& state) const {
         static_assert(std::is_floating_point_v<Real>);
         const Real temperature = static_cast<Real>(state.temperature);
         if (!Kokkos::isfinite(temperature) || !(temperature > Real{0}))

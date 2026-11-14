@@ -27,8 +27,7 @@ void validate_source(CellSource<View> source, std::size_t count) { validate_view
 template<class Real, class Volumes, class Output, class Source, class Flags>
 struct AddSource {
     Volumes volumes; Output output; Source source; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const
-    {
+    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
         const Real value = static_cast<Real>(source(i));
         if (!Kokkos::isfinite(value)) { flag(flags, BadSource); return; }
         const Real volume = static_cast<Real>(volumes(i));
@@ -45,16 +44,14 @@ class SourceOperator {
     using Volumes = decltype(Mesh{}.geometry.cell_volume);
 public:
     explicit SourceOperator(Mesh mesh, Exec exec = {})
-        : volumes_(mesh.geometry.cell_volume), owned_(static_cast<std::size_t>(mesh.sizes.n_own)), exec_(exec)
-    {
+        : volumes_(mesh.geometry.cell_volume), owned_(static_cast<std::size_t>(mesh.sizes.n_own)), exec_(exec) {
         execution::require_kokkos();
         mpi::require(mesh.sizes.n_own >= 0 && mesh.has(mesh::device::MeshData::CellGeometry),
                      "Scalar source: attach owned cell volumes");
         detail::validate_view<Exec>(volumes_, owned_);
     }
     template<class Output, class Source = UniformSource<Real>>
-    void add_async(Output output, AssemblyStatus<Exec>& status, Source source = {}) const
-    {
+    void add_async(Output output, AssemblyStatus<Exec>& status, Source source = {}) const {
         detail::validate_output<Exec>(output, owned_);
         detail::validate_source<Exec>(source, owned_);
         const auto flags = status.device_flags(exec_);
