@@ -1,0 +1,20 @@
+[[boundary_condition]]
+patch_id = 0
+name = "inlet"
+[boundary_condition.scalar.phi]
+type = "FIXED_VALUE"
+# CSV path relative to the directory from which the example is launched.
+value = "examples/transport/scalar/diffusion/inlet.csv"
+
+[[boundary_condition]]
+patch_id = 1
+name = "outlet"
+[boundary_condition.scalar.phi]
+type = "FIXED_VALUE"
+value = 0.0
+
+[[boundary_condition]]
+patch_id = 2
+name = "walls"
+[boundary_condition.scalar.phi]
+type = "ZERO_GRADIENT"

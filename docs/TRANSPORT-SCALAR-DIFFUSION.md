@@ -42,7 +42,7 @@ Each owned row receives `+a_f` on its diagonal and `-a_f` in the neighbour colum
 
 `Real` controls diffusion arithmetic; destination views control coefficient/output storage. Field storage, algebra `Scalar` and preconditioner `PrecScalar` are selected separately by the application. Native KRONA CSR/BSR matrices support `float` and `double`, subject to Trilinos instantiation support.
 
-CMake targets: `krona::transport_diffusion` provides the constitutive law/coefficient providers. `krona::transport_scalar_diffusion` adds the mesh operator, scalar boundary conditions and gradient correction, without Trilinos. Native algebra assembly helpers and linear solves additionally require `krona::linalg`; the existing `krona::transport_scalar` target includes that integration.
+`krona::transport_diffusion` provides the constitutive law and coefficient providers. `krona::transport_scalar_diffusion` adds the mesh operator, scalar boundary conditions and gradient correction. Both are available without Trilinos. The aggregate target `krona::transport_scalar` adds `krona::linalg` when `KRONA_ENABLE_TRILINOS=ON` for the native `assembly.hpp` adapter and linear solves. With Trilinos disabled, use the operators with your own `SystemView` or a matrix-free residual.
 
 ## Prepare the mesh and boundary conditions
 

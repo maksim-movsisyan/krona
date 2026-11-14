@@ -719,14 +719,19 @@ krona_public_headers(krona_transport_scalar_config PUBLIC)
 target_compile_features(krona_transport_scalar_config PUBLIC cxx_std_20)
 target_link_libraries(krona_transport_scalar_config
     PUBLIC krona::gradient krona::mpi
-    PRIVATE krona::warnings krona::tomlplusplus)
+    PRIVATE krona::warnings krona::toml_config)
 
 krona_interface(transport_scalar_diffusion krona::transport_diffusion krona::mesh_device krona::boundary_scalar krona::gradient krona::mpi)
 krona_interface(transport_scalar_convection krona::mesh_device krona::boundary_scalar krona::reconstruction_mesh krona::fields krona::mpi)
 krona_interface(transport_scalar_transient krona::execution krona::mpi)
-krona_interface(transport_scalar krona::transport_scalar_config krona::transport_scalar_diffusion 
+krona_interface(transport_scalar krona::transport_scalar_config krona::transport_scalar_diffusion
                 krona::transport_scalar_convection krona::transport_scalar_transient
-                krona::mesh_device krona::fields krona::boundary_scalar krona::linalg krona::halo krona::mpi)
+                krona::mesh_device krona::fields krona::boundary_scalar krona::halo krona::mpi)
+
+# The optional assembly.hpp adapter uses the native linear algebra backend.
+if(KRONA_ENABLE_TRILINOS)
+    target_link_libraries(krona_transport_scalar INTERFACE krona::linalg)
+endif()
 
                 
 #==================================================================
@@ -746,6 +751,13 @@ if(KRONA_BUILD_APPLICATIONS)
     #========================
     if(KRONA_ENABLE_CGNS AND KRONA_ENABLE_PARTITIONING)
         add_subdirectory(apps/mesh_partitioner)
+    endif()
+
+    #====================================================
+    #=== GENERAL CONVECTION DIFFUSION EQUATION SOLVER ===
+    #====================================================
+    if(KRONA_ENABLE_TRILINOS)
+        add_subdirectory(apps/scalar_transport)
     endif()
 
 endif()
