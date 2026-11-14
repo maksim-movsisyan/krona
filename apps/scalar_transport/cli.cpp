@@ -16,7 +16,7 @@ void usage(std::FILE* stream) noexcept {
                "Options:\n"
                "  --field=<name>             Select a scalar (default: phi).\n"
                "  --case=<name>              C++ setup: custom, diffusion, gaussian (default: custom).\n"
-               "  --vtu=<dir>                Write the final field to VTU files.\n"
+               "  --vtu=<dir>                Override the output directory from TOML.\n"
                "  -v, --verbose              Summary diagnostics.\n"
                "  -vv                        Step and iteration diagnostics.\n"
                "  -h, --help                 Show this help.\n"

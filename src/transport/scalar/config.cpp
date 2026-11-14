@@ -81,15 +81,15 @@ Configuration decode(const toml::table& root, std::string_view field, const toml
     if (field.empty()) reader.error("field name must not be empty");
     const auto& all = reader.table(root, "scalars", true);
     const auto& t = reader.table(all, field, true);
-    reader.check_keys(t, {"physics", "numerics", "time", "linear_solver", "outer_iteration", "source"}, field);
+    reader.check_keys(t, {"physics", "numerics", "time", "linear_solver",
+                                   "outer_iteration", "source", "output"}, field);
 
     Configuration c;
     c.field = field;
-    // Scale the default stopping tolerances to the least precise participant.
+    // Scale the default linear tolerance to the least precise participant.
     const double precision = std::max(static_cast<double>(std::numeric_limits<SolverReal>::epsilon()),
                                       static_cast<double>(std::numeric_limits<StorageReal>::epsilon()));
     c.linear.relative_tolerance = std::max(c.linear.relative_tolerance, 20*precision);
-    c.outer.relative_tolerance = std::max(c.outer.relative_tolerance, 100*precision);
 
     const auto& p = reader.table(t, "physics");
     reader.check_keys(p, {"density", "diffusion_coefficient", "convection", "diffusion"}, "physics");
@@ -110,18 +110,16 @@ Configuration decode(const toml::table& root, std::string_view field, const toml
     c.steps = reader.positive_integer(ti, "steps", c.steps);
     if (!(c.time_step > 0)) reader.error("time.dt must be positive");
     if (c.time_scheme == TimeScheme::Steady) {
-        if (ti.contains("dt") || ti.contains("steps")) reader.error("steady time scheme takes neither dt nor steps");
-        if (!c.convection_enabled && !c.diffusion_enabled) reader.error("steady transport requires convection or diffusion");
+        if (ti.contains("dt") || ti.contains("steps")) 
+            reader.error("steady time scheme takes neither dt nor steps");
+        if (!c.convection_enabled && !c.diffusion_enabled)
+            reader.error("steady transport requires convection or diffusion");
     }
 
     const auto& o = reader.table(t, "outer_iteration");
-    reader.check_keys(o, {"maximum_iterations", "relative_tolerance", "absolute_tolerance", "relaxation"},
-                      "outer_iteration");
-    c.outer.maximum_iterations = reader.positive_integer(o, "maximum_iterations", c.outer.maximum_iterations);
-    c.outer.relative_tolerance = reader.number(o, "relative_tolerance", c.outer.relative_tolerance);
-    c.outer.absolute_tolerance = reader.number(o, "absolute_tolerance", c.outer.absolute_tolerance);
+    reader.check_keys(o, {"iterations", "relaxation"}, "outer_iteration");
+    c.outer.iterations = reader.positive_integer(o, "iterations", c.outer.iterations);
     c.outer.relaxation = reader.number(o, "relaxation", c.outer.relaxation);
-    validate_tolerances(reader, c.outer.relative_tolerance, c.outer.absolute_tolerance);
     if (!(c.outer.relaxation > 0 && c.outer.relaxation <= 1)) reader.error("relaxation must be in (0, 1]");
 
     const auto& l = reader.table(t, "linear_solver");
@@ -140,6 +138,12 @@ Configuration decode(const toml::table& root, std::string_view field, const toml
     reader.check_keys(s, {"type", "value"}, "source");
     if (reader.nonempty_string(s, "type", "constant") != "constant") reader.error("source.type must be constant");
     c.source = reader.number(s, "value", c.source);
+
+    const auto& output = reader.table(t, "output");
+    reader.check_keys(output, {"directory", "every"}, "output");
+    if (output.contains("directory")) c.output.directory = reader.nonempty_string(output, "directory");
+    c.output.every = reader.integer(output, "every", c.output.every);
+    if (c.output.every < 0) reader.error("output.every must be nonnegative");
     return c;
 }
 

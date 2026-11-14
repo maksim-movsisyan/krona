@@ -28,7 +28,7 @@ your `PATH`.
 ```sh
 mpirun -np 2 krona_mesh_partitioner diffusion/mesh.cgns diffusion/mesh.h5
 mpirun -np 2 krona_scalar_transport diffusion/mesh.h5 diffusion/transport.toml diffusion/bc.toml \
-    --case diffusion --vtu diffusion/vtk -v
+    --case diffusion -v
 ```
 
 The directory also contains the Gaussian advection-diffusion example and
@@ -39,9 +39,9 @@ The directory also contains the Gaussian advection-diffusion example and
 | --- | --- |
 | `--field <name>` | Selects a scalar from both TOML files. Default `phi`. |
 | `--case <name>` | Selects the C++ setup for `custom`, `diffusion`, or `gaussian`. Default `custom`. |
-| `--vtu <dir>` | Writes the final owned-cell field to `scalar.pvtu` and the boundary geometry to `scalar_bnd.pvtu`. |
+| `--vtu <dir>` | Overrides the output directory from TOML. |
 | `-v`, `--verbose` | Prints rank-zero run summaries. |
-| `-vv` | Also prints linear iteration counts, full residuals, and accepted steps. |
+| `-vv` | Also prints linear iteration counts and accepted steps. |
 | `-h`, `--help` | Shows command-line usage. |
 
 Named options also accept `--option=value`.
@@ -56,7 +56,7 @@ for a custom run with convection.
 ```toml
 [scalars.phi.physics]
 density = 1.0
-convection = true
+convection_enabled = true
 diffusion = true
 diffusion_coefficient = 0.002
 
@@ -79,6 +79,13 @@ nonorthogonal_correction = true
 
 [scalars.phi.source]
 value = 0.1
+
+[scalars.phi.outer_iteration]
+iterations = 3
+
+[scalars.phi.output]
+directory = "vtk"
+every = 10
 ```
 
 ### Physics and time
@@ -86,11 +93,13 @@ value = 0.1
 | Section | Key | Default and meaning |
 | --- | --- | --- |
 | `physics` | `density` | `1.0`. Positive uniform density for cell mass and face mass flux. |
-| `physics` | `convection`, `diffusion` | Both `true`. Toggle the corresponding contributions. |
+| `physics` | `convection_enabled`, `diffusion` | Both `true`. Toggle the corresponding contributions. |
 | `physics` | `diffusion_coefficient` | `0.01`. Positive when diffusion is enabled. This is `Gamma`. The diffusivity in a constant-density analytical solution is `Gamma / rho`. |
 | `time` | `scheme` | `backward_euler`, `bdf2`, or `steady`. Default `backward_euler`. BDF2 starts with one Backward Euler step. |
 | `time` | `dt`, `steps` | Positive fixed step size and positive step count. Defaults `0.01` and `1`. Omit both for `steady`, which requires an enabled spatial operator. |
 | `source` | `type`, `value` | `"constant"` and `0.0`. By default the custom case uses this uniform source density. A C++ source can use the value as a parameter. |
+
+The older TOML spelling `physics.convection` is also accepted. Supply only one spelling.
 
 ### Spatial schemes
 
@@ -124,14 +133,27 @@ needs Hessians and cell moments.
 | `linear_solver` | `relative_tolerance`, `absolute_tolerance` | `max(1e-8, 20*eps)` and `0`. The relative reference is the norm of the current RHS, or the initial linear residual norm for a zero RHS. |
 | `linear_solver` | `maximum_iterations`, `restart_length` | `500` and `50`. Restart length applies to methods with a Krylov restart. |
 | `linear_solver` | `verify_residual` | `false`. Enable to recompute the true residual of the frozen linear system after the solve. |
-| `outer_iteration` | `relative_tolerance`, `absolute_tolerance` | `max(1e-6, 100*eps)` and `0`. The relative reference is the larger of the initial full residual norm and the base RHS norm for the step. |
-| `outer_iteration` | `maximum_iterations`, `relaxation` | `100` and `1`. Relaxation in `(0, 1]` determines how much of the linear update to apply. |
+| `outer_iteration` | `iterations`, `relaxation` | `1` and `1`. Each step uses the specified positive number of outer iterations. Relaxation in `(0, 1]` determines how much of the linear update to apply. |
 
 Here `eps` is the larger machine epsilon of `SolverReal` and `StorageReal`.
-Each tolerance pair requires `0 <= relative < 1`, `absolute >= 0`, and at least
+The linear tolerance pair requires `0 <= relative < 1`, `absolute >= 0`, and at least
 one positive value. GMRES is suitable for the generally nonsymmetric upwind
 matrix. Choose CG only when the assembled system is symmetric positive
 definite. See [linear algebra](LINALG.md) for solver details.
+
+For an older configuration, replace `outer_iteration.maximum_iterations`
+and the two outer tolerances with the desired fixed `outer_iteration.iterations`.
+
+### Output
+
+| Section | Key | Default and meaning |
+| --- | --- | --- |
+| `output` | `directory` | Use a nonempty path to enable VTU output or pass `--vtu <dir>` on the command line. Relative paths are resolved from the working directory. |
+| `output` | `every` | `0` writes only the final field. A positive integer writes every N accepted transient steps and the final step. |
+
+Periodic snapshots go in `<directory>/step_<number>`, numbered from 1. Each
+contains `scalar.pvtu` and `scalar_bnd.pvtu` with their corresponding rank
+pieces. Steady and final-only runs write directly to the output directory.
 
 In C++, `transport::scalar::parse_config(text, field)` parses existing TOML
 text locally. `read_config(path, field, comm)` reads the file on rank zero,
@@ -212,8 +234,8 @@ if (problem == Case::custom)
 ```
 
 Return source density per unit volume. `SourceOperator` multiplies it by cell
-volume. The driver evaluates the source at the new step time for both RHS
-assembly and the full residual. It uses time zero in steady mode. At the
+volume. The driver evaluates the source at the new step time during base RHS
+assembly. It uses time zero in steady mode. At the
 library level, `SourceOperator` also accepts
 `transport::scalar::CellSource{view}` for an existing rank-one device array.
 
@@ -249,13 +271,14 @@ term adds its contribution to the same system.
 
 The history starts with accepted layer `n`, with weight `w1`. The candidate
 layer `n+1` uses `w0`. BDF2 also reads `n-1` once it is available. Save the
-assembled RHS as `base_rhs` and commit the matrix and RHS. The matrix
+assembled RHS as `base_rhs` when explicit corrections are enabled, then commit
+the matrix and RHS. The matrix
 coefficients are rebuilt at each time step and reused across its outer
-iterations. Steady mode performs one spatial solve at time zero.
+iterations. Steady mode runs the same outer loop at time zero.
 
 ### 3. Prepare the current iterate
 
-Exchange scalar ghosts. When gradients are needed, fill the physical-face
+Before each correction pass, exchange scalar ghosts. When gradients are needed, fill the physical-face
 samples from the BC manager and compute owned gradients. The first boundary
 pass uses the available gradients for nonorthogonal correction, starting
 from zero at initialization. If both nonorthogonal correction and cell
@@ -266,54 +289,42 @@ unlimited reconstruction and exchange the gradients and any active factors.
 Boundary samples serve gradient and limiter stencils. Spatial assembly
 obtains the boundary contribution directly from the BC manager.
 
-### 4. Solve with frozen corrections and check the full residual
+### 4. Solve with frozen corrections
 
-Restore `base_rhs` for each outer iteration. Add the current high-order
-convective increment and nonorthogonal diffusion correction to that RHS.
-Solve `A*phi = rhs` using the current owned field as the initial guess. Apply
-optional relaxation, refresh the halo and reconstruction data, then evaluate
-the full residual from the updated field.
+For each outer iteration with explicit corrections, restore `base_rhs` and
+add the current high-order convective increment and nonorthogonal diffusion
+correction. Solve `A*phi = rhs` using the current owned field as the initial
+guess and apply optional relaxation. The next pass builds its corrections
+from the updated field. With both corrections disabled, all outer iterations
+reuse the assembled RHS.
 
-$$
-r_i = s_i V_i
-      - \sum_f \bigl(F_{\mathrm{conv},i,f} + F_{\mathrm{diff},i,f}\bigr)
-      - \sum_j w_j (\rho V\phi)_i^{n+1-j}.
-$$
-
-Here the face fluxes are integrated and signed outward from cell `i`.
-Steady mode drops the last sum. The stopping norm is the global Euclidean
-norm over owned-cell residuals, with no cell-volume division. Accept the
-step when it falls below or equals
-
-$$
-\max\left(\text{absolute tolerance},
-          \text{relative tolerance}\,\max(\|r_{\mathrm{initial}}\|_2, \|b_{\mathrm{base}}\|_2)\right).
-$$
-
-This check also runs on the initial iterate. A converged Belos solve only
-establishes convergence for its frozen RHS. The outer check includes the
-corrections recomputed from the new iterate. Linear or outer nonconvergence
-terminates the run. A steady diffusion problem with only prescribed fluxes
-or gradients needs an external reference or nullspace treatment.
+The driver runs exactly `outer_iteration.iterations` passes per step. Linear
+solver tolerances still apply to each frozen system. The timestep accepts the
+last iterate after checking assembly diagnostics. A fixed number of passes
+can leave a defect in the fully corrected discrete equation. A steady
+diffusion problem with only prescribed fluxes or gradients needs an external
+reference or nullspace treatment.
 
 ### 5. Accept the step and export
 
-After acceptance, advance time and rotate the owned history for the next
-step. At the end, `--vtu` exports the final solution. For cases with an
-analytical solution the app reports volume-weighted RMS error and maximum
-absolute error at cell centroids. VTU output also includes
-`<field>_exact` and the signed `<field>_error`.
+Advance time and rotate the owned history after the outer loop. Write a
+snapshot when requested by `output.every` or when the final step is accepted.
+For cases with an analytical solution the app reports volume-weighted RMS
+and maximum absolute errors at the final time. Each VTU snapshot also includes
+`<field>_exact` and the signed `<field>_error` for these cases.
 
 ## Execution and synchronization
 
 The application uses one execution-space instance. Gradient, boundary,
 limiter, and additive transport kernels enqueue work on that instance.
 The driver's halo exchanges complete before their consumers proceed.
-`boundary::scalar::Status::check()` waits locally for boundary diagnostics.
-`AssemblyStatus::check(comm)` waits for assembly and reduces its diagnostics
-across ranks. Commit native matrix and vector access before calling the
-blocking collective linear solver. Residual norms and VTU output also
-require all participating MPI ranks.
+Base assembly checks diagnostics before the solve. The outer passes accumulate
+boundary and correction flags and check them once after the loop.
+`boundary::scalar::Status::check()` waits locally and
+`AssemblyStatus::check(comm)` reduces the assembly flags across ranks.
+Native matrix and vector accesses are committed before the blocking collective
+linear solve. The outer loop avoids the additional full residual pass and its
+MPI norm reduction. VTU output involves all participating ranks.
 
 See the operator guides for [convection](TRANSPORT-SCALAR-CONVECTION.md),
 [diffusion](TRANSPORT-SCALAR-DIFFUSION.md), and

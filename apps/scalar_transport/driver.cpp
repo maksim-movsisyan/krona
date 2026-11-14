@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -60,6 +61,27 @@ void broadcast_options(Options& options, mpi::CommView comm) {
     options.verbosity = static_cast<Verbosity>(settings[1]);
 }
 
+void write_pvd(const std::filesystem::path& directory,
+               const std::vector<std::pair<Real, std::string>>& snapshots) {
+    std::ofstream out;
+    out.exceptions(std::ios::failbit | std::ios::badbit);
+    out.imbue(std::locale::classic());
+    out.open(directory / "scalar.pvd");
+    out << std::setprecision(std::numeric_limits<Real>::max_digits10);
+    out << "<?xml version=\"1.0\"?>\n"
+           "<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">\n"
+           "  <Collection>\n";
+
+    for (const auto& [time, file] : snapshots) {
+        out << "    <DataSet timestep=\"" << time
+            << "\" group=\"\" part=\"0\" file=\"" << file << "\"/>\n";
+    }
+
+    out << "  </Collection>\n"
+           "</VTKFile>\n";
+    out.close();
+}
+
 linalg::SolverOptions solver_options(const ts::LinearOptions& input) {
     linalg::SolverOptions options;
     options.method = input.method;
@@ -72,25 +94,13 @@ linalg::SolverOptions solver_options(const ts::LinearOptions& input) {
     return options;
 }
 
-template<class View>
-double global_norm(View values, const Exec& exec, mpi::CommView comm) {
-    double squared = 0;
-    Kokkos::parallel_reduce("scalar_transport/norm", Policy(exec, 0, values.extent(0)),
-        KOKKOS_LAMBDA(std::size_t i, double& sum) {
-            const double value = static_cast<double>(values(i));
-            sum += value*value;
-        }, squared);
-    const auto total = mpi::allreduce<mpi::Reduction::sum>(comm, squared);
-    mpi::require(std::isfinite(total), "Scalar transport: residual norm overflow");
-    return std::sqrt(total);
-}
-
-/// @brief Copies the owned result for output and optionally measures its analytic error.
+/// @brief Copies the owned field for output or final analytic error diagnostics.
 template<class Field>
 void report_solution(const Options& options, const ts::Configuration& config, const mesh::host::MeshPart& host,
-                     Field owned_field, Real time, mpi::CommView comm) {
+                     Field owned_field, Real time, const std::filesystem::path& directory,
+                     bool final_step, mpi::CommView comm) {
     const bool exact_available = has_analytic_solution(options.problem);
-    if (!exact_available && options.vtu_directory.empty()) return;
+    if (directory.empty() && !(exact_available && final_step)) return;
 
     const auto values = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, owned_field);
     const auto count = values.extent(0);
@@ -111,43 +121,49 @@ void report_solution(const Options& options, const ts::Configuration& config, co
                 static_cast<double>(time), diffusivity);
             error[i] = static_cast<double>(values(i))-exact[i];
             const double cell_volume = static_cast<double>(host.cell_volume[i]);
-            squared += cell_volume*error[i]*error[i];
-            volume += cell_volume;
-            maximum = std::max(maximum, std::abs(error[i]));
+            if (final_step) {
+                squared += cell_volume*error[i]*error[i];
+                volume += cell_volume;
+                maximum = std::max(maximum, std::abs(error[i]));
+            }
         }
-        const double global_squared = mpi::allreduce<mpi::Reduction::sum>(comm, squared);
-        const double global_volume = mpi::allreduce<mpi::Reduction::sum>(comm, volume);
-        const double global_maximum = mpi::allreduce<mpi::Reduction::max>(comm, maximum);
-        if (comm.rank() == 0)
-            std::fprintf(stderr, "KRONA scalar_transport: analytic error at t=%.8g: RMS=%.8g, Linf=%.8g\n",
-                static_cast<double>(time), std::sqrt(global_squared/global_volume), global_maximum);
+        if (final_step) {
+            const double global_squared = mpi::allreduce<mpi::Reduction::sum>(comm, squared);
+            const double global_volume = mpi::allreduce<mpi::Reduction::sum>(comm, volume);
+            const double global_maximum = mpi::allreduce<mpi::Reduction::max>(comm, maximum);
+            if (comm.rank() == 0)
+                std::fprintf(stderr, "KRONA scalar_transport: analytic error at t=%.8g: RMS=%.8g, Linf=%.8g\n",
+                    static_cast<double>(time), std::sqrt(global_squared/global_volume), global_maximum);
+        }
         output.push_back(io::vtk::field(exact_name, std::span{exact}));
         output.push_back(io::vtk::field(error_name, std::span{error}));
     }
-    if (!options.vtu_directory.empty())
-        io::vtk::write_vtu(host, options.vtu_directory, "scalar", comm, {{}, output, {}});
+    if (!directory.empty())
+        io::vtk::write_vtu(host, directory, "scalar", comm, {{}, output, {}});
 }
 
 int solve(const Options& options, mpi::CommView comm) {
     const auto start = Clock::now();
     const bool verbose = comm.rank() == 0 && options.verbosity != Verbosity::quiet;
     const bool detailed = comm.rank() == 0 && options.verbosity == Verbosity::detailed;
-
+    
     const auto config = ts::read_config(options.config, options.field, comm);
     const auto bc_config = bc::read_config(options.boundary, options.field, comm);
-
+    
     const bool steady = config.time_scheme == ts::TimeScheme::Steady;
     const bool bdf2 = config.time_scheme == ts::TimeScheme::Bdf2;
-
     const bool reconstruct = config.reconstruction.method != ts::ReconstructionMethod::Upwind;
     const bool limit = config.reconstruction.cell_limiter != ts::CellLimiter::None;
-
     const bool gradients_needed = config.needs_gradients();
+    const bool corrections = reconstruct || config.nonorthogonal_correction;
+
+    const auto output_directory = options.vtu_directory.empty()
+        ? config.output.directory : std::filesystem::path{options.vtu_directory};
+
     const Real density = static_cast<Real>(config.density);
     const Real diffusion_coefficient = static_cast<Real>(config.diffusion);
     const Real dt = steady ? Real{0} : static_cast<Real>(config.time_step);
     const Real relaxation = static_cast<Real>(config.outer.relaxation);
-
     mpi::require(std::isfinite(density) && density > 0 && relaxation > 0 &&
                  (steady || (std::isfinite(dt) && dt > 0)) &&
                  (!config.diffusion_enabled || (std::isfinite(diffusion_coefficient) && diffusion_coefficient > 0)),
@@ -178,7 +194,6 @@ int solve(const Options& options, mpi::CommView comm) {
         geometry_mask = geometry_mask | AuxGeomType::FaceInterpolationWeights | AuxGeomType::FaceNonOrthogonalityVector;
     if (gradients_needed) 
         geometry_mask = geometry_mask | grad::requirements(config.gradient).geometry;
-    
     const auto host_conn = mesh::host::build_aux_connectivity(host, AuxConnType::CellFaces);
     const auto host_geom = mesh::host::build_aux_geometry(host, geometry_mask);
     const mesh::device::MeshStorage device(host, {}, exec);
@@ -212,15 +227,14 @@ int solve(const Options& options, mpi::CommView comm) {
 
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{diffusion_coefficient}};
     const auto flux = make_mass_flux(options.problem, density, boundary.catalog());
-    
+
     fields::FieldStorage<StorageReal, 1, Exec> phi(config.field, boundary.required_field_size(),
                                                    fields::FieldLocation::CellExtnd, exec);
     fields::FieldStorage<StorageReal, 3, Exec> g("gradient", gradients_needed ? cells : 0, fields::FieldLocation::Cell, exec);
     fields::FieldStorage<StorageReal, 1, Exec> theta("limiter", reconstruct ? cells : 0, fields::FieldLocation::Cell, exec);
-
+    
     const auto q = phi.view().component(0);
     const auto q_owned = Kokkos::subview(q, std::pair<std::size_t, std::size_t>{0, owned});
-
     const auto problem = options.problem;
     Kokkos::parallel_for("scalar_transport/initial_field", Policy(exec, 0, owned), KOKKOS_LAMBDA(std::size_t i) {
         q(i) = static_cast<StorageReal>(initial_field(problem, static_cast<Real>(m.geometry.cell_centroid_x(i)),
@@ -252,7 +266,6 @@ int solve(const Options& options, mpi::CommView comm) {
     const auto prepare_iterate = [&](Real time) {
         phi_halo.exchange();
         if (!gradient) return;
-        boundary_status.begin_async();
         const auto fill_boundary = [&](const auto& boundary_law, const auto& boundary_correction) {
             boundary.apply_async(phi.view(), boundary_status, boundary_law, boundary_correction, time);
         };
@@ -265,7 +278,6 @@ int solve(const Options& options, mpi::CommView comm) {
 
         gradient->apply_async(phi.view(), g.view());
         if (limit && config.nonorthogonal_correction) fill(correction);
-        boundary_status.check();
 
         if (limit) {
             with_reconstruction<Real>(config.reconstruction, [&](auto scheme) {
@@ -282,36 +294,22 @@ int solve(const Options& options, mpi::CommView comm) {
         gradient_halo->exchange();
     };
 
-    // The explicit updates and residuals use the same reconstruction and frozen coefficients.
-    const auto with_convection = [&](const auto& submit) {
-        if (!convection) return;
-        if (!reconstruct) {
-            submit(cv::NoReconstruction{});
-            return;
-        }
-        with_reconstruction<Real>(config.reconstruction, [&](auto scheme) {
-            // Unit entries in factors give the unlimited scheme when limiting is disabled.
-            submit(cv::make_reconstruction(convection->plan(), rec::Limited{scheme}, limited));
-        });
-    };
-
     const linalg::FaceAssemblyPlan<Exec> assembly(host, comm, exec);
     linalg::CsrMatrix<SolverReal, Exec> matrix(assembly.pattern());
     linalg::Vector<SolverReal, Exec> rhs(matrix.distribution()), solution(matrix.distribution());
     linalg::Solver linear(matrix, solver_options(config.linear));
-    const auto base_rhs = Kokkos::View<SolverReal*, Space>("scalar_transport/base_rhs", owned);
-    const auto residual = Kokkos::View<Real*, Space>("scalar_transport/residual", owned);
+    const auto base_rhs = Kokkos::View<SolverReal*, Space>("scalar_transport/base_rhs", corrections ? owned : 0);
     const auto q_n = Kokkos::View<StorageReal*, Space>("scalar_transport/accepted", steady ? 0 : owned);
     const auto q_nm1 = Kokkos::View<StorageReal*, Space>("scalar_transport/previous", bdf2 ? owned : 0);
     if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
     Real time = 0;
 
+    std::vector<std::pair<Real, std::string>> snapshots;
     const int steps = steady ? 1 : config.steps;
     for (int step = 0; step < steps; ++step) {
         const Real next = steady ? Real{0} : static_cast<Real>(step + 1)*dt;
         mpi::require(steady || (std::isfinite(next) && next > time), "Scalar transport: time cannot advance");
         const auto source = make_source(problem, m, next, static_cast<Real>(config.source));
-
         const auto with_time_term = [&](const auto& submit) {
             if (steady) return;
             const tt::TimeLevel newest{mass, q_n};
@@ -326,57 +324,36 @@ int solve(const Options& options, mpi::CommView comm) {
             Kokkos::deep_copy(exec, target.values, SolverReal{0});
             Kokkos::deep_copy(exec, target.rhs, SolverReal{0});
             status.begin_async();
-
             with_time_term([&](auto weights, auto history) { temporal.add_system_async(target, status, weights, mass, history); });
             if (convection) convection->add_system_async(target, boundary, status, flux, cv::NoReconstruction{}, cv::FixedValueInflow{}, next);
             if (diffusion) diffusion->add_system_async(target, boundary, status, law, next);
             sources.add_async(target.rhs, status, source);
             (void)status.check(comm);
-            Kokkos::deep_copy(exec, base_rhs, target.rhs);
+            if (corrections) Kokkos::deep_copy(exec, base_rhs, target.rhs);
         }
         matrix.commit();
         rhs.commit();
 
-        const auto full_residual = [&] {
-            Kokkos::deep_copy(exec, residual, Real{0});
-            status.begin_async();
-            with_time_term([&](auto weights, auto history) {
-                temporal.add_residual_async(q, residual, status, weights, mass, history);
-            });
-            with_convection([&](auto reconstruction) {
-                convection->add_residual_async(q, residual, boundary, status, flux, reconstruction, cv::FixedValueInflow{}, next);
-            });
-            if (diffusion) {
-                if (config.nonorthogonal_correction)
-                    diffusion->add_residual_async(q, residual, boundary, status, law, correction, next);
-                else diffusion->add_residual_async(q, residual, boundary, status, law, next);
-            }
-            sources.add_async(residual, status, source);
-            (void)status.check(comm);
-            return global_norm(residual, exec, comm);
-        };
-
-        prepare_iterate(next);
-        double norm = full_residual();
-        const double tolerance = std::max(config.outer.absolute_tolerance, config.outer.relative_tolerance *
-            std::max(norm, global_norm(base_rhs, exec, comm)));
-        int outer = 0;
-        for (; norm > tolerance && outer < config.outer.maximum_iterations; ++outer) {
-            // Restore the frozen RHS before adding the current explicit corrections.
-            {
-                const auto b = Kokkos::subview(rhs.overwrite(exec), Kokkos::ALL(), 0);
-                Kokkos::deep_copy(exec, b, base_rhs);
-                if (reconstruct || config.nonorthogonal_correction) {
-                    status.begin_async();
-                    if (reconstruct) with_convection([&](auto reconstruction) {
+        // Accumulate diagnostics across the correction passes on the same execution instance.
+        if (gradients_needed) boundary_status.begin_async();
+        if (corrections) status.begin_async();
+        for (int outer = 0; outer < config.outer.iterations; ++outer) {
+            if (corrections) {
+                prepare_iterate(next);
+                {
+                    const auto b = Kokkos::subview(rhs.overwrite(exec), Kokkos::ALL(), 0);
+                    Kokkos::deep_copy(exec, b, base_rhs);
+                    if (reconstruct) with_reconstruction<Real>(config.reconstruction, [&](auto scheme) {
+                        // A unit factor leaves the selected reconstruction unchanged.
+                        const auto reconstruction = cv::make_reconstruction(
+                            convection->plan(), rec::Limited{scheme}, limited);
                         convection->add_correction_async(b, boundary, status, flux, reconstruction, next);
                     });
                     if (config.nonorthogonal_correction)
                         diffusion->add_correction_async(b, boundary, status, law, correction, next);
-                    (void)status.check(comm);
                 }
+                rhs.commit();
             }
-            rhs.commit();
 
             solution.copy_from_component(q, exec);
             const auto solved = linear.solve(rhs, solution);
@@ -390,23 +367,40 @@ int solve(const Options& options, mpi::CommView comm) {
                 });
                 solution.commit();
             }
-            prepare_iterate(next);
-            norm = full_residual();
             if (detailed)
-                std::fprintf(stderr, "  step=%d outer=%d linear=%d residual=%.6g target=%.6g\n",
-                    step + 1, outer + 1, solved.iterations, norm, tolerance);
+                std::fprintf(stderr, "  step=%d outer=%d linear=%d\n", step + 1, outer + 1, solved.iterations);
         }
-        mpi::require(norm <= tolerance, "Scalar transport: outer iteration did not converge");
+        if (gradients_needed) boundary_status.check();
+        if (corrections) (void)status.check(comm);
         if (bdf2) Kokkos::deep_copy(exec, q_nm1, q_n);
         if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
         time = next;
         if (detailed)
-            std::fprintf(stderr, "  accepted step=%d t=%.8g outer=%d residual=%.6g\n",
-                step + 1, static_cast<double>(time), outer, norm);
+            std::fprintf(stderr, "  accepted step=%d t=%.8g outer=%d\n",
+                step + 1, static_cast<double>(time), config.outer.iterations);
+
+        const int accepted = step + 1;
+        const bool final_step = accepted == steps;
+        const bool periodic = !steady && config.output.every > 0;
+        const bool write = !output_directory.empty() &&
+            (final_step || (periodic && accepted % config.output.every == 0));
+        if (write || (final_step && has_analytic_solution(problem))) {
+            std::filesystem::path directory;
+            if (write) directory = periodic ? output_directory / ("step_" + std::to_string(accepted)) : output_directory;
+            exec.fence("scalar transport: snapshot ready");
+            report_solution(options, config, host, q_owned, time, directory, final_step, comm);
+            
+            if (write && periodic && comm.rank() == 0) {
+                const auto file = directory.filename() / "scalar.pvtu";
+                snapshots.emplace_back(time, file.generic_string());
+            }
+        }
     }
 
     exec.fence("scalar transport: solution ready");
-    report_solution(options, config, host, q_owned, time, comm);
+    if (comm.rank() == 0 && !snapshots.empty())
+        write_pvd(output_directory, snapshots);
+
     if (verbose)
         std::fprintf(stderr, "KRONA scalar_transport: completed %d step(s) at t=%.8g in %.3f s.\n",
             steps, static_cast<double>(time), std::chrono::duration<double>(Clock::now()-start).count());

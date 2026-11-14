@@ -7,8 +7,12 @@ diffusion_coefficient = 0.05
 [scalars.phi.time]
 scheme = "bdf2"
 dt = 0.01
-steps = 30
+steps = 100
 
 [scalars.phi.linear_solver]
 method = "CG"
 preconditioner = "RELAXATION"
+
+[scalars.phi.output]
+directory = "out/diffusion/vtk"
+every = 10

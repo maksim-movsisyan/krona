@@ -20,8 +20,12 @@ struct ReconstructionOptions {
     double regularization = 0; // Venkatakrishnan epsilon, in scalar units.
 };
 struct IterationOptions {
-    int maximum_iterations = 100;
-    double relative_tolerance = 1.e-6, absolute_tolerance = 0, relaxation = 1;
+    int iterations = 1;
+    double relaxation = 1;
+};
+struct OutputOptions {
+    std::filesystem::path directory;
+    int every = 0; // Accepted transient steps between snapshots. Zero writes only the final field.
 };
 struct LinearOptions {
     std::string method = "GMRES", preconditioner = "RELAXATION";
@@ -44,6 +48,7 @@ struct Configuration {
     int steps = 1;
     IterationOptions outer;
     LinearOptions linear;
+    OutputOptions output;
     [[nodiscard]] bool needs_gradients() const noexcept
     { return nonorthogonal_correction || (convection_enabled && reconstruction.method != ReconstructionMethod::Upwind); }
 };

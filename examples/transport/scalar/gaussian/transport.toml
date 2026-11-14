@@ -23,3 +23,10 @@ nonorthogonal_correction = true
 [scalars.phi.source]
 type = "constant"
 value = 0.0
+
+[scalars.phi.outer_iteration]
+iterations = 1
+
+[scalars.phi.output]
+directory = "out/gaussian/vtk"
+every = 10
