@@ -32,9 +32,7 @@ mpirun -np 2 krona_scalar_transport diffusion/mesh.h5 diffusion/transport.toml d
 ```
 
 The directory also contains the Gaussian advection-diffusion example and
-`mesh.toml` inputs for regenerating both CGNS meshes. See the
-[examples README](../examples/transport/scalar/README.md).
-
+`mesh.toml` inputs for regenerating both CGNS meshes.
 | Option | Effect |
 | --- | --- |
 | `--field <name>` | Selects a scalar from both TOML files. Default `phi`. |
@@ -56,7 +54,7 @@ for a custom run with convection.
 ```toml
 [scalars.phi.physics]
 density = 1.0
-convection_enabled = true
+convection = true
 diffusion = true
 diffusion_coefficient = 0.002
 
@@ -93,13 +91,11 @@ every = 10
 | Section | Key | Default and meaning |
 | --- | --- | --- |
 | `physics` | `density` | `1.0`. Positive uniform density for cell mass and face mass flux. |
-| `physics` | `convection_enabled`, `diffusion` | Both `true`. Toggle the corresponding contributions. |
+| `physics` | `convection`, `diffusion` | Both `true`. Toggle the corresponding contributions. |
 | `physics` | `diffusion_coefficient` | `0.01`. Positive when diffusion is enabled. This is `Gamma`. The diffusivity in a constant-density analytical solution is `Gamma / rho`. |
 | `time` | `scheme` | `backward_euler`, `bdf2`, or `steady`. Default `backward_euler`. BDF2 starts with one Backward Euler step. |
 | `time` | `dt`, `steps` | Positive fixed step size and positive step count. Defaults `0.01` and `1`. Omit both for `steady`, which requires an enabled spatial operator. |
 | `source` | `type`, `value` | `"constant"` and `0.0`. By default the custom case uses this uniform source density. A C++ source can use the value as a parameter. |
-
-The older TOML spelling `physics.convection` is also accepted. Supply only one spelling.
 
 ### Spatial schemes
 
