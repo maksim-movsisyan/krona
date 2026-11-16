@@ -31,3 +31,16 @@ foreach(i RANGE 0 2)
     set_tests_properties("transport.euler.reject_${case}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE LABELS "transport;euler;validation"
         ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 endforeach()
+
+
+if(KRONA_ENABLE_TRILINOS)
+    add_executable(krona_test_euler_jacobian test_jacobian.cpp)
+    target_link_libraries(krona_test_euler_jacobian PRIVATE krona_test_support krona::transport_euler)
+    foreach(ranks IN ITEMS 1 2)
+        add_test(NAME "transport.euler.jacobian_mpi${ranks}" COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${ranks}"
+            ${MPIEXEC_PREFLAGS} "$<TARGET_FILE:krona_test_euler_jacobian>" ${MPIEXEC_POSTFLAGS})
+        set_tests_properties("transport.euler.jacobian_mpi${ranks}" PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+            PROCESSORS "${ranks}" LABELS "transport;euler"
+            ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
+    endforeach()
+endif() 

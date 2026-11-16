@@ -174,3 +174,205 @@ Here runtime selection happens once on the host; each kernel uses a concrete sol
 Built-in states, results and solver policies contain scalar values or small value-owned policies. They retain no field pointers and allocate no arrays. All flux calculations and state adapters execute inline in the caller's host/device context: no independent kernel launch, fence, MPI exchange or mesh traversal. A custom EOS/policy may introduce its own storage or failure behaviour.
 
 The enclosing Kokkos launch can be asynchronous. Keep its captured buffers valid until completion; order producers/consumers on the same execution instance or establish completion explicitly across instances, host access and external MPI. The example fences before reading statuses on the host. This module does not exchange ghosts or synchronize ranks.
+
+## State and physical flux Jacobians
+
+`state_jacobians.hpp` works with conservative variables \(U\) and primitive variables \(W\), ordered as
+
+$$
+U=(\rho,\mathbf m,\mathcal E),\qquad
+W=(p,\mathbf u,T),\qquad
+\mathbf m=\rho\mathbf u,\qquad
+\mathcal E=\rho E=\rho\left(e+\tfrac12|\mathbf u|^2\right).
+$$
+
+Here \($e$\) is specific internal energy, while \($\mathcal E$\) is total energy per unit volume. Each Jacobian is a \($5\times5$\) matrix. The formulas below give its action on a perturbation. Setting one input component to \(1\) and the others to \(0\) gives the corresponding column.
+
+The EOS supplies `rhoe_derivatives(rho, e)`, which gives the thermodynamic derivative matrix
+
+$$
+B=\frac{\partial(p,T)}{\partial(\rho,e)}
+=
+\begin{bmatrix}
+(\partial p/\partial\rho)_e & (\partial p/\partial e)_\rho\\
+(\partial T/\partial\rho)_e & (\partial T/\partial e)_\rho
+\end{bmatrix}.
+$$
+
+For the calorically perfect gas, \($p=(\gamma-1)\rho e$\) and \($T=e/c_v$\), so
+
+$$
+B=
+\begin{bmatrix}
+(\gamma-1)e & (\gamma-1)\rho\\
+0 & 1/c_v
+\end{bmatrix}.
+$$
+
+### Conservative to primitive
+
+`primitive_from_conservative_jacobian(state, eos)` computes \($\partial W/\partial U$\). Given \($(d\rho,d\mathbf m,d\mathcal E)$\), first recover the changes in velocity and internal energy.
+
+$$
+d\mathbf u=\frac{d\mathbf m-\mathbf u\,d\rho}{\rho},
+\qquad
+de=\frac{d\mathcal E-\mathbf u\cdot d\mathbf m+
+                 (\tfrac12|\mathbf u|^2-e)\,d\rho}{\rho}.
+$$
+
+Pressure and temperature then follow from the EOS.
+
+$$
+\begin{bmatrix}dp\\dT\end{bmatrix}
+=B\begin{bmatrix}d\rho\\de\end{bmatrix}.
+$$
+
+Let $(u,v,w)$ be the components of $\mathbf u$ and define
+$\chi=\tfrac12(u^2+v^2+w^2)-e$. Write $p_\rho,p_e,T_\rho,T_e$ for the
+entries of $B$, with the other thermodynamic variable held fixed.
+
+With rows in the order $(p,u,v,w,T)$ and columns in the order
+$(\rho,\rho u,\rho v,\rho w,\rho E)$, the Jacobian is
+
+$$
+\frac{\partial W}{\partial U}=
+\begin{bmatrix}
+p_\rho+\dfrac{p_e}{\rho}\chi &
+-\dfrac{p_e u}{\rho} & -\dfrac{p_e v}{\rho} & -\dfrac{p_e w}{\rho} &
+\dfrac{p_e}{\rho}\\[6pt]
+-\dfrac{u}{\rho} & \dfrac{1}{\rho} & 0 & 0 & 0\\[6pt]
+-\dfrac{v}{\rho} & 0 & \dfrac{1}{\rho} & 0 & 0\\[6pt]
+-\dfrac{w}{\rho} & 0 & 0 & \dfrac{1}{\rho} & 0\\[6pt]
+T_\rho+\dfrac{T_e}{\rho}\chi &
+-\dfrac{T_e u}{\rho} & -\dfrac{T_e v}{\rho} & -\dfrac{T_e w}{\rho} &
+\dfrac{T_e}{\rho}
+\end{bmatrix}.
+$$
+
+The first column varies density while holding momentum and total energy
+per unit volume fixed. This changes the specific internal energy, which
+accounts for the terms proportional to $\chi$ in the pressure and
+temperature rows.
+
+### Primitive to conservative
+
+`conservative_from_primitive_jacobian(state, eos)` computes \($\partial U/\partial W$\). Given \($(dp,d\mathbf u,dT)$\), recover \($d\rho$\) and \($de$\) by locally inverting the thermodynamic map. This requires \($B$\) to be invertible at the current state.
+
+$$
+\begin{bmatrix}d\rho\\de\end{bmatrix}
+=B^{-1}\begin{bmatrix}dp\\dT\end{bmatrix},
+\qquad
+d\mathbf m=\mathbf u\,d\rho+\rho\,d\mathbf u,
+\qquad
+d\mathcal E=E\,d\rho+\rho\left(de+\mathbf u\cdot d\mathbf u\right).
+$$
+
+Write $\rho_p,\rho_T,e_p,e_T$ for the entries of the inverse
+thermodynamic derivative matrix
+
+$$
+B^{-1}=\frac{\partial(\rho,e)}{\partial(p,T)}
+=
+\begin{bmatrix}
+\rho_p & \rho_T\\
+e_p & e_T
+\end{bmatrix}.
+$$
+
+The subscript indicates which variable changes while the other is held
+fixed. For example, $\rho_p=(\partial\rho/\partial p)_T$.
+
+With rows in the order $(\rho,\rho u,\rho v,\rho w,\rho E)$ and columns
+in the order $(p,u,v,w,T)$, the Jacobian is
+
+$$
+\frac{\partial U}{\partial W}=
+\begin{bmatrix}
+\rho_p & 0 & 0 & 0 & \rho_T\\[4pt]
+u\rho_p & \rho & 0 & 0 & u\rho_T\\[4pt]
+v\rho_p & 0 & \rho & 0 & v\rho_T\\[4pt]
+w\rho_p & 0 & 0 & \rho & w\rho_T\\[4pt]
+E\rho_p+\rho e_p & \rho u & \rho v & \rho w & E\rho_T+\rho e_T
+\end{bmatrix}.
+$$
+
+For example, the second column varies $u$ at fixed $p,v,w,T$.
+Density and internal energy stay fixed, while $\rho u$ changes at rate
+$\rho$ and the total energy density changes at rate $\rho u$.
+
+### Physical flux
+
+`physical_flux_jacobian(state, normal, eos)` computes \($A_n=\partial F_n/\partial U$\) for a fixed unit normal \($\mathbf n$\). With \($u_n=\mathbf u\cdot\mathbf n$\) and \($m_n=\mathbf m\cdot\mathbf n$\), the physical Euler flux per unit face area is
+
+$$
+F_n(U)=
+\begin{bmatrix}
+m_n\\
+m_n\mathbf u+p\mathbf n\\
+(\mathcal E+p)u_n
+\end{bmatrix}.
+$$
+
+Use the conservative-to-primitive derivatives above to obtain \($dp$\) and \($d\mathbf u$\). Differentiating the flux then gives
+
+$$
+A_n\,dU=
+\begin{bmatrix}
+dm_n\\
+\mathbf u\,dm_n+m_n\,d\mathbf u+\mathbf n\,dp\\
+u_n(d\mathcal E+dp)+(\mathcal E+p)\,du_n
+\end{bmatrix},
+\qquad
+dm_n=\mathbf n\cdot d\mathbf m,\quad
+du_n=\mathbf n\cdot d\mathbf u.
+$$
+
+This is the single-state physical flux Jacobian. A Riemann flux linearization uses two states and supplies its own left and right derivatives. Multiply by face area when assembling the corresponding contributions to a finite-volume matrix.
+
+Let $\mathbf n=(n_x,n_y,n_z)$ and $u_n=un_x+vn_y+wn_z$. Define
+
+$$
+\alpha=p_\rho+\frac{p_e}{\rho}
+                  \left(\tfrac12|\mathbf u|^2-e\right),\qquad
+\beta=\frac{p_e}{\rho},\qquad
+H=\frac{\mathcal E+p}{\rho}.
+$$
+
+Here $p_\rho=(\partial p/\partial\rho)_e$ and
+$p_e=(\partial p/\partial e)_\rho$. The pressure row of
+$\partial W/\partial U$ is thus $(\alpha,-\beta u,-\beta v,-\beta w,\beta)$.
+
+With rows in mass, $x$-momentum, $y$-momentum, $z$-momentum and energy
+flux order, and columns in $(\rho,\rho u,\rho v,\rho w,\rho E)$ order,
+the physical flux Jacobian is
+
+$$
+A_n=\frac{\partial F_n}{\partial U}=
+\begin{bmatrix}
+0
+& n_x & n_y & n_z & 0\\[4pt]
+\alpha n_x-u u_n
+& u_n+(1-\beta)u n_x
+& u n_y-\beta v n_x
+& u n_z-\beta w n_x
+& \beta n_x\\[4pt]
+\alpha n_y-v u_n
+& v n_x-\beta u n_y
+& u_n+(1-\beta)v n_y
+& v n_z-\beta w n_y
+& \beta n_y\\[4pt]
+\alpha n_z-w u_n
+& w n_x-\beta u n_z
+& w n_y-\beta v n_z
+& u_n+(1-\beta)w n_z
+& \beta n_z\\[4pt]
+u_n(\alpha-H)
+& H n_x-\beta u u_n
+& H n_y-\beta v u_n
+& H n_z-\beta w u_n
+& (1+\beta)u_n
+\end{bmatrix}.
+$$
+
+For a calorically perfect gas, $\beta=\gamma-1$ and
+$\alpha=(\gamma-1)|\mathbf u|^2/2$. The matrix is per unit face area.

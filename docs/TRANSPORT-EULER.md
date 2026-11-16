@@ -1,6 +1,6 @@
 # Euler transport
 
-`krona::transport::euler` evaluates the inviscid finite-volume residual of the compressible Euler equations on a static 3-D mesh. It reconstructs primitive variables, prepares thermodynamics through an EOS and calls a Riemann solver. It provides no matrix/Jacobian assembly, viscous terms, CFL calculation or time integrator. Trilinos is not required.
+`krona::transport::euler` evaluates the inviscid finite-volume residual of the compressible Euler equations on a static 3-D mesh. It reconstructs primitive variables, prepares thermodynamics through an EOS and calls a Riemann solver. It also assembles a compact inviscid Jacobian for conservative increments. Link `krona::transport_euler`. The native BSR adapter requires Trilinos. The operator leaves viscous terms, CFL selection and time integration to the caller.
 
 ## Input and output
 
@@ -29,7 +29,7 @@ extended_index = n_cells + face - n_inner_faces;
 
 These are primitive face samples, not exterior ghost cells. Output needs only the owned-cell prefix. All packs have exactly five components; their components share a scalar type/memory space, but input and output scalar types may differ. Accessible rank-one views, including strided components, are supported.
 
-Accessed base primitives must have finite positive `p,T`, finite velocity and an admissible finite EOS/conservative state after conversion to computation `Real`. Initialize residuals to finite values before additive contributions. A custom pack supplies `components`, `value_type`, `memory_space`, `size()` and device-callable `(cell, component)` access, writable for outputs.
+Accessed base primitives must have finite positive `p,T`, finite velocity and an admissible finite EOS/conservative state after conversion to computation `Real`. Initialize residuals to finite values before additive contributions. A custom pack supplies `components`, `value_type`, `memory_space`, `size()` and device-callable `(cell, component)` access. For boundary residuals, the output accessor must return a mutable scalar reference for the atomic additions.
 
 ## Main pipeline
 
@@ -61,19 +61,22 @@ eu::EulerPlan<Exec, Real> plan(host, m, conn.view(), comm, exec);
 
 thermodynamics::IdealGas<Real> gas;
 using Model = ph::Compressible<decltype(gas), ph::PerfectGasCharacteristics>;
-ph::Manager<Model, Exec, Real> boundary(host, m, Model{gas, {}}, exec);
+const boundary::BoundaryLayout<Exec, Real> boundary_layout(host, m, exec);
+ph::Manager<Model, Exec, Real> boundary(boundary_layout, Model{gas, {}});
 boundary.set(0, ph::TotalConditionsInlet<Real>{110000, 300, {1, 0, 0}});
 boundary.set(1, ph::PressureOutlet<Real>{100000, {}});
 boundary.set(2, ph::SlipWall<Real>{});
 // If unlabelled faces exist, assign them explicitly with set_unlabelled().
+boundary.finalize();
+ph::Status<Exec> boundary_status(exec);
 
 fields::FieldStorage<StorageReal, 5, Exec> q(
     "primitive", boundary.required_field_size(), fields::FieldLocation::Custom, exec);
 fields::FieldStorage<AccumulationReal, 5, Exec> r(
     "Euler residual", static_cast<std::size_t>(m.sizes.n_own),
     fields::FieldLocation::Custom, exec);
-const auto values = rec::field_pack(q.view());
-const auto output = rec::field_pack(r.view());
+const auto values = fields::field_pack(q.view());
+const auto output = fields::field_pack(r.view());
 const auto physical = ph::primitive_components(q.view().component(0),
     q.view().component(1), q.view().component(2), q.view().component(3), q.view().component(4));
 // Example finite initial state. Real applications derive owned primitives from their current U.
@@ -93,7 +96,9 @@ eu::AssemblyStatus<Exec> status(exec);
 
 const Real time = 0;
 primitive_halo.exchange();
-boundary.apply_async(physical, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
+boundary_status.begin_async();
+boundary.apply_async(physical, boundary_status, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
+boundary_status.check();
 r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(first_order, output, boundary, status, eu::PreparedExterior{}, time);
@@ -106,7 +111,7 @@ The field packs and `physical` binding reference the same allocations. The forme
 
 Every labelled patch must have a condition, including patches empty on this rank. Unlabelled faces need an explicit condition when present. The manager must use the same mesh arrays and patch IDs/ranges as the plan. Its model must be both compressible and thermal, with thermodynamics consistent with the Euler state policy. The characteristic policy in this example enables total-condition inlets and pressure outlets; see `BOUNDARY-PHYSICAL.md` for their contracts/backflow data.
 
-`EulerPlan` requires grouped `FaceCells`, `CellGeometry`, `FaceGeometry` and complete owned `CellFaces`. It uses host patch metadata/face owners to construct reusable boundary incidence grouped by `(patch, owned cell)`, uploads that map and validates it against device ownership. Construction is local and blocking. This host input has a role beyond count checks. Preserve topology, local numbering, patch ranges and borrowed geometry; rebuild after changes.
+`EulerPlan` requires grouped `FaceCells`, `CellGeometry`, `FaceGeometry` and complete owned `CellFaces`. It builds a host patch catalog and checks the host and device boundary owners. Each patch already provides a contiguous range of faces. Construction is local and blocking. Preserve topology, local numbering, patch ranges and borrowed geometry. Rebuild the plan after changes.
 
 ## Configure higher-order reconstruction
 
@@ -123,7 +128,7 @@ fields::FieldStorage<StorageReal, 1, Exec> theta(
 numerics::gradient::GradientOperator<Exec> gradient(m, conn.view(), {}, {}, exec);
 const auto gradients = rec::gradient_pack(g.view()); // Component 3*c+axis.
 const auto unlimited = rec::data(values, gradients);
-const auto data = rec::data(values, gradients, rec::field_pack(theta.view()));
+const auto data = rec::data(values, gradients, fields::field_pack(theta.view()));
 const auto high_order = eu::Reconstruction{rec::LimitedLinear{}, data, stencil};
 
 halo::Exchange<StorageReal, Exec> reconstruction_halo(m, mesh.halo_plan(), comm, 82, exec);
@@ -133,9 +138,11 @@ reconstruction_halo.prepare();
 
 // Repeat after owned primitives change, e.g. at every time-integration stage.
 primitive_halo.exchange();
-boundary.apply_async(physical, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
+boundary_status.begin_async();
+boundary.apply_async(physical, boundary_status, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
+boundary_status.check();
 gradient.apply_async(q.view(), g.view()); // Computes 15 owned derivative components.
-rec::compute_limiters_async<Real>(exec, stencil, unlimited, rec::field_pack(theta.view()),
+rec::compute_limiters_async<Real>(exec, stencil, unlimited, fields::field_pack(theta.view()),
     rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
 reconstruction_halo.exchange(); // Gradients and factors for real MPI ghosts.
 
@@ -192,6 +199,8 @@ A custom state policy can replace `Thermodynamics`: device-callable `(physical::
 
 Pass `Rusanov`, `Hll<>`, `Hllc<>` or `Roe{gas.gamma}` to `EulerOperator{plan, state_policy, solver}`; HLLC is the default. Roe additionally requires states compatible with its calorically perfect-gas convention; arbitrary EOS compatibility is not implied. Include the selected solver header. Runtime selection can dispatch a templated launch on the host; each operator/kernel then holds a concrete solver type. Custom solvers follow `(left_state, right_state, unit_normal) -> riemann::Result<Real>` and return flux density, not area-integrated flux. See `NUMERICS-RIEMANN.md`.
 
+Both built-in closures accept profiled physical conditions dispatched by the manager. The evaluated closure samples the condition at the current face and time. The prepared inlet and outlet paths use the published face values. The mechanical wall path samples wall velocity independently of any temperature or heat-flux profile when the provider exposes it.
+
 Custom policies must be device-copyable and return consistent results for fixed inputs. On MPI interfaces, publish every accessed primitive/reconstruction sample and use matching physics parameters; Euler does not reconcile rank-local model/data disagreement.
 
 For each evaluated side:
@@ -200,7 +209,7 @@ For each evaluated side:
 2. An inadmissible reconstructed primitive/EOS state falls back to the **whole base side state**, not selected components. Boundary interior traces have the same fallback.
 3. An invalid exterior state is an error. The chosen Riemann solver may separately use its own fallback; a failed result is an error.
 
-`eu::AssemblyStatus` is separate from scalar transport status. `check(comm)` returns global `reconstruction_fallbacks` and `riemann_fallbacks`, and terminates on invalid cell/exterior states, rejected fluxes or nonfinite/unrepresentable residual additions. Counters count evaluations, **not unique faces**: owned/owned faces are evaluated from both rows, and each side can fall back.
+`eu::AssemblyStatus` is separate from scalar transport status. `check(comm)` returns global `reconstruction_fallbacks` and `riemann_fallbacks`, and terminates on invalid cell/exterior states, rejected fluxes, invalid Jacobian contributions or nonfinite/unrepresentable residual additions. Counters count evaluations, **not unique faces**: owned/owned faces are evaluated from both rows, and each side can fall back.
 
 ## Split calls and range contracts
 
@@ -221,16 +230,74 @@ euler.add_boundary_residual_async(high_order, output, boundary, status,
 
 Inner-only validation requires primitive storage for all real cells. Full/boundary validation requires extended storage even with first-order or evaluated closure. Required gradient/factor/Hessian/moment providers cover at least real cells when they expose sizes; custom indices and wider-stencil coverage remain caller contracts. Inputs and residual components must not overlap, including partial/strided aliases. Checks catch duplicate residual starting pointers and some exact input/output aliases, not arbitrary memory overlap.
 
+## Compact implicit assembly
+
+Initialize Tpetra on the assembly communicator before constructing the native graph. Use the full Euler residual on the right-hand side and solve for the conservative density increment
+$\delta U=(\delta\rho,\delta(\rho u),\delta(\rho v),\delta(\rho w),\delta(\rho E))$.
+The matrix methods add the Jacobian of the **outward flux sum**, with sign opposite to the derivative of the residual. Add the physical or pseudo-time diagonal separately when the integration method calls for it.
+
+```cpp
+#include <krona/transport/euler/assembly.hpp>
+#include <krona/linalg/field_transfer.hpp>
+
+// Set up once, with the same host cell/face numbering as EulerPlan.
+const linalg::FaceAssemblyPlan assembly(host, comm, exec);
+linalg::BsrMatrix<SolverReal, Exec> matrix(assembly.pattern(), 5);
+linalg::Vector<SolverReal, Exec> rhs(matrix.distribution());
+
+// Repeat after halo, boundary-slot and reconstruction preparation.
+const auto closure = eu::EvaluatedExterior<>{};
+const auto inner = eu::FrozenRusanov{gas};
+const auto target = eu::make_jacobian_view(matrix, assembly, exec);
+Kokkos::deep_copy(exec, target.blocks, SolverReal{0});
+r.fill_async(exec, AccumulationReal{0});
+status.begin_async();
+euler.add_residual_async(first_order, output, boundary, status, closure, time);
+euler.add_jacobian_async(target, first_order, boundary, status, inner, closure, time);
+(void)status.check(comm);
+
+linalg::copy_from_fields_async(rhs, output, exec);
+matrix.commit();
+rhs.commit();
+```
+
+The same sequence accepts a higher-order reconstruction in both calls. Add a time residual or matrix contribution as needed before committing. The target borrows native blocks addressed as `(entry, equation, variable)`. The adapter checks that the matrix shares the assembly graph and has block width five. The caller keeps the assembly plan's local numbering and halo topology consistent with the Euler plan. Keep input and matrix storage disjoint. An application with another backend may provide `JacobianView{blocks, entries}` with the same native-row and entry-map contract.
+
+### Inner faces
+
+`FrozenRusanov{eos}` uses cell-centred states. For a unit normal it returns
+$D_L = (A_n(U_L)+\lambda I)/2$ and
+$D_R = (A_n(U_R)-\lambda I)/2$, where
+$A_n = \partial F_n/\partial U$ and $\lambda=\max(|u_{n,L}|+c_L, |u_{n,R}|+c_R)$.
+The face speed is recomputed at assembly and held fixed in the derivative. The stencil contains the cell and its face neighbours. Reconstruction and limiter data stay in the full residual.
+
+Supply any device-callable `linearization(left, right, unit_normal)` returning `eu::FaceJacobians<Real>{left_block, right_block}` to replace the inner linearization. Both blocks contain derivatives of the flux density with respect to conservative densities. The assembler multiplies by area. In the owner row, the blocks go to the diagonal and neighbour column with a positive sign. In an owned neighbour row, they go to the owner column and diagonal with a negative sign. Across an MPI interface, each rank writes its owned row. A custom flux linearization must be consistent under reversal of the normal and exchange of the two states.
+
+`add_inner_jacobian_async(target, values, status, inner, faces, cells)` accepts the primitive pack directly and shares the residual's owned-row and inner-face ranges. `add_boundary_jacobian_async(target, reconstruction, boundary, status, closure, time, cells)` adds only physical boundary terms. These calls and the combined `add_jacobian_async` are additive and leave clearing, synchronization and commit to the caller.
+
+### Physical boundaries
+
+Use the same reconstruction, numerical flux, closure and time for the residual and boundary linearization. The default `FiniteDifferenceBoundary` differentiates the complete numerical boundary flux in the five primitive components of the interior trace, then applies the analytic $\partial W_{\mathrm{cell}}/\partial U_{\mathrm{cell}}$ at the owner cell. The reconstruction increment and prepared face slots are held fixed. A smooth branch uses central differences. A valid one-sided stencil is used when a probe leaves the admissible state or boundary domain. Near a change of characteristic or Riemann branch, the result is a local numerical slope. Probes are evaluated on the same device execution space as the residual.
+
+With `EvaluatedExterior`, the characteristic outlet/inlet and mirror responses to the interior trace are included. Each flux evaluation uses the original condition with the same face context and time. A profile provider should return the same prescribed values throughout these evaluations. With `PreparedExterior`, a published inlet/outlet face state stays fixed throughout the derivative. Use `EvaluatedExterior` for coupled boundary states whose response is needed in the matrix.
+
+The boundary policy is independently replaceable via the final argument of either boundary assembly call. It receives `(context, condition, model, closure, states, state_law, solver)` and returns a `eu::BoundaryJacobian<Real>{block, valid}`. The states include the owner's thermodynamic state, current primitive interior trace and prepared face slot. Return the unit-area derivative by owner conservative density. It is added to the owner diagonal. This also supports a direct analytic boundary-flux derivative.
+
+`krona/numerics/riemann/state_jacobians.hpp` exposes `primitive_from_conservative_jacobian`, `conservative_from_primitive_jacobian` and `physical_flux_jacobian`. They use the EOS derivatives in density and specific internal energy. `IdealGas` already supplies them. The default boundary policy reads the EOS from `state_law.eos`. State policies without this interface can use a custom boundary derivative. All EOS and boundary domain checks apply to the perturbed states too.
+
 ## Completion, storage and the next stage
 
-`EulerPlan` owns its small host patch metadata and managed device boundary-incidence arrays; copies share device maps. Mesh/connectivity arrays and communicator are borrowed. `EulerOperator` stores the plan, state policy and solver by value, with no state or face-flux arrays. Inner row gathering recomputes shared face fluxes; boundary work gathers faces per `(patch, owned cell)`, with patch launches ordered on one execution instance. No residual atomics or per-call face-work allocation are needed; diagnostic flags/counters use atomics.
+`EulerPlan` owns the host patch catalog and borrows the mesh/connectivity arrays and communicator. `EulerOperator` stores the plan, state policy and solver by value. Inner faces gather by owned cell row. Each boundary kernel runs over one patch with one iteration per face and atomically adds to the owner's five residual components or the 25 entries of its diagonal BSR block. Patch launches are ordered on one execution instance. No face-work buffer is allocated.
+
+Boundary additions use the destination scalar precision. When several faces update the same cell within a patch, accumulation order can vary and affect floating-point round-off.
 
 Reconstruction/component packs borrow data pointers; field owners must outlive work. Managed members in custom providers retain their allocations, unmanaged ones borrow. `AssemblyStatus` owns a small device buffer and host mirror. `Real` controls state/flux arithmetic, `Accumulator` defaults to `AccumulationReal` for row sums, and the output pack controls stored residual precision.
 
 | Operation | Completion |
 | --- | --- |
 | Plan / physical-manager construction | Local and blocking; validates/prepares maps/geometry. No MPI collective. |
-| `boundary.apply_async()`, gradient/limiter calls, Euler `add_*_async()` | Queue kernels; Euler performs no reset, fence, MPI/halo exchange or time update. |
+| `boundary.apply_async()`, gradient/limiter calls, Euler `add_*_async()` | Queue kernels. Euler performs no reset, fence, MPI/halo exchange or time update. |
+| `FaceAssemblyPlan`, BSR construction | Collective and blocking. The native view adapter can synchronize native storage access. |
 | `halo.exchange()` | Blocking convenience exchange; explicit ownership remains with the application. |
 | `status.begin_async()` | Queues diagnostic reset; does not clear residuals. |
 | `status.check(comm)` | Copies diagnostics to host, fences its instance and performs an MPI all-reduce. |

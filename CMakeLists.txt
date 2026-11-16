@@ -733,7 +733,16 @@ if(KRONA_ENABLE_TRILINOS)
     target_link_libraries(krona_transport_scalar INTERFACE krona::linalg)
 endif()
 
-                
+
+    #=======================
+    #=== TRANSPORT EULER ===
+    #=======================
+krona_interface(transport_euler krona::boundary_physical krona::riemann krona::reconstruction_mesh)
+if(KRONA_ENABLE_TRILINOS)
+    target_link_libraries(krona_transport_euler INTERFACE krona::linalg)
+endif()
+          
+
 #==================================================================
 #==== EXECUTABLES  ================================================
 #==================================================================

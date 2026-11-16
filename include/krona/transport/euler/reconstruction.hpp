@@ -21,19 +21,18 @@ struct Reconstruction {
         :scheme(std::move(s)),data(std::move(input)),stencil(std::move(geometry)),boundary_scheme(std::move(boundary)) {}
 
     template<class R>
-    KOKKOS_INLINE_FUNCTION auto interior(std::size_t f) const
-    {
+    KOKKOS_INLINE_FUNCTION auto interior(std::size_t f) const {
         if constexpr(requires{stencil.template face<Scheme>(f);})
             return numerics::reconstruction::evaluate<R>(scheme,stencil.template face<Scheme>(f),data);
         else return numerics::reconstruction::evaluate<R>(scheme,stencil.face(f),data);
     }
+
     template<class R>
     KOKKOS_INLINE_FUNCTION auto boundary(std::size_t f) const
     { return numerics::reconstruction::evaluate_side<R>(boundary_scheme,stencil.boundary_side(f),data); }
 
     template<class Exec>
-    void validate(std::size_t cells,std::size_t extended,bool with_boundary) const
-    {
+    void validate(std::size_t cells,std::size_t extended,bool with_boundary) const {
         detail::validate_pack<Exec,false>(data.values,with_boundary?extended:cells);
         constexpr unsigned needs=Scheme::requirements|BoundaryScheme::requirements;
         namespace rec=numerics::reconstruction;

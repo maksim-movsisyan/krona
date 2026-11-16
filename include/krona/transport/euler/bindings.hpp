@@ -11,16 +11,14 @@ auto primitive_components(P p,U u,V v,W w,T t)
 { return fields::pack(p,u,v,w,t); }
 
 template<class P,class U,class T>
-auto primitive_fields(P p,U velocity,T t)
-{
+auto primitive_fields(P p,U velocity,T t) {
     static_assert(P::components==1 && U::components==3 && T::components==1);
     return primitive_components(p.component(0),velocity.component(0),velocity.component(1),velocity.component(2),t.component(0));
 }
 
 /// @brief Conservative/residual order: rho,rho*u,rho*v,rho*w,rho*E.
 template<class D,class M,class E>
-auto conservative_fields(D density,M momentum,E energy)
-{
+auto conservative_fields(D density,M momentum,E energy) {
     static_assert(D::components==1 && M::components==3 && E::components==1);
     return fields::pack(density.component(0),momentum.component(0),momentum.component(1),momentum.component(2),energy.component(0));
 }
@@ -31,15 +29,13 @@ auto component_pointers(const Pack& pack, std::index_sequence<C...>)
 { return std::array<const void*, sizeof...(C)>{static_cast<const void*>(pack.template component<C>().data())...}; }
 
 template<class Pack, std::size_t... C>
-void validate_components(const Pack& pack, std::size_t count, std::index_sequence<C...>)
-{
+void validate_components(const Pack& pack, std::size_t count, std::index_sequence<C...>) {
     const bool valid = ((pack.template component<C>().data()!=nullptr && pack.template component<C>().stride(0)>0) && ...);
     mpi::require(count==0 || valid,"Euler: invalid component storage");
 }
 
 template<class Exec,bool Write,class Pack>
-void validate_pack(const Pack& pack,std::size_t count)
-{
+void validate_pack(const Pack& pack,std::size_t count) {
     static_assert(Pack::components==5,"Euler requires exactly five components");
     static_assert(Kokkos::SpaceAccessibility<Exec,typename Pack::memory_space>::accessible);
     static_assert(std::is_floating_point_v<std::remove_const_t<typename Pack::value_type>>);
@@ -65,8 +61,7 @@ void validate_pack(const Pack& pack,std::size_t count)
 }
 
 template<class Input,class Output>
-void reject_exact_alias(const Input& input,const Output& output)
-{
+void reject_exact_alias(const Input& input,const Output& output) {
     if constexpr(requires{input.template component<0>();output.template component<0>();}) {
         const auto inputs = component_pointers(input, std::make_index_sequence<Input::components>{});
         const auto outputs = component_pointers(output, std::make_index_sequence<Output::components>{});
