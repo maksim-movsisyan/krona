@@ -1,0 +1,17 @@
+[[boundary_condition]]
+patch_id = 0
+name = "inlet"
+type = "SUPERSONIC_INLET"
+pressure = 100000.0
+temperature = 300.0
+velocity = [650.0, 0.0, 0.0]
+
+[[boundary_condition]]
+patch_id = 1
+name = "outlet"
+type = "SUPERSONIC_OUTLET"
+
+[[boundary_condition]]
+patch_id = 2
+name = "walls"
+type = "SYMMETRY"

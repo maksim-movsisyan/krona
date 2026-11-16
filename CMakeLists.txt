@@ -767,6 +767,7 @@ if(KRONA_BUILD_APPLICATIONS)
     #====================================================
     if(KRONA_ENABLE_TRILINOS)
         add_subdirectory(apps/scalar_transport)
+        add_subdirectory(apps/euler_steady)
     endif()
 
 endif()

@@ -1,0 +1,30 @@
+[euler.physics]
+gamma = 1.4
+gas_constant = 287.05
+
+[euler.initial]
+pressure = 100000.0
+temperature = 300.0
+velocity = [1041.6569, 0.0, 0.0]
+
+[euler.numerics]
+flux = "hllc"
+reconstruction = "first_order"
+limiter = "none"
+
+[euler.pseudo_time]
+cfl = 25.0
+relaxation = 1.0
+maximum_iterations = 2000
+relative_tolerance = 1e-8
+absolute_tolerance = 1e-8
+
+[euler.linear_solver]
+method = "GMRES"
+preconditioner = "RELAXATION"
+relative_tolerance = 1e-1
+maximum_iterations = 200
+restart_length = 50
+
+[euler.output]
+directory = "vtk_wedge"
