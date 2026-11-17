@@ -6,7 +6,9 @@
 | --- | --- |
 | `krona/numerics/gradient/types.hpp` | Schemes, interpolation options, requirements and owned-cell ranges. |
 | `krona/numerics/gradient/gradient_operator.hpp` | Prepared gradient operator and asynchronous application methods. |
-| `krona/numerics/gradient/correction.hpp` | Borrowed gradient adapters and local geometric projections. No dependency from other modules (except fields). |
+| `krona/numerics/gradient/correction.hpp` | Readers of existing gradient fields and projections used by boundary and transport code. |
+
+The scheme kernels live under `gradient/detail/`. Read `green_gauss_cell.hpp` for the cell sweep, `green_gauss_face.hpp` for the face sweep, and `least_squares.hpp` for both preparation and application of the fit. The two cell sweeps share `cell_accumulator.hpp`, which keeps the sum for each field component and writes the finished gradient. The setup checks live in `validation.hpp` in the same directory.
 
 ## Input and output
 
@@ -75,6 +77,8 @@ $$
  A_f\,\mathbf n_{P,f}\,(\phi_f-\phi_P).
 $$
 
+Subtracting the cell value makes the contribution of a constant field zero on every face. The cell sweep reverses the stored face normal when working on the neighbour. The face sweep uses the same sample difference on both sides: reversing the normal and reversing the difference in the neighbour formula cancel each other.
+
 Their traversal and summation order differ. The face implementation uses atomic additions, so floating-point results need not be bitwise identical or reproducible across execution schedules. Neither interpolation mode adds a skewness correction or limiter automatically.
 
 Least squares fits sample differences using weights `1 / |d|^2`:
@@ -85,6 +89,8 @@ $$
 $$
 
 A sample is the opposite cell across an interior face, including a stored MPI ghost, or the external face centroid. The stencil uses face adjacency, not all node neighbours. Preparation scales displacements, forms a 3-by-3 matrix, and checks its Cholesky pivots relative to the matrix trace. A singular or insufficiently resolved 3D stencil terminates setup; there is no automatic lower-dimensional fit or scheme fallback.
+
+After solving the local matrix, preparation stores a three-component weight for each entry of the cell's face list. Applying the scheme multiplies each stored vector by the current sample-minus-cell value and adds the result. The same weights serve every field component because the fit uses the same mesh points.
 
 ## Complete scalar example
 
