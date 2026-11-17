@@ -10,10 +10,19 @@
 
 namespace krona::mesh::device {
 
-/// @brief Local counts; face intervals are valid only when faces_grouped is true.
+/// @brief Counts and local index ranges for this rank's mesh.
 struct MeshSizes {
+    // Cells: [0, n_own) are owned; [n_own, n_cells) are ghosts.
     LocalIndex n_own = 0, n_cells = 0;
+
+    // Nodes: [0, n_nodes_own) are used by owned cells; the rest are used only by ghost cells.
     LocalIndex n_nodes_own = 0, n_nodes = 0;
+
+    // Every face owner is an owned cell. The neighbour is owned, ghost, or -1 at a boundary.
+    // These ranges follow host::MeshPart and are valid only when faces_grouped is true:
+    //   [0, n_internal_faces)              internal faces, between two owned cells
+    //   [n_internal_faces, n_inner_faces)  interface faces, between an owned and a ghost cell
+    //   [n_inner_faces, n_faces)           boundary faces, with no neighbour
     LocalIndex n_faces = 0, n_internal_faces = 0, n_inner_faces = 0;
     bool faces_grouped = false;
 };
@@ -42,12 +51,17 @@ enum class MeshData : std::uint64_t {
 namespace detail {
 
 /// @brief Selects writable owning buffers or const unmanaged kernel arrays.
+/// @tparam T Type of one array entry, for example LocalIndex or GeometryReal.
+/// @tparam Space Kokkos memory space where the array lives.
+/// @tparam Owning True for a managed buffer, false for a borrowed read-only view.
 template <class T, class Space, bool Owning>
 using MeshArray = Kokkos::View<std::conditional_t<Owning, T, const T>*, Space,
                                Kokkos::MemoryTraits<Owning ? 0 : Kokkos::Unmanaged>>;
 
 /// @brief Groups optional cell, face and node connectivity descriptors.
-template <class Space, bool Owning> 
+/// @tparam Space Kokkos memory space of the arrays.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct ConnectivityArrays {
     MeshArray<LocalIndex, Space, Owning> face_owner;
     MeshArray<LocalIndex, Space, Owning> face_neigh;
@@ -61,7 +75,9 @@ struct ConnectivityArrays {
 };
 
 /// @brief Groups optional coordinate, centroid, normal and measure descriptors.
-template <class Space, bool Owning> 
+/// @tparam Space Kokkos memory space of the arrays.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct GeometryArrays {
     MeshArray<GeometryReal, Space, Owning> node_x, node_y, node_z;
     MeshArray<GeometryReal, Space, Owning> cell_centroid_x, cell_centroid_y, cell_centroid_z;
@@ -71,16 +87,20 @@ struct GeometryArrays {
     MeshArray<GeometryReal, Space, Owning> face_area;
 };
 
-// Kernel gather/scatter maps. MPI peers and offsets live in the host HaloPlanView.
-/// @brief Stores kernel gather/scatter indices independently of host MPI metadata.
-template <class Space, bool Owning> 
+/// @brief Stores the owned cell IDs to send and the ghost cell IDs to fill on receive.
+/// MPI peers and offsets live in the host HaloPlanView.
+/// @tparam Space Kokkos memory space of the maps.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct HaloArrays {
     MeshArray<LocalIndex, Space, Owning> send_owned_local;
     MeshArray<LocalIndex, Space, Owning> recv_ghost_local;
 };
 
 /// @brief Combines sizes, readiness flags and selected mesh-array descriptors.
-template <class Space, bool Owning> 
+/// @tparam Space Kokkos memory space of the arrays.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct MeshArrays {
     using memory_space = Space;
 
@@ -100,7 +120,9 @@ struct MeshArrays {
 } // namespace detail
 
 /// @brief Read-only, non-owning descriptors passed by value to Kokkos kernels.
-template <class Space = execution::MemorySpace> 
+/// @tparam Space Kokkos memory space of the arrays, for example Kokkos::HostSpace.
+/// Defaults to the memory space of the configured KRONA backend.
+template <class Space = execution::MemorySpace>
 using MeshView = detail::MeshArrays<Space, false>;
 
 } // namespace krona::mesh::device

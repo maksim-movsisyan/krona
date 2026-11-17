@@ -13,10 +13,12 @@ struct MeshOptions {
     MeshData data = MeshData::FiniteVolume;
 };
 
-/// @brief Borrows host::MeshPart arrays on CPU; owns their selected copies on GPU.
-/// host::MeshPart must be validated and contain the selected groups.
-/// Finish all users before destroying storage or reallocating borrowed arrays.
-template <class Exec = execution::ExecutionSpace> 
+/// @brief Makes selected host mesh arrays available to kernels.
+/// Borrows the arrays in Kokkos::HostSpace and owns copies in other memory spaces.
+/// Finish kernels that use these arrays before destroying storage or reallocating borrowed arrays.
+/// @tparam Exec Kokkos execution space for transfers. Exec::memory_space determines
+/// where the arrays live. Defaults to the KRONA backend selected in CMake.
+template <class Exec = execution::ExecutionSpace>
 class MeshStorage {
 public:
     using memory_space = typename Exec::memory_space;
@@ -24,7 +26,11 @@ public:
     using view_type = MeshView<memory_space>;
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
-    /// @brief Creates a ready-to-use view; all requested uploads finish before return.
+    /// @brief Attaches the selected mesh arrays and waits for any uploads to finish.
+    /// @param mesh Validated host mesh with the selected groups. If the arrays are
+    /// borrowed, keep them alive at stable addresses while the view is in use.
+    /// @param options Groups to attach. The default is MeshData::FiniteVolume.
+    /// @param exec Execution-space instance used for the allocations and copies.
     explicit MeshStorage(const host::MeshPart& mesh, MeshOptions options = {}, Exec exec = {}) {
         mpi::guarded([&] {
             const auto selected = options.data;
@@ -144,7 +150,8 @@ private:
         }
     }
 
-    /// @brief Attaches one selected host array through the common transfer mechanism.
+    /// @brief Borrows or copies one selected array.
+    /// @tparam T Element type of the source array.
     template <class T>
     static void attach(detail::MeshArray<T, memory_space, false>& view,
                        detail::MeshArray<T, memory_space, true>& buffer, const std::vector<T>& source,
@@ -158,8 +165,8 @@ private:
         return (static_cast<std::uint64_t>(mask) & bits) == bits;
     }
 
-    // Cheap shape checks; full index/geometry validation belongs to the mesh module.
-    /// @brief Checks readiness, counts and selected array shapes before attachment.
+    /// @brief Checks counts and array lengths before borrowing or copying host vectors.
+    /// The checks on the contents of the resulting views are in validation.hpp.
     static void validate(const host::MeshPart& m, MeshData selected) {
         execution::require_kokkos();
         mpi::require((static_cast<std::uint64_t>(selected) & ~static_cast<std::uint64_t>(MeshData::All)) == 0,

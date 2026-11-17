@@ -7,9 +7,11 @@
 
 namespace krona::mesh::device {
 
-/// @brief Borrows selected ready host caches on CPU; owns their copies on GPU.
-/// No table/metric construction and no MPI operations are performed here.
-template <class Exec = execution::ExecutionSpace> 
+/// @brief Makes precomputed adjacency tables available to kernels.
+/// Borrows the host arrays in Kokkos::HostSpace and owns copies in other memory spaces.
+/// @tparam Exec Kokkos execution space for transfers. Exec::memory_space determines
+/// where the arrays live. Defaults to the KRONA backend selected in CMake.
+template <class Exec = execution::ExecutionSpace>
 class AuxConnectivityStorage {
 public:
     using memory_space = typename Exec::memory_space;
@@ -18,10 +20,15 @@ public:
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
     /// @brief Attaches all groups marked ready in the source cache.
+    /// @param source Precomputed host connectivity. Borrowed arrays must outlive their users.
+    /// @param exec Execution-space instance used for transfers, which finish before return.
     explicit AuxConnectivityStorage(const host::MeshAuxConnectivity& source, Exec exec = {})
         : AuxConnectivityStorage(source, source.active_mask, exec) {}
 
-    /// @brief Attaches a requested subset; missing groups are rejected.
+    /// @brief Attaches a subset of the precomputed connectivity.
+    /// @param source Precomputed host connectivity. Borrowed arrays must outlive their users.
+    /// @param requested Groups to attach. Each must be present in source.active_mask.
+    /// @param exec Execution-space instance used for transfers, which finish before return.
     AuxConnectivityStorage(const host::MeshAuxConnectivity& source, AuxConnType requested, Exec exec = {}) {
         mpi::guarded([&] {
             validate(source, requested);
@@ -132,9 +139,11 @@ private:
     }
 };
 
-/// @brief Borrows selected ready host caches on CPU; owns their copies on GPU.
-/// No table/metric construction and no MPI operations are performed here.
-template <class Exec = execution::ExecutionSpace> 
+/// @brief Makes precomputed face metrics and cell wall distances available to kernels.
+/// Borrows the host arrays in Kokkos::HostSpace and owns copies in other memory spaces.
+/// @tparam Exec Kokkos execution space for transfers. Exec::memory_space determines
+/// where the arrays live. Defaults to the KRONA backend selected in CMake.
+template <class Exec = execution::ExecutionSpace>
 class AuxGeometryStorage {
 public:
     using memory_space = typename Exec::memory_space;
@@ -143,10 +152,15 @@ public:
     static constexpr bool borrows_host = detail::ArrayTransfer<Exec>::borrows_host;
 
     /// @brief Attaches all groups marked ready in the source cache.
+    /// @param source Precomputed host geometry. Borrowed arrays must outlive their users.
+    /// @param exec Execution-space instance used for transfers, which finish before return.
     explicit AuxGeometryStorage(const host::MeshAuxGeometry& source, Exec exec = {})
         : AuxGeometryStorage(source, source.active_mask, exec) {}
 
-    /// @brief Attaches a requested subset; missing groups are rejected.
+    /// @brief Attaches a subset of the precomputed geometry.
+    /// @param source Precomputed host geometry. Borrowed arrays must outlive their users.
+    /// @param requested Groups to attach. Each must be present in source.active_mask.
+    /// @param exec Execution-space instance used for transfers, which finish before return.
     AuxGeometryStorage(const host::MeshAuxGeometry& source, AuxGeomType requested, Exec exec = {}) {
         mpi::guarded([&] {
             validate(source, requested);

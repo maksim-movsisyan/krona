@@ -8,7 +8,9 @@ namespace krona::mesh::device {
 namespace detail {
 
 /// @brief Groups optional CSR descriptors for local cell and node stencils.
-template <class Space, bool Owning> 
+/// @tparam Space Kokkos memory space of the adjacency arrays.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct AuxConnectivityArrays {
     using memory_space = Space;
 
@@ -38,9 +40,9 @@ struct AuxConnectivityArrays {
     KOKKOS_INLINE_FUNCTION bool has_cell_cells_face() const noexcept {
         return has(AuxConnType::CellCellsByFace);
     }
-    /// @brief Reports availability of owned-used-node-to-cell rows.
+    /// @brief Reports whether nodes used by owned cells have rows listing their incident cells.
     KOKKOS_INLINE_FUNCTION bool has_node_cells() const noexcept { return has(AuxConnType::NodeCells); }
-    /// @brief Reports availability of owned-used-node-to-face rows.
+    /// @brief Reports whether nodes used by owned cells have rows listing their incident faces.
     KOKKOS_INLINE_FUNCTION bool has_node_faces() const noexcept { return has(AuxConnType::NodeFaces); }
     /// @brief Reports availability of unique local vertex-neighbour rows.
     KOKKOS_INLINE_FUNCTION bool has_cell_cells_node() const noexcept {
@@ -49,7 +51,9 @@ struct AuxConnectivityArrays {
 };
 
 /// @brief Groups optional face metrics and cell wall-distance descriptors.
-template <class Space, bool Owning> 
+/// @tparam Space Kokkos memory space of the geometry arrays.
+/// @tparam Owning True for managed buffers, false for borrowed read-only views.
+template <class Space, bool Owning>
 struct AuxGeometryArrays {
     using memory_space = Space;
 
@@ -113,12 +117,13 @@ struct AuxGeometryArrays {
 
 } // namespace detail
 
-// Optional data stays outside MeshView: kernels capture only needed descriptors.
-/// @brief Borrows read-only auxiliary connectivity for capture by kernels.
+/// @brief Read-only view of auxiliary adjacency arrays, passed separately from MeshView.
+/// @tparam Space Kokkos memory space of the arrays. Defaults to execution::MemorySpace.
 template <class Space = execution::MemorySpace>
 using AuxConnectivityView = detail::AuxConnectivityArrays<Space, false>;
 
-/// @brief Borrows read-only auxiliary metrics for capture by kernels.
+/// @brief Read-only view of auxiliary geometry arrays, passed separately from MeshView.
+/// @tparam Space Kokkos memory space of the arrays. Defaults to execution::MemorySpace.
 template <class Space = execution::MemorySpace>
 using AuxGeometryView = detail::AuxGeometryArrays<Space, false>;
 

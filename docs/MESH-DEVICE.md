@@ -104,7 +104,15 @@ Header: `krona/mesh/device/mesh_storage.hpp`. Combine `MeshData` flags with `|` 
 
 **`FiniteVolume` does not include node connectivity or coordinates.** Select them explicitly for kernels needing cell/face node loops. Unselected arrays stay absent; there are no implicit group dependencies. For example, selecting `FaceNodes` does not also select `FaceCells`.
 
-`mesh.has(flags)` checks whether all requested groups are present. Face intervals in `mesh.sizes` are meaningful only when `faces_grouped` is true; their meanings match `MeshPart`. Storage does not group faces, renumber entities or generate missing geometry. Patch strings, global IDs and donor ranks are not part of `MeshView`.
+`mesh.has(flags)` checks whether all requested groups are present. When `mesh.sizes.faces_grouped` is true, the face ranges follow `MeshPart`:
+
+| Local face range | Owner and neighbour |
+| --- | --- |
+| `[0, n_internal_faces)` | Internal. Both cells are owned by this rank. |
+| `[n_internal_faces, n_inner_faces)` | Interface. The owner is local and the neighbour is a ghost. |
+| `[n_inner_faces, n_faces)` | Boundary. The owner is local and the neighbour is `-1`. |
+
+With `faces_grouped == false`, use the neighbour ID to identify the face category. Storage does not group faces, renumber entities or generate missing geometry. Patch strings, global IDs and donor ranks are not part of `MeshView`.
 
 ## Select auxiliary data
 
@@ -161,9 +169,16 @@ Storage constructors are synchronous with respect to data upload. The optional E
 
 Header: `krona/mesh/device/validation.hpp`.
 
-`validation::validate<Data, Connectivity, Geometry, Compare>(exec, mesh, conn, geom)` returns local error counters; `result.ok()` means all counters are zero. Select exactly the groups you need to check. The default `Data` is `MeshData::All`, so a default call is unsuitable for a `FiniteVolume`-only view.
+`validation::validate<Data, Connectivity, Geometry, Compare>(exec, mesh, conn, geom)` returns local error counters. `result.ok()` means all counters are zero. The three masks select base arrays, auxiliary adjacency tables and auxiliary metrics, respectively. The default base mask is `MeshData::All`. For storage built with the default `MeshOptions`, call:
 
-Shape/readiness errors prevent validation kernels from being launched. Further checks cover selected index ranges, CSR structure and numerical constraints. `Compare = true` additionally compares available incidence relations and selected metric relations. It does not require groups absent from the chosen masks. Validation completes its reductions before returning and performs no MPI collectives.
+```cpp
+const auto result = device::validation::validate<device::MeshData::FiniteVolume>(
+    exec, mesh_storage.view());
+```
+
+Validation first checks sizes and view descriptors on the host. If they pass, Kokkos reductions check the selected indices, compressed adjacency tables (CSR) and geometry. `Compare = true` also cross-checks selected groups that describe the same thing. For example, it compares a face's normal distance with the projection reconstructed from cell centres and the face normal when those arrays are selected. It checks links between adjacency tables after the earlier checks pass, since those links are used as indices. Selected auxiliary face metrics require grouped faces.
+
+The call waits for its reductions and performs no MPI collectives. Keep the arrays alive for the call and finish any producers on a different execution-space instance first.
 
 `valid_halo_plan(mesh, plan, rank, comm_size)` checks host peer metadata against map lengths. `duplicate_halo_receives(exec, mesh)` checks repeated receive destinations using temporary storage. Element-specific topology checks are also available as validation kernels; none of these establish global manifoldness or matching remote messages.
 

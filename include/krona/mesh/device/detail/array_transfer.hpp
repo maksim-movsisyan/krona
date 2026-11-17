@@ -10,13 +10,16 @@
 
 namespace krona::mesh::device::detail {
 
-/// @brief Shared transfer mechanism; no host cache is built or modified here.
-template <class Exec> 
+/// @brief Shares the same borrow-or-copy path between base and auxiliary storage.
+/// @tparam Exec Kokkos execution space for allocations and copies. If its memory
+/// space is Kokkos::HostSpace, the view borrows the host vector directly.
+template <class Exec>
 struct ArrayTransfer {
     using memory_space = typename Exec::memory_space;
     static constexpr bool borrows_host = std::is_same_v<memory_space, Kokkos::HostSpace>;
 
     /// @brief Borrows a HostSpace source or enqueues a copy into an owned device buffer.
+    /// @tparam T Element type of the host vector and the two Kokkos views.
     template <class T>
     static void attach(MeshArray<T, memory_space, false>& view, MeshArray<T, memory_space, true>& buffer,
                        const std::vector<T>& source, const char* label, const Exec& exec) {
