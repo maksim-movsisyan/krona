@@ -87,11 +87,11 @@ The constructor accepts `(mesh_view, host_plan, comm, tag, exec, transfer)`. The
 | `comm`, `tag` | A live, non-null communicator with matching rank numbering, and a tag in its valid MPI range. Reserve the tag for this group. |
 | `exec` | Instance used for metadata copies, packing, staging and unpacking. Kokkos and MPI must be active. Use the MPI main thread under the usual `MPI_THREAD_FUNNELED` runtime. |
 
-Offsets count **cells**, not scalar values or bytes. Each offset array has `peer_count + 1` nondecreasing entries, begins at zero and ends at its map length. For each transfer between two ranks, the sender’s cell list and the receiver’s ghost-cell list must describe the same global cells in the same order. The two lists may start at different offsets in their respective maps, and their local cell indices may differ.
+Offsets count **cells**, not scalar values or bytes. Each offset array has `peer_count + 1` nondecreasing entries, begins at zero and ends at its map length. When there are no peers and the map is empty, the offset array can also be empty. For each transfer between two ranks, the sender’s cell list and the receiver’s ghost-cell list must describe the same global cells in the same order. The two lists may start at different offsets in their respective maps, and their local cell indices may differ.
 
 Pass `view()` and `halo_plan()` from the same `MeshStorage` object. The mesh view supplies the send/receive cell maps; the halo plan supplies the peer ranks and offsets into those maps. The exchanger copies the peer ranks and segment boundaries but borrows the map arrays, which must remain valid and unchanged throughout its lifetime.
 
-prepare() is synchronous: it validates the maps, allocates reusable buffers, and completes all setup copies before returning. It performs no MPI communication and does not require other ranks to call it at the same time.
+`prepare()` checks the maps, allocates reusable buffers and waits for all setup copies. Each rank can call it independently.
 
 Ranks without exchange peers are supported. Every `Exchange` must register at least one component before `prepare()`, even when no data will be transferred. A zero-length component is valid only when the mesh has no local cells (`n_cells == 0`).
 
@@ -103,9 +103,11 @@ All components in one exchanger have the same mutable scalar type `T`. It defaul
 | --- | --- |
 | `add_field(view)` | Mutable `fields::FieldView<T, N, Space, Layout>`; registers components `0 ... N-1`. Scalars, vectors, full tensors and other positive fixed component counts are supported. |
 | `add_component(view)` | Mutable rank-one Kokkos view of exactly `T`, including strided component subviews or externally owned arrays. |
-| `add_pack(field::pack(...))` | Packed components from general fields packing module. |
+| `add_pack(fields::pack(...))` | A pack of writable components that all have type `T`, in pack order. |
 
 The execution space must be able to access each component's memory. SoA, AoS and accessible strided components can be mixed within one group. Packing handles their strides; the MPI message uses a packed SoA arrangement regardless of source layout.
+
+For example, if you register density followed by a velocity vector, a message for two cells contains `rho(a), rho(b), x(a), x(b), y(a), y(b), z(a), z(b)`. Each peer has its own block in the packed buffer.
 
 Every registered field/component must contain at least `n_cells` entries and use the mesh's local **cell indexing**:
 
@@ -127,7 +129,7 @@ selected.exchange(); // Ghost y values are not modified by this group.
 
 The variable names are those from the main example. Do not register the same nonempty component twice. More generally, registered components must not write to the same scalar locations; arbitrary overlapping aliases are not fully detected. Registration stores pointers and strides without copying field values or taking ownership.
 
-`component_count()` returns the total registered scalar components: scalar + vector = 4, a full tensor = 9. It is not the number of field objects. After `prepare()`, neither `add_field` nor `add_component` is allowed. Create a new exchanger to change the schema, pointers, maps, tag or transfer mode.
+`component_count()` counts scalar components. A scalar and a vector contribute four, a full tensor contributes nine. Finish all registration calls before `prepare()`, which closes registration. Create a new exchanger to change the component list, pointers, maps, tag or transfer mode.
 
 ## Matching neighbours
 
@@ -157,7 +159,7 @@ Outgoing values are a snapshot packed during `start()`. Once it returns, owned v
 
 | Method | What is complete when it returns? |
 | --- | --- |
-| Constructor, `add_field`, `add_component` | Local setup/registration only. No field exchange or producer completion is performed. |
+| Constructor, `add_field`, `add_pack`, `add_component` | Local setup and registration. These calls leave completion of field producers to the caller. |
 | `prepare()` | Blocking setup: map checks, reusable buffers and uploaded metadata are ready. No remote schema check or field exchange. |
 | `start()` | Receives and sends have been posted. With outgoing data, packing and optional device-to-host staging have completed before MPI uses the send buffer. MPI communication may still be pending. |
 | `finish_async()` | MPI sends/receives are complete. Incoming host-to-device staging and ghost scatter may still be queued on `exec`. |

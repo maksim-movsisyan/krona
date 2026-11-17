@@ -9,7 +9,9 @@ namespace krona::halo::detail {
 
 template<class> inline constexpr bool unsupported = false;
 
-// Select pinned staging for the actual execution space, not Kokkos' default backend.
+/// @brief Chooses the host buffer space used for MPI staging.
+/// @tparam Exec Kokkos execution space that copies the staging buffers to or from device memory.
+/// CUDA and HIP use pinned host memory. The general case uses ordinary HostSpace.
 template<class Exec> struct StagingSpace { using type = Kokkos::HostSpace; };
 #ifdef KOKKOS_ENABLE_CUDA
 template<> struct StagingSpace<Kokkos::Cuda> { using type = Kokkos::CudaHostPinnedSpace; };
@@ -18,8 +20,10 @@ template<> struct StagingSpace<Kokkos::Cuda> { using type = Kokkos::CudaHostPinn
 template<> struct StagingSpace<Kokkos::HIP> { using type = Kokkos::HIPHostPinnedSpace; };
 #endif
 
-struct Segment { 
-    std::size_t offset = 0, count = 0;
+/// @brief One peer's range in the send or receive cell map.
+struct Segment {
+    std::size_t offset = 0; ///< First slot in the map, counted in cells.
+    std::size_t count = 0;  ///< Number of cells in that peer's range.
 };
 
 } // namespace krona::halo::detail
