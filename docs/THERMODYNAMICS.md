@@ -88,6 +88,28 @@ The reference parameters set the entropy zero: `s(T_ref, p_ref) = 0`. They do no
 | `dT_drho_e` | Specific internal energy | `0` |
 | `dT_de_rho` | Density | `1/cv` |
 
+### Acoustic evaluation
+
+`AcousticState<S>` contains pressure, temperature, density, specific internal
+energy and sound speed. The ideal gas provides three device-callable ways
+to fill it:
+
+| Method | Independent inputs |
+|---|---|
+| `try_acoustic_from_pT(p, T, state)` | Pressure and temperature |
+| `try_acoustic_from_rhoe(rho, e, state)` | Mass density and specific internal energy |
+| `try_acoustic_from_rhop(rho, p, state)` | Mass density and pressure |
+
+Use a validated gas model. The methods return true when all five output
+properties are finite and positive. On failure they return false and leave
+the output unchanged, so the caller can reject the state or select a fallback.
+The acoustic methods skip entropy and enthalpy. Use the full state when an
+algorithm needs either property. Acoustic evaluation is an optional capability
+outside the existing `AcousticEOS` concept.
+
+For the velocity and energy conversion that precedes evaluation from
+`(rho,e)`, see [Conservative flow states](FLOW.md).
+
 ### Evaluation in a kernel
 
 This example takes existing rank-one `pressure` and `temperature` views, with at least `count` current entries in memory accessible to `Exec`. `gas` is already validated. The application allocates the output explicitly:

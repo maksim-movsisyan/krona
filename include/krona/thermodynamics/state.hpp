@@ -20,6 +20,17 @@ struct State {
     Scalar sound_speed{};     ///< Adiabatic sound speed.
 };
 
+/// @brief Thermodynamic properties needed for acoustic fluxes and primitive recovery.
+/// @tparam Scalar Floating-point type used for the evaluated properties.
+template <class Scalar> 
+struct AcousticState {
+    Scalar pressure{};        ///< Static thermodynamic pressure.
+    Scalar temperature{};     ///< Absolute temperature.
+    Scalar density{};         ///< Mass per unit volume.
+    Scalar internal_energy{}; ///< Energy per unit mass with the model's energy reference.
+    Scalar sound_speed{};     ///< Adiabatic sound speed.
+};
+
 /// @brief Partial derivatives of pressure and temperature in (rho, e) coordinates.
 /// @tparam Scalar Type of each derivative.
 /// Here rho is the mass density and e is the specific internal energy.
@@ -32,7 +43,7 @@ struct RhoEDerivatives {
 };
 
 /// @brief Checks the two conversions used to query an acoustic equation of state.
-/// @tparam EOS Model type with const evaluation methods.ё
+/// @tparam EOS Model type with const evaluation methods.
 /// @tparam Scalar Scalar type of both inputs and all output properties.
 /// The conversions must return State<Scalar>. Entropy inversions and derivatives are separate capabilities.
 template <class EOS, class Scalar>

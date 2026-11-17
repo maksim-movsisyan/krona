@@ -11,6 +11,8 @@ target_compile_features(krona_test_support_host_only INTERFACE cxx_std_20)
 target_link_libraries(krona_test_support_host_only INTERFACE krona::mpi krona::warnings)
 
 add_subdirectory(math)
+add_subdirectory(flow)
+add_subdirectory(thermodynamics)
 add_subdirectory(mesh)
 add_subdirectory(fields)
 add_subdirectory(halo)

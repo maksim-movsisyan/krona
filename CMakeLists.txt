@@ -665,6 +665,7 @@ endif()
     #=== THERMODYNAMICS ===
     #======================   
 krona_interface(thermodynamics krona::execution krona::mpi)
+krona_interface(flow krona::math)
 
 
     #================

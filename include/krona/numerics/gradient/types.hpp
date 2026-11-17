@@ -42,13 +42,14 @@ struct Requirements {
     using mesh::AuxConnType;
     using mesh::AuxGeomType;
 
-    mpi::require(options.scheme == Scheme::GreenGaussCell ||
-                 options.scheme == Scheme::GreenGaussFace ||
-                 options.scheme == Scheme::LeastSquaresFace, 
-                 "Gradient: unknown scheme");
-    mpi::require(options.interpolation == Interpolation::Arithmetic ||
-                 options.interpolation == Interpolation::AuxiliaryWeights,
-                 "Gradient: unknown interpolation");
+    if (options.scheme != Scheme::GreenGaussCell &&
+        options.scheme != Scheme::GreenGaussFace &&
+        options.scheme != Scheme::LeastSquaresFace)
+        mpi::fatal("Gradient: unknown scheme");
+
+    if (options.interpolation != Interpolation::Arithmetic &&
+        options.interpolation != Interpolation::AuxiliaryWeights)
+        mpi::fatal("Gradient: unknown interpolation");
 
     // Current MeshData groups include the unused LS volumes, areas and normals.
     // Displacement vectors are an optional cache; centroids provide the fallback.

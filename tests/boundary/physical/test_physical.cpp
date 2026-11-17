@@ -254,14 +254,12 @@ void thermal_liquid_case(const Exec& exec)
 /// @brief Hides gamma to test an EOS interface without direct ideal-gas member access.
 struct WrappedGasEOS {
     Gas implementation;
-    [[maybe_unused]] void validate() const { implementation.validate(); }
     template<class S> KOKKOS_INLINE_FUNCTION auto from_pT(S p,S T) const { return implementation.from_pT(p,T); }
     template<class S> KOKKOS_INLINE_FUNCTION auto from_rhoe(S rho,S e) const { return implementation.from_rhoe(rho,e); }
 };
 
 /// @brief Adapts characteristic closures explicitly to the wrapped EOS type.
 struct WrappedCharacteristics {
-    [[maybe_unused]] void validate(const WrappedGasEOS&) const {}
     template<class R>
     KOKKOS_INLINE_FUNCTION auto inlet(const WrappedGasEOS& eos,const krona::boundary::FaceContext<R>& c,
         ph::Primitive<R,true> s,ph::TotalConditionsInlet<R> data) const
