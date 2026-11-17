@@ -12,6 +12,8 @@ namespace detail {
 
 template<class Native, class Values>
 auto block_values(Values values, std::size_t blocks, LocalOrdinal size) {
+    // Adjacent graph entries hold adjacent dense blocks. Inside each block use Tpetra's
+    // row and column strides so the view works with either native layout.
     using Layout = typename Native::little_block_type::array_layout;
     const std::size_t width = static_cast<std::size_t>(size);
     const std::size_t row_stride = std::is_same_v<Layout, Kokkos::LayoutLeft> ? 1 : width;
@@ -30,6 +32,7 @@ struct SetBsrValues {
     std::size_t width;
 
     KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
+        // Decode a row-major input position, then let the destination view handle native strides.
         const auto entry = i/(width*width);
         const auto row = (i/width)%width;
         const auto column = i%width;
@@ -42,8 +45,10 @@ struct SetBsrValues {
 
 } // namespace detail
 
-/// @brief Fixed-size dense blocks on an immutable graph of block rows.
-/// Graph distribution indexes blocks; distribution() indexes cell-major scalar DOFs.
+/// @brief Owns the coefficients of a Tpetra::BlockCrsMatrix on a graph of block rows.
+/// @tparam Scalar Precision of the values stored inside each dense block.
+/// @tparam Exec Kokkos execution space used by Tpetra and coefficient assembly.
+/// @details The graph indexes entire blocks. distribution() gives the scalar map used by vectors.
 template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace>
 class BsrMatrix {
 public:
@@ -55,7 +60,7 @@ public:
     using native_type_for = typename Types<OtherScalar, Exec>::block_matrix_type;
     static constexpr bool block_storage = true;
 
-    /// @brief Collective; copies the pattern descriptors and allocates coefficients.
+    /// @brief Collectively allocates block coefficients using the pattern's graph and maps.
     explicit BsrMatrix(const BsrPattern<Exec>& pattern) : pattern_(pattern) {
         mpi::guarded([&] {
             matrix_ = create_native_structure<Scalar>();
@@ -73,9 +78,11 @@ public:
     [[nodiscard]] LocalOrdinal block_size() const noexcept { return pattern_.block_size(); }
     [[nodiscard]] std::size_t local_values() const noexcept
     { return pattern_.local_values(); }
+    /// @brief Change counter used by the preconditioner. A write view advances it when requested.
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
 
-    /// @brief Native interoperability: independent coefficients sharing graph and point maps.
+    /// @brief Allocates a native block matrix on the same logical graph and scalar maps.
+    /// @tparam OtherScalar Precision of the new coefficients, used for mixed-precision preconditioning.
     template<class OtherScalar>
     [[nodiscard]] Teuchos::RCP<native_type_for<OtherScalar>> create_native_structure() const {
         return Teuchos::rcp(new native_type_for<OtherScalar>(*pattern_.native(),
@@ -84,17 +91,20 @@ public:
 
     /// @brief Flat native coefficient order; prefer edit_blocks() for layout-independent assembly.
     [[nodiscard]] auto edit_values(const Exec& exec = {}) {
-        begin_access(exec); ++revision_;
+        begin_access(exec);
+        ++revision_;
         return mpi::guarded([&] { return matrix_->getValuesDeviceNonConst(); });
     }
-    /// @brief Declares a full overwrite. Native BlockCrsMatrix still uses ReadWrite access.
+    /// @brief Gets a view for replacing all coefficients.
+    /// The native BlockCrsMatrix accessor uses ReadWrite, so it can still synchronize old values.
     [[nodiscard]] auto overwrite_values(const Exec& exec = {}) { return edit_values(exec); }
     [[nodiscard]] auto read_values(const Exec& exec = {}) const {
         begin_access(exec);
         return mpi::guarded([&] { return std::as_const(*matrix_).getValuesDevice(); });
     }
 
-    /// @brief Unmanaged (native graph entry, equation, variable) coefficient view.
+    /// @brief Gets a writable view indexed by (native block entry, equation row, unknown column).
+    /// The view aliases native storage. Use it only while this matrix and the batch are active.
     [[nodiscard]] auto edit_blocks(const Exec& exec = {})
     { return detail::block_values<native_type>(edit_values(exec), pattern_.local_nonzeros(), block_size()); }
     [[nodiscard]] auto overwrite_blocks(const Exec& exec = {})
@@ -102,6 +112,8 @@ public:
     [[nodiscard]] auto read_blocks(const Exec& exec = {}) const
     { return detail::block_values<native_type>(read_values(exec), pattern_.local_nonzeros(), block_size()); }
 
+    /// @brief Waits for user kernels submitted on the batch's execution instance.
+    /// Release access views before switching to host access or a native Tpetra operation.
     void commit() const {
         if (pending_) { pending_exec_.fence("Linalg: block matrix accesses committed"); pending_ = false; }
     }
@@ -125,7 +137,9 @@ public:
         });
     }
 
-    /// @brief Async original-order input: flat row-major blocks or a rank-three View.
+    /// @brief Submits a device copy of blocks in the original graph input order.
+    /// @tparam Input A flat row-major view or a Kokkos view indexed by (input entry, row, column).
+    /// @details Keep the input valid until commit() completes the copy.
     template<class Input>
     void set_values_async(Input input, const Exec& exec = {}) {
         static_assert(Input::rank == 1 || Input::rank == 3);
@@ -146,7 +160,10 @@ public:
     /// @brief Collective, blocking y = alpha*A*x + beta*y, including native remote imports.
     void apply(const Vector<Scalar, Exec>& x, Vector<Scalar, Exec>& y,
                Scalar alpha = Scalar{1}, Scalar beta = Scalar{0}) const {
-        require_committed(); x.require_committed(); y.require_committed();
+        require_committed();
+        x.require_committed();
+        y.require_committed();
+        // Native apply consumes scalar DOFs. The block-row map is used only by the graph.
         const auto* map = distribution().native().getRawPtr();
         mpi::require(x.distribution().native().getRawPtr() == map && y.distribution().native().getRawPtr() == map,
                      "Linalg: vectors must share the matrix distribution");
@@ -157,7 +174,8 @@ public:
         });
     }
 
-    /// @brief Advanced interoperability; call mark_modified() after native coefficient edits.
+    /// @brief Returns the underlying Tpetra block matrix for interoperability.
+    /// Finish native coefficient edits before calling mark_modified() to invalidate cached preconditioning.
     [[nodiscard]] const Teuchos::RCP<native_type>& native() const noexcept { return matrix_; }
     void mark_modified() { require_committed(); ++revision_; }
 
@@ -170,7 +188,8 @@ private:
 
     void begin_access(const Exec& exec) const {
         mpi::require(!pending_ || pending_exec_ == exec, "Linalg: commit before switching execution instances");
-        pending_exec_ = exec; pending_ = true;
+        pending_exec_ = exec;
+        pending_ = true;
     }
 };
 

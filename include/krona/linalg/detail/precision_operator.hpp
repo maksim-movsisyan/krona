@@ -5,7 +5,12 @@
 
 namespace krona::linalg::detail {
 
-/// @brief Wraps another scalar type; work vectors are cached, and apply is not reentrant.
+/// @brief Lets Belos call a preconditioner that uses a different scalar type.
+/// @tparam Scalar Precision of the vectors Belos passes to this operator.
+/// @tparam InnerScalar Precision accepted by the wrapped Tpetra operator.
+/// @tparam Exec Kokkos execution space used by both sets of native vectors.
+/// @details Each call converts the input and output values. Calls must run one at a time
+/// because they reuse the same cached work vectors.
 template<class Scalar, class InnerScalar, class Exec>
 class PrecisionOperator final : public Types<Scalar, Exec>::operator_type {
     using Outer = Types<Scalar, Exec>;
@@ -31,6 +36,8 @@ public:
             else if (beta != Scalar{1}) y.scale(beta);
             return;
         }
+        // A transpose swaps the input and output maps. Reuse the scratch vectors
+        // while the direction and the number of vector columns stay the same.
         const auto domain = mode == Teuchos::NO_TRANS ? getDomainMap() : getRangeMap();
         const auto range = mode == Teuchos::NO_TRANS ? getRangeMap() : getDomainMap();
         if (x_.is_null() || width_ != x.getNumVectors() || transposed_ != (mode != Teuchos::NO_TRANS)) {
@@ -40,14 +47,16 @@ public:
             y_ = Teuchos::rcp(new InnerMV(range, width_, false));
             converted_ = Teuchos::null;
         }
-        // Native conversion also handles nonconstant-stride multivector subviews.
+        // Convert the input before applying the inner operator. Tpetra's copy also
+        // handles multivector subviews whose columns are not at regular strides.
         Tpetra::deep_copy(*x_, x);
         inner_->apply(*x_, *y_, mode, InnerScalar{1}, InnerScalar{0});
         if (beta == Scalar{0}) {
             Tpetra::deep_copy(y, *y_);
             if (alpha != Scalar{1}) y.scale(alpha);
         } else {
-            // alpha/beta arithmetic stays in solver precision, and uses the actual y.
+            // Keep the original y for the beta term. Convert through a temporary so
+            // the final alpha and beta arithmetic uses the solver's precision.
             if (converted_.is_null()) converted_ = Teuchos::rcp(new MV(range, width_, false));
             Tpetra::deep_copy(*converted_, *y_);
             y.update(alpha, *converted_, beta);

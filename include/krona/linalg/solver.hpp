@@ -13,10 +13,12 @@
 
 namespace krona::linalg {
 
+/// @brief Selects left preconditioning (M^-1 A) or right preconditioning (A M^-1) in Belos.
 enum class PreconditioningSide { Automatic, Left, Right };
 
+/// @brief Common stopping controls and backend options for a distributed Belos solve.
 struct SolverOptions {
-    // Native Belos names; FGMRES is also accepted as FLEXIBLE GMRES.
+    // Use a native Belos solver name. FGMRES is an alias for FLEXIBLE GMRES.
     std::string method = "GMRES";
     // Unset chooses 1e-5 for float or 1e-10 for double, using the actual Solver scalar.
     std::optional<double> relative_tolerance;
@@ -31,6 +33,7 @@ struct SolverOptions {
     PreconditionerOptions preconditioner;
 };
 
+/// @brief Records Belos status separately from an independently measured residual when available.
 struct SolveResult {
     // Belos status after iteration, unless verify_residual requests the true-residual test.
     // Early exits use the already-computed initial residual.
@@ -47,8 +50,11 @@ struct SolveResult {
     double residual_threshold = 0;
 };
 
-/// @brief Configurable Belos solve with optional independent final true-residual verification.
-/// Collective and blocking; matrix must outlive the solver. Not reentrant.
+/// @brief Connects a KRONA matrix and vectors to a Belos linear problem and Krylov solver.
+/// @tparam Matrix KRONA CSR or BSR matrix type. Its scalar type is the precision Belos uses.
+/// @tparam PrecScalar Precision of the native preconditioner, which can differ from the solver's.
+/// @details Owns the Belos problem, solver manager, and preconditioner. The borrowed matrix must outlive it.
+/// Solves are collective and blocking, and calls on this object must run one at a time.
 template<class Matrix, class PrecScalar = PreconditionerReal>
 class Solver {
     using Scalar = typename Matrix::scalar_type;
@@ -84,6 +90,7 @@ public:
                          "Linalg: selected Belos manager does not expose the common stopping controls");
             mpi::require(!valid->isParameter("Num Blocks") || options_.solver_parameters.isParameter("Num Blocks") ||
                          options_.restart_length > 0, "Linalg: nonpositive Krylov restart length");
+            // Keep one problem and manager so later solves can bind new vectors to the same operator.
             problem_ = Teuchos::rcp(new Problem);
             problem_->setOperator(matrix_.native());
             const bool symmetric = method_.ends_with("CG") || method_ == "MINRES";
@@ -100,7 +107,8 @@ public:
     Solver(const Solver&) = delete;
     Solver& operator=(const Solver&) = delete;
 
-    /// @brief Optional explicit warm-up; solve also prepares after coefficient revisions.
+    /// @brief Prepares and installs the preconditioner before a solve.
+    /// Optional. solve() also prepares it when iterations are needed.
     void prepare() {
         mpi::guarded([&] {
             // Let a rebuild release the old hierarchy before allocating a new one.
@@ -116,9 +124,14 @@ public:
     [[nodiscard]] const preconditioner_type& preconditioner() const noexcept { return preconditioner_; }
     [[nodiscard]] const Teuchos::RCP<manager_type>& native() const noexcept { return manager_; }
 
-    /// @brief Uses the supplied initial guess; RHS=0 uses ||r_initial|| as the relative reference.
+    /// @brief Solves A*x = rhs in place, starting from the supplied values in solution.
+    /// @param rhs Right-hand side on the matrix's owned scalar map.
+    /// @param solution Initial guess on entry and the resulting iterate on return.
+    /// @details Relative tolerance uses the RHS norm, or the initial residual norm when the RHS is zero.
     [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution) {
-        matrix_.require_committed(); rhs.require_committed(); solution.require_committed();
+        matrix_.require_committed();
+        rhs.require_committed();
+        solution.require_committed();
         const auto* map = matrix_.distribution().native().getRawPtr();
         mpi::require(rhs.distribution().native().getRawPtr() == map && solution.distribution().native().getRawPtr() == map,
                      "Linalg: solve vectors must share the matrix distribution");
@@ -134,6 +147,8 @@ public:
                 result.residual_threshold = options_.absolute_tolerance;
                 return result;
             }
+            // Measure b - A*x before iteration. This gives a stopping scale for a zero RHS
+            // and lets a sufficiently accurate initial guess return before setup.
             if (residual_.is_null())
                 residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.distribution().native(), false));
             const auto residual_norm = [&] {
@@ -166,6 +181,8 @@ public:
             mpi::require(problem_->setProblem(), "Linalg: Belos rejected the linear problem");
             auto parameters = Teuchos::rcp(new Teuchos::ParameterList(*manager_->getCurrentParameters()));
             const auto valid = manager_->getValidParameters();
+            // Express the wrapper's absolute stopping threshold in the form this manager accepts.
+            // Managers with configurable scaling use the raw norm. The others use the initial norm.
             const bool unscaled = valid->isParameter("Implicit Residual Scaling") || valid->isParameter("Residual Scaling");
             const double tolerance = unscaled ? result.residual_threshold :
                 result.residual_threshold/result.initial_residual_norm;
@@ -180,6 +197,7 @@ public:
             if (valid->isParameter("Explicit Residual Scaling")) parameters->set("Explicit Residual Scaling", "None");
             if (valid->isParameter("Num Blocks") && !options_.solver_parameters.isParameter("Num Blocks"))
                 parameters->set("Num Blocks", options_.restart_length);
+            // Allow enough restart cycles to reach the common iteration limit.
             if (valid->isParameter("Maximum Restarts") && valid->isParameter("Num Blocks") &&
                 !options_.solver_parameters.isParameter("Maximum Restarts")) {
                 const int length = parameters->get<int>("Num Blocks");
@@ -191,6 +209,7 @@ public:
             result.iterations_started = true;
             result.krylov_converged = manager_->solve() == Belos::Converged;
             result.iterations = manager_->getNumIters();
+            // An independent check costs another matrix apply and a global norm reduction.
             if (options_.verify_residual) record_residual(residual_norm());
             else result.converged = result.krylov_converged;
             Kokkos::fence("Linalg: solve complete");

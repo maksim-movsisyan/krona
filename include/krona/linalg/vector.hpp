@@ -7,7 +7,11 @@
 
 namespace krona::linalg {
 
-/// @brief Owned unknowns only; Tpetra imports remote values for its matrix operations.
+/// @brief Owns a Tpetra::Vector with one value for each locally owned unknown.
+/// @tparam Scalar Precision of the stored values.
+/// @tparam Exec Kokkos execution space used by Tpetra and the caller's kernels.
+/// @details Tpetra imports remote values during matrix operations. The vector stores the owned values.
+/// The local Kokkos view has shape (local_size(), 1) because Tpetra::Vector is a one-column multivector.
 template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace>
 class Vector {
 public:
@@ -16,6 +20,7 @@ public:
     using memory_space = typename Types<Scalar, Exec>::memory_space;
     using native_type = typename Types<Scalar, Exec>::vector_type;
     
+    /// @brief Allocates zero-initialized values and shares the distribution's native map.
     explicit Vector(const Distribution<Exec>& distribution) : distribution_(distribution) {
         mpi::guarded([&] {
             vector_ = Teuchos::rcp(new native_type(distribution_.native(), true));
@@ -28,12 +33,14 @@ public:
     [[nodiscard]] std::size_t local_size() const noexcept { return distribution_.local_size(); }
     [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return distribution_; }
 
-    /// @brief Joins an access batch on exec; commit before native operations or another instance.
+    /// @brief Gets writable device values, syncing existing values if Tpetra needs to.
+    /// Submit kernels on exec. End the batch with commit() before using a different
+    /// execution instance or passing the vector to Tpetra.
     [[nodiscard]] auto edit(const Exec& exec = {}) {
         begin_access(exec);
         return mpi::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::ReadWrite); });
     }
-    /// @brief Joins an asynchronous read/write batch on the same execution instance.
+    /// @brief Gets a read-only device view in the access batch on exec.
     [[nodiscard]] auto read(const Exec& exec = {}) const {
         begin_access(exec);
         return mpi::guarded([&] { return std::as_const(*vector_).getLocalViewDevice(Tpetra::Access::ReadOnly); });
@@ -43,7 +50,9 @@ public:
         begin_access(exec);
         return mpi::guarded([&] { return vector_->getLocalViewDevice(Tpetra::Access::OverwriteAll); });
     }
-    /// @brief Completes the custom execution-space read/write batch.
+    /// @brief Waits for kernels in the access batch on its execution instance.
+    /// Release access views before using the host or native APIs. Tpetra handles
+    /// host/device copies when the next access requests them.
     void commit() const {
         if (pending_) { mpi::guarded([&] { pending_exec_.fence("Linalg: vector accesses committed"); }); pending_ = false; }
     }
@@ -85,7 +94,8 @@ public:
     void copy_to_component(Component component, const Exec& exec = {}) const
     { copy_to_component_async(component, exec); commit(); }
 
-    /// @brief Advanced interoperability; native access bypasses wrapper state checks.
+    /// @brief Returns the underlying Tpetra vector for interoperability.
+    /// Commit before calling native operations. The returned handle bypasses the batch checks.
     [[nodiscard]] const Teuchos::RCP<native_type>& native() const noexcept { return vector_; }
     
 
@@ -98,7 +108,8 @@ private:
     void begin_access(const Exec& exec) const {
         mpi::require(!pending_ || pending_exec_ == exec,
                      "Linalg: commit before switching execution instances");
-        pending_exec_ = exec; pending_ = true;
+        pending_exec_ = exec;
+        pending_ = true;
     }
 };
 

@@ -11,8 +11,10 @@
 
 namespace krona::linalg {
 
-/// @brief Square-system owned-row distribution, independent of mesh and physics.
-/// Construction is collective; the borrowed MPI communicator must outlive its users.
+/// @brief Shares a Tpetra::Map that assigns each algebraic row or unknown to one rank.
+/// @tparam Exec Kokkos execution space used by the native map and its device lookups.
+/// @details A map gives the global ID at each local row position. Copies share the same native map.
+/// Construction is collective. Keep the borrowed MPI communicator alive while the map is in use.
 template<class Exec = execution::ExecutionSpace>
 class Distribution {
 public:
@@ -20,7 +22,9 @@ public:
     using map_type = typename IndexTypes<Exec>::map_type;
     using memory_space = typename IndexTypes<Exec>::memory_space;
 
-    /// @brief Preserves the supplied local row order; GIDs must be globally unique.
+    /// @brief Builds a map using the order of the supplied owned global IDs.
+    /// @param owned_gids Unique owned global IDs across all ranks. Use an empty list on a rank with no rows.
+    /// @param comm Communicator shared by all ranks in the system.
     Distribution(std::span<const GlobalOrdinal> owned_gids, mpi::CommView comm) {
         mpi::guarded([&] {
             mpi::require(Tpetra::isInitialized(), "Linalg: initialize Tpetra before constructing distributions");
@@ -28,12 +32,14 @@ public:
             const auto count = detail::local_count(owned_gids.size());
             for (const auto gid : owned_gids)
                 mpi::require(gid >= 0 && gid < std::numeric_limits<GlobalOrdinal>::max(), "Linalg: invalid owned GID");
+            // Check duplicates on this rank without changing the order Tpetra will use.
             if (!std::is_sorted(owned_gids.begin(), owned_gids.end())) {
                 std::vector<GlobalOrdinal> sorted(owned_gids.begin(), owned_gids.end());
                 std::sort(sorted.begin(), sorted.end());
                 mpi::require(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "Linalg: duplicate local owned GID");
             } else mpi::require(std::adjacent_find(owned_gids.begin(), owned_gids.end()) == owned_gids.end(),
                                 "Linalg: duplicate local owned GID");
+            // Teuchos wraps the MPI handle. The caller still owns the communicator.
             auto mpi_comm = Teuchos::rcp(new Teuchos::MpiComm<int>(Teuchos::opaqueWrapper(comm.native())));
             map_ = Teuchos::rcp(new map_type(Teuchos::OrdinalTraits<Tpetra::global_size_t>::invalid(),
                 Teuchos::ArrayView<const GlobalOrdinal>(owned_gids.data(), count), GlobalOrdinal{0}, mpi_comm));
@@ -50,8 +56,10 @@ public:
     }
     [[nodiscard]] const Teuchos::RCP<const map_type>& native() const noexcept { return map_; }
 
-    /// @brief Collective cell-major expansion: point_gid = block_gid*components + component.
-    /// Preserves local block order; one component shares the original map.
+    /// @brief Builds an owned scalar-DOF map with consecutive components for each block row.
+    /// @param components Number of unknowns per block row, equal on every rank.
+    /// @details For example, global block row 7 expands to IDs 21, 22, 23 for three components.
+    /// This is collective even for one component, where the original map is shared.
     [[nodiscard]] Distribution expanded(LocalOrdinal components) const {
         return mpi::guarded([&] {
             mpi::require(components > 0, "Linalg: nonpositive component count");

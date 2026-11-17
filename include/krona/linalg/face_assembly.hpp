@@ -9,20 +9,24 @@
 
 namespace krona::linalg {
 
-/// @brief Mesh-face to native graph-entry positions, independent of coefficient type and block size.
-/// owner_entries covers inner faces; neighbour_entries covers owned/owned faces; diagonal covers owned cells.
-/// For CSR an entry indexes a scalar; for BSR it indexes a dense block, not its flat coefficients.
+/// @brief Precomputed slots for adding face contributions to a finalized sparse matrix.
+/// @tparam Space Kokkos memory space holding the lookup arrays.
+/// @details Each slot indexes one scalar in CSR or one whole dense block in BSR.
 template<class Space>
 struct FaceAssemblyMap {
     using memory_space = Space;
     using view_type = Kokkos::View<const std::size_t*, Space>;
+    // owner_entries[f] gives A(owner, neighbour) for internal and MPI interface faces.
+    // neighbour_entries[f] gives A(neighbour, owner) for internal faces with two owned cells.
+    // diagonal[i] gives A(i, i) for owned cell i.
     view_type owner_entries, neighbour_entries, diagonal;
 };
 
-/// @brief Shared cell-neighbour graph and face-to-entry map for scalar CSR and block BSR matrices.
-/// Construct once per indexed mesh topology; copies share all graph/map allocations.
-/// Construction is collective/blocking. The mesh is not retained; the borrowed communicator must outlive users.
-/// Preserve local cell/face numbering and halo topology; rebuild after connectivity or numbering changes.
+/// @brief Builds the sparse cell-neighbour graph and direct lookup arrays used by assembly kernels.
+/// @tparam Exec Kokkos execution space used to build the pattern and upload the lookup arrays.
+/// @details Construction is collective and waits for the upload. Copies share all prepared allocations.
+/// The plan retains the prepared data and borrows the communicator. Rebuild after changes to
+/// connectivity, the halo plan, or local cell and face indices.
 template<class Exec = execution::ExecutionSpace>
 class FaceAssemblyPlan {
 public:
@@ -31,6 +35,10 @@ public:
     using pattern_type = CsrPattern<Exec>;
     using entry_map_type = FaceAssemblyMap<memory_space>;
 
+    /// @brief Prepares a plan for a host partition with grouped internal, interface, and boundary faces.
+    /// @param mesh Source partition. The plan does not retain it after construction.
+    /// @param comm Communicator matching the mesh partition. Keep it alive while the plan is in use.
+    /// @param exec Execution instance used to upload the lookup arrays.
     FaceAssemblyPlan(const mesh::host::MeshPart& mesh, mpi::CommView comm, const Exec& exec = {})
         : prepared_(prepare(mesh, comm, exec)), comm_(comm) {}
 
@@ -64,6 +72,7 @@ private:
             Distribution<Exec> distribution(numbering.owned_gids(), comm);
             // Native-entry assembly needs no additional original-input permutation.
             pattern_type pattern(distribution, input, exec, false);
+            // Resolve the final native entry once on the host so assembly kernels can use direct indexing.
             const auto native = pattern.native()->getLocalGraphHost();
             const auto find_entry = [&](std::size_t row, GlobalOrdinal gid) {
                 const auto column = pattern.native()->getColMap()->getLocalElement(gid);
@@ -80,6 +89,8 @@ private:
                              "Linalg: missing face assembly graph entry");
                 return static_cast<std::size_t>(begin);
             };
+            // An interface face contributes to the owned owner's row on this rank.
+            // The second row is local only for faces whose two cells are owned here.
             std::vector<std::size_t> diagonal(static_cast<std::size_t>(mesh.n_own)),
                 owner(static_cast<std::size_t>(mesh.n_inner_faces)),
                 neighbour(static_cast<std::size_t>(mesh.n_internal_faces));
@@ -99,7 +110,12 @@ private:
                 using Host = Kokkos::View<const std::size_t*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
                 Kokkos::deep_copy(exec, target, Host(source.data(), source.size()));
             };
-            execution::complete(exec, [&] { upload(d, diagonal); upload(o, owner); upload(n, neighbour); });
+            // The upload borrows these host arrays until it finishes.
+            execution::complete(exec, [&] {
+                upload(d, diagonal);
+                upload(o, owner);
+                upload(n, neighbour);
+            });
             return Prepared{std::move(pattern), {o, n, d}};
         });
     }

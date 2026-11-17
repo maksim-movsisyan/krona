@@ -17,8 +17,11 @@
 
 namespace krona::linalg {
 
+/// @brief Chooses the native preconditioner and passes parameters to its backend.
+/// Use the same options on every rank of the matrix communicator.
 struct PreconditionerOptions {
-    // Empty/NONE: identity; AMG/MUELU: MueLu; otherwise a native Ifpack2 name.
+    // Empty or NONE disables preconditioning. AMG and MUELU select MueLu.
+    // Other names are passed to the Ifpack2 factory.
     std::string type = "AMG";
     Teuchos::ParameterList parameters;
 };
@@ -42,8 +45,11 @@ struct ConvertMatrixValues {
 };
 } // namespace detail
 
-/// @brief Revision-aware native preconditioning, independent of the Krylov algorithm.
-/// Collective prepare; the matrix must outlive this object. Not reentrant.
+/// @brief Owns an Ifpack2, MueLu, or custom Tpetra preconditioner and refreshes it when A changes.
+/// @tparam Matrix KRONA CSR or BSR matrix type whose coefficients the preconditioner uses.
+/// @tparam PrecScalar Precision used by the native preconditioner.
+/// @details The matrix must outlive this object. Call prepare() collectively and use matching
+/// options and factory selection on all ranks. Calls on this object must run one at a time.
 template<class Matrix, class PrecScalar = PreconditionerReal>
 class Preconditioner {
     using Scalar = typename Matrix::scalar_type;
@@ -59,7 +65,7 @@ public:
     using operator_type = typename T::operator_type;
     using matrix_type = typename Matrix::template native_type_for<PrecScalar>;
     using inner_operator_type = typename P::operator_type;
-    // Called initially and after collectively detected coefficient changes.
+    // All ranks call the factory during initial preparation and after a refresh is requested.
     // A callback may reuse the previous operator or return a replacement.
     using Factory = std::function<Teuchos::RCP<inner_operator_type>(
         const Teuchos::RCP<const matrix_type>&, const Teuchos::RCP<inner_operator_type>&)>;
@@ -84,6 +90,8 @@ public:
     }
     void invalidate() noexcept { prepared_ = false; }
 
+    /// @brief Collectively builds or refreshes the native operator as needed.
+    /// Commit matrix assembly before calling. A change on any rank triggers the refresh on all ranks.
     void prepare() {
         matrix_.require_committed();
         mpi::guarded([&] {
@@ -92,6 +100,8 @@ public:
                 prepared_ = true;
                 return;
             }
+            // The native setup routines can communicate. Every rank has to take the same path
+            // even if only a subset received new coefficients.
             const int dirty = !prepared_ || prepared_revision_ != matrix_.revision() ? 1 : 0;
             int any_dirty = 0;
             Teuchos::reduceAll(*matrix_.native()->getComm(), Teuchos::REDUCE_MAX, 1, &dirty, &any_dirty);
@@ -105,6 +115,7 @@ public:
                 mpi::require(!inner_.is_null(), "Linalg: preconditioner factory returned null");
             } else if (type_ == "AMG" || type_ == "MUELU") {
                 const auto& settings = options_.parameters;
+                // Reuse is opt-in. Otherwise rebuild the hierarchy from the current coefficients.
                 const bool reuse = settings.isParameter("reuse: type") && settings.get<std::string>("reuse: type") != "none";
                 if (amg_.is_null() || !reuse) {
                     operator_ = Teuchos::null;
@@ -136,8 +147,10 @@ public:
                         }
                     }
                     ifpack_->setParameters(parameters);
+                    // Initialize the symbolic structure once for this fixed graph.
                     ifpack_->initialize();
                 }
+                // Refresh the numerical preconditioner using the current coefficients.
                 ifpack_->compute();
                 inner_ = ifpack_;
             }
@@ -149,6 +162,7 @@ public:
             const bool range_ok = inner_->getRangeMap()->isSameAs(*map);
             mpi::require(domain_ok && range_ok,
                 "Linalg: preconditioner maps do not match the matrix distribution; use SCHWARZ for local subdomain solvers");
+            // Belos must see an operator that accepts the solver's scalar type.
             if constexpr (std::is_same_v<Scalar, PrecScalar>) operator_ = inner_;
             else if (operator_.is_null() || previous != inner_.getRawPtr())
                 operator_ = Teuchos::rcp(new detail::PrecisionOperator<Scalar, PrecScalar, Exec>(inner_));
@@ -176,12 +190,15 @@ private:
         if constexpr (std::is_same_v<Scalar, PrecScalar>) {
             preconditioner_matrix_ = matrix_.native();
         } else {
+            // Keep one second coefficient array on the same graph and maps.
             if (preconditioner_matrix_.is_null()) {
                 preconditioner_matrix_ = matrix_.template create_native_structure<PrecScalar>();
             }
             const auto source = detail::read_coefficients(std::as_const(*matrix_.native()));
             const auto target = detail::overwrite_coefficients(*preconditioner_matrix_);
             using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
+            // Check the converted values too. A finite solver coefficient can overflow
+            // when converted to the preconditioner's precision.
             std::size_t bad = 0;
             Kokkos::parallel_reduce("linalg/preconditioner_coefficients", Policy(Exec{}, 0, target.extent(0)),
                 detail::ConvertMatrixValues<decltype(source), decltype(target)>{source, target}, bad);

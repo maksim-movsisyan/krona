@@ -343,7 +343,7 @@ if (result.residual_checked) {
 }
 ```
 
-`solver.prepare()` optionally warms up preconditioning. `solve()` also prepares when iteration is needed. Any-rank coefficient revision changes trigger refresh on all ranks. Ifpack2 initializes its structure once and recomputes numerical data after updates; `RELAXATION` defaults to Jacobi. MueLu defaults to rebuilding (`reuse: type = "none"`); supply a supported reuse policy to reuse a hierarchy. `preconditioner().invalidate()` requests another refresh; `generation()` counts completed enabled refreshes.
+`solver.prepare()` optionally warms up preconditioning. `solve()` also prepares when iteration is needed. With preconditioning enabled, preparation checks the coefficient revisions with one collective reduction. If any rank changed its coefficients, all ranks refresh together. Ifpack2 initializes its structure once and recomputes numerical data after updates; `RELAXATION` defaults to Jacobi. MueLu defaults to rebuilding (`reuse: type = "none"`); supply a supported reuse policy to reuse a hierarchy. `preconditioner().invalidate()` requests another refresh; `generation()` counts completed enabled refreshes.
 
 For BSR on Trilinos 17.2.1, `SCHWARZ` requires zero overlap and defaults its inner solver to `RBILUK`. Default block AMG uses an unsmoothed, block-preserving hierarchy, Jacobi relaxation, and `use kokkos refactor = false`; `number of equations` must match the block size. CSR AMG defaults to smoothed aggregation and a Chebyshev smoother. Native parameter choices and available coarse solvers depend on the installed Trilinos configuration.
 

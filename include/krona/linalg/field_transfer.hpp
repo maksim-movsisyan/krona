@@ -5,16 +5,24 @@
 
 namespace krona::linalg {
 
-/// @brief Packs fields::pack(...) into owned cell-major vector DOFs without intermediate storage.
-/// Opens a vector access batch; commit before native use or releasing field buffers.
+/// @brief Packs the owned prefix of each input field into the vector in cell-major order.
+/// @tparam Scalar Precision of the destination vector.
+/// @tparam Exec Kokkos execution space used for the copy.
+/// @tparam Input A readable field view or a fields::pack(...) descriptor.
+/// @details For a pack with three components, owned cell i starts at vector position 3*i.
+/// Commit the vector before native use or releasing the source fields.
 template<class Scalar, class Exec, class Input>
 void copy_from_fields_async(Vector<Scalar, Exec>& vector, Input input, const Exec& exec = {}) {
     const auto values = vector.overwrite(exec);
     fields::copy_to_dofs_async(exec, input, Kokkos::subview(values, Kokkos::ALL(), 0));
 }
 
-/// @brief Unpacks owned DOFs; ghost/boundary tails are untouched. Commit the vector after use.
-/// Destinations must be writable, mutually non-overlapping, and separate from native values.
+/// @brief Copies owned vector values into each destination field's owned prefix.
+/// @tparam Scalar Precision of the source vector.
+/// @tparam Exec Kokkos execution space used for the copy.
+/// @tparam Output A writable field view or a fields::pack(...) descriptor.
+/// @details Destination regions must be separate from each other and the vector storage.
+/// Commit the vector before using the output on another execution instance or releasing field buffers.
 template<class Scalar, class Exec, class Output>
 void copy_to_fields_async(const Vector<Scalar, Exec>& vector, Output output, const Exec& exec = {}) {
     const auto values = vector.read(exec);

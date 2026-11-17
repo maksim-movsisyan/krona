@@ -33,7 +33,9 @@
 
 namespace krona::linalg { 
 
+/// @brief Row or column index in a rank-local Tpetra map.
 using LocalOrdinal = int;
+/// @brief Identifier of an algebraic row or column across all ranks.
 using GlobalOrdinal = long long;
 
 namespace detail {
@@ -55,7 +57,8 @@ template<> struct NativeNode<Kokkos::HIP> { using type = Tpetra::KokkosCompat::K
 #endif
 } // namespace detail
 
-/// @brief Scalar-independent distribution and sparsity types.
+/// @brief Tpetra map and graph types shared by matrices of different precision.
+/// @tparam Exec Kokkos execution space with a matching Tpetra explicit instantiation.
 template<class Exec = execution::ExecutionSpace>
 struct IndexTypes {
     using execution_space = Exec;
@@ -64,11 +67,15 @@ struct IndexTypes {
     // Named nodes match Trilinos' ETI, including optional CUDA/HIP shared allocations.
     using node_type = typename detail::NativeNode<Exec>::type;
     using memory_space = typename node_type::memory_space;
+    // A map links local positions to global IDs. The graph records which columns each row uses.
     using map_type = Tpetra::Map<LocalOrdinal, GlobalOrdinal, node_type>;
     using graph_type = Tpetra::CrsGraph<LocalOrdinal, GlobalOrdinal, node_type>;
 };
 
-/// @brief Exact Trilinos types; mesh ordinal widths do not change this ABI.
+/// @brief Native Tpetra matrix, vector, and operator types used by the wrappers.
+/// @tparam Scalar Coefficient and vector precision supported by the Trilinos build.
+/// @tparam Exec Kokkos execution space with a matching Tpetra explicit instantiation.
+/// @details Tpetra uses int local indices and long long global IDs regardless of the mesh index types.
 template<class Scalar = SolverReal, class Exec = execution::ExecutionSpace>
 struct Types : IndexTypes<Exec> {
     static_assert(std::is_same_v<Scalar, float> || std::is_same_v<Scalar, double>);

@@ -11,12 +11,14 @@ namespace krona::linalg {
 
 /// @brief Host CSR input in owned-row order, with global column IDs.
 struct CsrInput {
-    std::vector<std::size_t> row_offsets;
-    std::vector<GlobalOrdinal> column_gids;
+    std::vector<std::size_t> row_offsets;   ///< Start of each owned row, plus the end of the last row.
+    std::vector<GlobalOrdinal> column_gids; ///< Column global IDs in input order, including remote global IDs.
 };
 
-/// @brief Immutable distributed sparsity and input-to-native coefficient mapping.
-/// Construction is collective; copies share the graph and device permutation.
+/// @brief Shares a finalized Tpetra::CrsGraph and, optionally, the input-to-native entry map.
+/// @tparam Exec Kokkos execution space used by the graph and the device entry map.
+/// @details The graph describes the allowed row/column pairs. Each matrix allocates its own coefficients.
+/// Construction is collective. Copies share the graph and the entry map allocations.
 template<class Exec = execution::ExecutionSpace>
 class CsrPattern {
 public:
@@ -25,6 +27,12 @@ public:
     using graph_type = typename IndexTypes<Exec>::graph_type;
     using permutation_type = Kokkos::View<const std::size_t*, typename Exec::memory_space>;
 
+    /// @brief Builds and finalizes the graph from CSR arrays on the host.
+    /// @param distribution Owned row and unknown map for the square system.
+    /// @param row_offsets Offsets into column_gids in the distribution's local row order.
+    /// @param column_gids Global column IDs, with unique columns within each row.
+    /// @param exec Execution instance used to upload the optional entry map.
+    /// @param keep_input_mapping Keep a lookup for assigning coefficients in the original input order.
     CsrPattern(const Distribution<Exec>& distribution, std::span<const std::size_t> row_offsets,
                std::span<const GlobalOrdinal> column_gids, const Exec& exec = {}, bool keep_input_mapping = true)
         : distribution_(distribution), has_input_mapping_(keep_input_mapping) {
@@ -32,6 +40,7 @@ public:
             const auto rows = distribution_.local_size();
             mpi::require(row_offsets.size() == rows+1 && row_offsets.front() == 0 &&
                          row_offsets.back() == column_gids.size(), "Linalg: invalid CSR offsets/extents");
+            // Supply exact row capacities and validate each row before inserting column IDs.
             std::vector<std::size_t> counts(rows);
             std::vector<GlobalOrdinal> sorted;
             for (std::size_t row = 0; row < rows; ++row) {
@@ -49,6 +58,7 @@ public:
             }
 
             {
+                // Ask the domain map who owns each distinct column absent on this rank.
                 std::vector<GlobalOrdinal> remote;
                 for (const auto gid : column_gids)
                     if (distribution_.native()->getLocalElement(gid) == Teuchos::OrdinalTraits<LocalOrdinal>::invalid())
@@ -71,6 +81,8 @@ public:
                     Teuchos::ArrayView<const GlobalOrdinal>(column_gids.data()+row_offsets[row],
                                                             detail::local_count(counts[row])));
             }
+            // Tpetra builds the column map and the import plan, then stores local column IDs.
+            // The column map includes remote unknowns referenced by this rank's rows.
             graph->fillComplete(distribution_.native(), distribution_.native());
             static_cast<void>(detail::local_count(graph->getColMap()->getLocalNumElements()));
             graph_ = graph;
@@ -80,6 +92,8 @@ public:
                 return;
             }
 
+            // Finalization can reorder entries. Find where each original input slot ended up
+            // by looking up its local column ID in the finalized, sorted row.
             const auto native_graph = graph_->getLocalGraphHost();
             std::vector<std::size_t> permutation(column_gids.size());
             for (std::size_t row = 0; row < rows; ++row) {
@@ -117,10 +131,12 @@ public:
     [[nodiscard]] bool has_input_mapping() const noexcept { return has_input_mapping_; }
     [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return distribution_; }
     [[nodiscard]] const Teuchos::RCP<const graph_type>& native() const noexcept { return graph_; }
+    /// @brief Returns a managed device view mapping an input slot to its native graph entry.
     [[nodiscard]] permutation_type input_to_entry() const {
         mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return input_to_entry_;
     }
+    /// @brief Returns the same mapping on the host as a span borrowed from the pattern.
     [[nodiscard]] std::span<const std::size_t> host_input_to_entry() const {
         mpi::require(has_input_mapping_, "Linalg: original CSR input mapping was disabled");
         return {host_input_to_entry_.data(), host_input_to_entry_.extent(0)};

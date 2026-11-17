@@ -4,8 +4,10 @@
 
 namespace krona::linalg {
 
-/// @brief Immutable block graph, fixed block size and expanded scalar-DOF distribution.
-/// Copies share graph, input permutation and maps. Reuse one pattern across block matrices.
+/// @brief Interprets a CSR graph as a graph of fixed-size dense blocks.
+/// @tparam Exec Kokkos execution space used by both the block and scalar maps.
+/// @details A graph entry stands for one dense block. The expanded map gives every component
+/// its own scalar ID for vectors and solvers. Copies share the graph, entry map, and maps.
 template<class Exec = execution::ExecutionSpace>
 class BsrPattern {
 public:
@@ -13,6 +15,9 @@ public:
     using memory_space = typename CsrPattern<Exec>::memory_space;
     using graph_type = typename CsrPattern<Exec>::graph_type;
 
+    /// @brief Builds a block pattern and collectively expands its owned distribution.
+    /// @param block_graph One row and column ID per block row or column.
+    /// @param block_size Number of rows and columns in each dense block, equal on every rank.
     BsrPattern(const CsrPattern<Exec>& block_graph, LocalOrdinal block_size)
         : graph_(block_graph), distribution_(block_graph.distribution().expanded(checked_size(block_size))), block_size_(block_size) {
         const std::size_t per_block = static_cast<std::size_t>(block_size_)*static_cast<std::size_t>(block_size_);
@@ -24,9 +29,12 @@ public:
     }
 
     [[nodiscard]] const CsrPattern<Exec>& block_graph() const noexcept { return graph_; }
+    /// @brief Returns the owned map with one local position per block row.
     [[nodiscard]] const Distribution<Exec>& block_distribution() const noexcept { return graph_.distribution(); }
+    /// @brief Returns the owned map used by vectors, with all components of each block row together.
     [[nodiscard]] const Distribution<Exec>& distribution() const noexcept { return distribution_; }
     [[nodiscard]] LocalOrdinal block_size() const noexcept { return block_size_; }
+    /// @brief Counts stored dense blocks, including any whose coefficients are zero.
     [[nodiscard]] std::size_t local_nonzeros() const noexcept { return graph_.local_nonzeros(); }
     [[nodiscard]] std::size_t local_values() const noexcept
     { return local_nonzeros()*static_cast<std::size_t>(block_size_)*static_cast<std::size_t>(block_size_); }

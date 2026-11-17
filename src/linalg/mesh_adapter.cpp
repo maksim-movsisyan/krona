@@ -49,6 +49,7 @@ CellNumbering build_cell_numbering(const mesh::host::MeshPart& m, mpi::CommView 
         CellNumbering result;
         result.n_owned = static_cast<std::size_t>(m.n_own);
         const auto owned = static_cast<GlobalOrdinal>(m.n_own);
+        // The prefix sum gives each rank the first ID in its contiguous owned range.
         mpi::check(MPI_Exscan(&owned, &result.owned_begin, 1, 
                    MPI_LONG_LONG_INT, MPI_SUM, comm.native()), "MPI_Exscan(linalg numbering)");
         if (rank == 0) result.owned_begin = 0;
@@ -58,6 +59,8 @@ CellNumbering build_cell_numbering(const mesh::host::MeshPart& m, mpi::CommView 
         for (std::size_t cell = 0; cell < result.n_owned; ++cell)
             result.cell_to_global[cell] = result.owned_begin+static_cast<GlobalOrdinal>(cell);
 
+        // Send the new IDs using the mesh's halo order. A separate MPI context keeps the
+        // numbering messages with tag zero independent of any other exchanges.
         mpi::Comm private_comm = mpi::Comm::duplicate(comm);
         std::vector<GlobalOrdinal> send(m.send_owned_local.size()), recv(m.recv_ghost_local.size());
         for (std::size_t i = 0; i < send.size(); ++i) send[i] = result.cell_to_global[static_cast<std::size_t>(m.send_owned_local[i])];
@@ -87,6 +90,7 @@ CellNumbering build_cell_numbering(const mesh::host::MeshPart& m, mpi::CommView 
         }
         if (!requests.empty())
             mpi::check(MPI_Waitall(detail::local_count(requests.size()), requests.data(), MPI_STATUSES_IGNORE), "MPI_Waitall(linalg numbering)");
+        // The receive lists translate packed MPI slots back to local ghost cell indices.
         for (std::size_t i = 0; i < recv.size(); ++i) {
             mpi::require(recv[i] >= 0 && recv[i] < result.global_cells, "Linalg: invalid received algebraic GID");
             result.cell_to_global[static_cast<std::size_t>(m.recv_ghost_local[i])] = recv[i];
@@ -116,6 +120,8 @@ CsrInput make_face_csr(const mesh::host::MeshPart& m, const CellNumbering& numbe
             "Linalg: mesh graph/numbering mismatch");
         const auto rows = numbering.n_owned;
         CsrInput result;
+        // Count one diagonal per owned row, then one entry for each face neighbour.
+        // A ghost can appear as a column. Its row is assembled on the rank that owns it.
         std::vector<std::size_t> counts(rows, 1);
         for (std::size_t face = 0; face < m.face_owner.size(); ++face) {
             const auto owner = m.face_owner[face], neighbour = m.face_neigh[face];
@@ -130,6 +136,7 @@ CsrInput make_face_csr(const mesh::host::MeshPart& m, const CellNumbering& numbe
             mpi::require(counts[row] <= std::numeric_limits<std::size_t>::max()-result.row_offsets[row], "Linalg: CSR size overflow");
             result.row_offsets[row+1] = result.row_offsets[row]+counts[row];
         }
+        // Use the offsets as initial write positions for the diagonal and off-diagonal IDs.
         result.column_gids.resize(result.row_offsets.back());
         counts.assign(result.row_offsets.begin(), result.row_offsets.end()-1);
         for (std::size_t row = 0; row < rows; ++row) result.column_gids[counts[row]++] = numbering.cell_to_global[row];
@@ -140,6 +147,8 @@ CsrInput make_face_csr(const mesh::host::MeshPart& m, const CellNumbering& numbe
             if (neighbour < m.n_own)
                 result.column_gids[counts[static_cast<std::size_t>(neighbour)]++] = numbering.cell_to_global[static_cast<std::size_t>(owner)];
         }
+        // Two cells can share several faces. Sort and compact each row in place so those
+        // faces will all assemble into the same off-diagonal slot.
         std::size_t old_begin = 0, write = 0;
         for (std::size_t row = 0; row < rows; ++row) {
             const auto old_end = result.row_offsets[row+1];
