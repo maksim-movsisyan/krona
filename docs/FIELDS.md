@@ -223,6 +223,8 @@ krona::execution::complete(exec, [&] {
 
 Runtime reads use ordinary numeric conversion, which may lose precision for some type/value combinations. Typed access performs no conversion. Constness of the pack descriptor itself does not make its data read-only; use read-only input views or `as_const()`. With a mixture of mutable and read-only inputs, `get<C>()` preserves each input's individual access rights, while same-type runtime access is read-only for the whole pack.
 
+Use `pack(...)` to compute the common length from the input views. If you construct a `ComponentPack` directly from pointers and strides, its length is supplied by you. Every descriptor must cover that many entities.
+
 ### Bounds, lifetime and execution
 
 - Indices satisfy `i < size()` and `c < components`. A longer input's tail is outside the pack's range. Any empty input makes the pack empty; never index an empty pack.
@@ -244,7 +246,7 @@ krona::fields::copy_from_dofs_async(exec, dofs, packed);
 exec.fence("field/DOF transfers complete");
 ```
 
-DOF order is `cell*components + component`, with components in pack order. The DOF view's extent selects the cell prefix and must be divisible by pack width. Every component must be at least that long. Field tails are preserved; field/component and DOF strides are respected.
+DOF order is `cell*components + component`, with components in pack order. For `pack(density, velocity)`, the first four entries are density, x, y and z for cell 0. The next four hold the same quantities for cell 1. The DOF view's extent divided by pack width gives the number of cells to copy, starting at cell 0. That division must be exact, and each component must cover at least that many cells. Field tails are preserved and both sides use their own strides.
 
 A single field or rank-one component view can replace `packed`. Mixed numeric types are supported, and each assignment converts directly to the exact destination scalar type. Read-only inputs are allowed; every unpacked component must be writable. Conversion representability, actual entity/DOF order and non-overlapping source/destination storage are caller contracts. Unpack destinations must not overlap each other.
 

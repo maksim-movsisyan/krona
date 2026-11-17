@@ -13,7 +13,8 @@ namespace krona::fields {
     
 namespace detail {
 
-// Indexed bases keep heterogeneous descriptors device-copyable; no std::tuple is stored.
+// The index gives each component its own slot, even when the descriptor types match.
+// Kernels carry just these slots. std::tuple below is used only to look up a type.
 template<std::size_t I, class Component>
 struct PackSlot { Component descriptor; };
 
@@ -45,6 +46,7 @@ constexpr std::size_t pack_width() {
 template<std::size_t C, class First, class... Rest>
 auto packed_input_component(const First& first, const Rest&... rest) {
     constexpr auto width = pack_width<First>();
+    // For pack(density, velocity), C = 2 skips density and selects velocity's component 1.
     if constexpr (C < width) {
         if constexpr (Kokkos::is_view<First>::value) return first;
         else if constexpr (requires { first.template component<C>(); })
@@ -61,8 +63,11 @@ std::size_t pack_extent(const Input& input) {
 
 } // namespace detail
 
-/// @brief Borrowed numeric components in argument order; no allocation, copy, submission or fence.
-/// All components share a memory space. size() is their minimum entity extent.
+/// @brief Groups borrowed numeric components so a kernel can use them together.
+/// @tparam Components One ComponentDescriptor type per component, in order.
+/// Component types and strides may differ. Their memory space must match.
+/// Create a pack with pack(...) to use the shortest input length as its size.
+/// Keep all backing allocations alive until the last kernel or copy finishes.
 template<class... Components>
 class ComponentPack : private detail::PackStorage<std::index_sequence_for<Components...>, Components...> {
     static_assert(sizeof...(Components) > 0);
@@ -83,13 +88,18 @@ public:
     static_assert((std::is_same_v<memory_space, typename Components::memory_space> && ...),
                   "Fields: packed components must share one memory space");
 
+    /// @brief Builds a pack from component descriptors with a caller-supplied common length.
+    /// @param extent Number of entities each supplied descriptor must be able to access.
+    /// @param c Descriptors with valid pointers and strides for that range, in pack order.
     KOKKOS_INLINE_FUNCTION explicit ComponentPack(std::size_t extent, Components... c)
         : Storage(c...), extent_(extent) {}
 
     KOKKOS_INLINE_FUNCTION std::size_t size() const { return extent_; }
     KOKKOS_INLINE_FUNCTION bool empty() const { return extent_ == 0; }
 
-    /// @brief Exact scalar reference; preserves this component's individual constness.
+    /// @brief Accesses a component in its original scalar type and with its own write permissions.
+    /// @tparam C Zero-based component index known at compile time.
+    /// @param entity Local index in [0, size()).
     template<std::size_t C>
     KOKKOS_INLINE_FUNCTION decltype(auto) get(std::size_t entity) const {
         static_assert(C < components);
@@ -98,7 +108,8 @@ public:
         return (c.data[entity*c.stride]);
     }
 
-    /// @brief Borrowed rank-one view of one component, restricted to the common pack extent.
+    /// @brief Borrows a rank-one view of one component, limited to size() entities.
+    /// @tparam C Zero-based component index known at compile time.
     template<std::size_t C>
     KOKKOS_INLINE_FUNCTION auto component() const {
         static_assert(C < components);
@@ -109,14 +120,18 @@ public:
         return View(c.data, Kokkos::LayoutStride(extent_, c.stride));
     }
 
-    /// @brief Same scalar types: reference (read-only if any input is const).
-    /// Mixed scalar types: common-type value; write through get<C>() or component<C>().
+    /// @brief Accesses a component selected at runtime.
+    /// @param entity Local index in [0, size()).
+    /// @param c Component index in [0, components).
+    /// With a single scalar type, returns a reference that is read-only if any input is const.
+    /// With mixed scalar types, returns a value converted to their common type.
+    /// Use get<C>() or component<C>() to write to a mutable component of a mixed pack.
     KOKKOS_INLINE_FUNCTION decltype(auto) operator()(std::size_t entity, std::size_t c) const {
         KOKKOS_ASSERT(entity < extent_ && c < components);
         return access(entity, c, std::index_sequence_for<Components...>{});
     }
 
-    /// @brief Read-only descriptors of the same buffers; does not copy field values.
+    /// @brief Borrows the same values with read-only access to every component.
     KOKKOS_INLINE_FUNCTION auto as_const() const
     { return read_only(std::index_sequence_for<Components...>{}); }
 
@@ -126,6 +141,7 @@ private:
     template<std::size_t... I>
     KOKKOS_INLINE_FUNCTION decltype(auto) access(std::size_t entity, std::size_t c,
                                                 std::index_sequence<I...>) const {
+        // Expand one comparison per component. Only the matching index accesses its values.
         if constexpr (homogeneous) {
             value_type* result = nullptr;
             ((c == I ? result = &this->template get<I>(entity) : result), ...);
@@ -158,8 +174,13 @@ auto make_component_pack(std::size_t extent, std::index_sequence<I...>, const In
 { return ComponentPack{extent, descriptor_from_view(packed_input_component<I>(inputs...))...}; }
 } // namespace detail
 
-/// @brief Flattens FieldViews, rank-one Kokkos views or existing packs, in argument/component order.
-/// Keep all backing allocations alive until every user finishes; no ownership is retained.
+/// @brief Borrows components in argument order, keeping the order within each input.
+/// @tparam First Type of the first field view, rank-one Kokkos view or existing pack.
+/// @tparam Rest Types of any further inputs, in the same forms as First.
+/// @param first First input. For example, pack(density, velocity) puts density before x, y and z.
+/// @param rest Any further inputs. Entity i must refer to the intended entry in every input.
+/// @return A borrowed pack whose size is the shortest input length.
+/// This is a host operation that only builds descriptors. Keep the allocations alive for all users.
 template<class First, class... Rest>
 [[nodiscard]] auto pack(First first, Rest... rest) {
     constexpr auto width = detail::pack_width<First>() + (detail::pack_width<Rest>() + ... + 0);
@@ -168,13 +189,15 @@ template<class First, class... Rest>
     return detail::make_component_pack(extent, std::make_index_sequence<width>{}, first, rest...);
 }
 
-/// @brief An existing valid pack already has the required representation.
+/// @brief Returns a copy of an existing pack's descriptors.
+/// @tparam Components Descriptor types already stored in the pack.
 template<class... Components>
 [[nodiscard]] auto pack(ComponentPack<Components...> packed) {
     return packed;
 }
 
 /// @brief Adapts one field; equivalent to pack(field).
+/// @tparam Field Type of the input view or pack.
 template<class Field>
 [[nodiscard]] auto field_pack(Field field) { return pack(field); }
 
