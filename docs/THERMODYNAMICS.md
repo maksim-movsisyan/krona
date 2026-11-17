@@ -18,9 +18,9 @@ namespace thermo = krona::thermodynamics;
 | `ConstantDensity<Real>` | Nonthermal incompressible material | `rho = 1000` |
 | `ThermalConstantDensity<Real>` | Incompressible material with constant density and specific heat | `rho = 1000`, `specific_heat = 4200`, `reference_temperature = 273` |
 
-These are the supplied models; The two constant-density models are material closures, **not acoustic EOS**: they have no sound-speed or `(rho,e)` inversion API.
+Use the constant-density models when the flow model prescribes density. Use an acoustic EOS when a consumer needs sound speed or inversion from density and specific internal energy.
 
-`Real` defaults to `ComputeReal` and stores the model parameters. Evaluation methods deduce a separate scalar type `S` from their arguments and return results in `S`. Pass both arguments with the same floating-point type. `cv()` and `cp()` return the parameter type `Real`.
+`Real` defaults to `ComputeReal` and stores the model parameters. Evaluation methods deduce a separate scalar type `S` from their arguments and return results in `S`. Pass both arguments with the same floating-point type. `IdealGas::cv()` and `cp()` compute their results in `Real`; the state conversions then cast the heat capacities to `S` before using them.
 
 ## Thermodynamic state
 
@@ -74,7 +74,7 @@ The reference parameters set the entropy zero: `s(T_ref, p_ref) = 0`. They do no
 | `validate()` | Host parameter check: all finite, `gamma > 1`, `R > 0`, and both reference values positive. Does not evaluate a field. |
 | `cv()`, `cp()` | Constant specific heat capacities. |
 | `from_pT(p, T)` | Returns all seven state members from pressure and temperature. |
-| `from_rhoe(rho, e)` | Uses `T = e/cv` and `p = rho*R*T`, then evaluates the state. `e` is **specific internal energy**, not `rho*e` or total energy. |
+| `from_rhoe(rho, e)` | Uses `T = e/cv` and `p = rho*R*T`, then evaluates the full state through `from_pT`. The returned density and internal energy are reconstructed from that pair and can differ from the inputs by rounding. |
 | `from_ps(p, s)` | Inverts the entropy relation at the specified pressure and returns the state. |
 | `from_hs(h, s)` | Uses `T = h/cp`, inverts pressure from entropy, and returns the state. |
 | `rhoe_derivatives(rho, e)` | Returns pressure/temperature derivatives in `(rho,e)` coordinates; does not evaluate or validate a complete state. |
@@ -197,6 +197,8 @@ For conservative variables, always remove kinetic energy before calling `from_rh
 $$
 e=\frac{\rho E}{\rho}-\frac{|u|^2}{2}.
 $$
+
+Here `rho*E` is total energy per unit volume from the flow state. The EOS takes `e` per unit mass. Likewise, when constructing a conservative flow state from a thermodynamic state, add the kinetic energy per unit mass to `State::internal_energy` before multiplying by density.
 
 The conservative energy must use the same reference as the EOS. Do not assume every EOS requires `e > 0`: that is a restriction of the supplied unshifted `IdealGas`, not part of `AcousticEOS`.
 
