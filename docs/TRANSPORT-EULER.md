@@ -36,6 +36,8 @@ Accessed base primitives must have finite positive `p,T`, finite velocity and an
 Assume active MPI/Kokkos, a prepared `mesh::host::MeshPart host`, and matching `comm`/`exec`. Run host setup under the project's `mpi::guarded` error boundary. The boundary example assumes patch `0` is an inlet facing negative x, patch `1` is an outlet and patch `2` contains slip walls; replace assignments for the actual mesh.
 
 ```cpp
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/transport/euler/operator.hpp>
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -89,8 +91,8 @@ Kokkos::deep_copy(exec, q.view().component(4), StorageReal{300});
 halo::Exchange<StorageReal, Exec> primitive_halo(m, mesh.halo_plan(), comm, 81, exec);
 primitive_halo.add_field(q.view());
 primitive_halo.prepare();
-rec::MeshStencil<Space, Real> stencil(m, conn.view());
-const auto first_order = eu::Reconstruction{rec::FirstOrder{}, rec::data(values), stencil};
+const rec::StencilData<Space, Real> stencil(m, conn.view());
+const auto first_order = eu::Reconstruction{rec::face_profiles(stencil, values, rec::FirstOrder{})};
 const eu::EulerOperator euler{plan, eu::Thermodynamics{gas}, ri::Hllc<>{}};
 eu::AssemblyStatus<Exec> status(exec);
 
@@ -127,9 +129,9 @@ fields::FieldStorage<StorageReal, 1, Exec> theta(
     "limiter/shared", cells, fields::FieldLocation::Custom, exec);
 numerics::gradient::GradientOperator<Exec> gradient(m, conn.view(), {}, {}, exec);
 const auto gradients = rec::gradient_pack(g.view()); // Component 3*c+axis.
-const auto unlimited = rec::data(values, gradients);
-const auto data = rec::data(values, gradients, fields::field_pack(theta.view()));
-const auto high_order = eu::Reconstruction{rec::LimitedLinear{}, data, stencil};
+const auto unlimited = rec::face_profiles(stencil, values, rec::Linear{gradients});
+const auto factors = fields::pack(theta.view());
+const auto high_order = eu::Reconstruction{rec::limited(unlimited, factors)};
 
 halo::Exchange<StorageReal, Exec> reconstruction_halo(m, mesh.halo_plan(), comm, 82, exec);
 reconstruction_halo.add_field(g.view());
@@ -142,8 +144,7 @@ boundary_status.begin_async();
 boundary.apply_async(physical, boundary_status, krona::boundary::scalar::NoFluxLaw{}, ph::Corrections<>{}, time);
 boundary_status.check();
 gradient.apply_async(q.view(), g.view()); // Computes 15 owned derivative components.
-rec::compute_limiters_async<Real>(exec, stencil, unlimited, fields::field_pack(theta.view()),
-    rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
+rec::compute_limiters_async<Real>(exec, unlimited, factors, rec::BarthJespersen{}, rec::SharedMinimum{});
 reconstruction_halo.exchange(); // Gradients and factors for real MPI ghosts.
 
 r.fill_async(exec, AccumulationReal{0});
@@ -154,28 +155,18 @@ const auto high_order_report = status.check(comm);
 
 Gradient input/output use the same storage scalar. `g` contains derivatives of `p,u,v,w,T`, in that order; it does not contain gradients of conservative variables. Default least squares needs a nondegenerate 3-D stencil. This configuration needs no auxiliary diffusion geometry.
 
-For independent factors, allocate `theta` with five components and select `rec::Componentwise{}` instead. If factors are omitted from `Data`, `UnitFactors` returns `1`: wrapping a scheme in `Limited` alone does not calculate or activate limiting.
+For independent factors, allocate `theta` with five components and select `rec::Componentwise{}` instead. The descriptor created by `rec::limited(profiles, factors)` reads the provided factors. Prepare them with the unlimited profiles or fill them with ones to use those profiles at full strength.
 
-| Interior scheme | Required data / boundary choice |
-| --- | --- |
-| `FirstOrder` | Primitive values only. |
-| `SecondOrderUpwind` | Gradients; unlimited linear trace. |
-| `LimitedLinear`, `Limited<Scheme>` | Required scheme inputs plus externally prepared factors. Prepare factors using that same **unlimited** scheme. |
-| `MusclKappa`, `Tvd` | Gradients and other-cell values. Explicitly choose the intended boundary scheme. |
-| `Quadratic` | Gradients, true Hessians and central cell moments. |
-| `Quick` / custom wider scheme | Explicit side stencils, valid samples/weights and sufficient halo data; no automatic stencil search. |
-
-`eu::Reconstruction{scheme, data, stencil}` uses the same configured scheme/parameters on inner faces and boundary interior traces. Unlike the scalar convection factory, **Euler does not automatically replace MUSCL/TVD at the boundary**. To avoid reading a boundary slot as the scheme's `other` sample, choose a one-sided trace explicitly:
+Choose the interior and physical-face formulas when binding the profile. For example, use TVD between cells and a one-sided linear trace at each physical face.
 
 ```cpp
-const auto tvd = eu::Reconstruction{rec::Tvd<>{}, data, stencil, rec::LimitedLinear{}};
+const auto raw_tvd = rec::face_profiles(stencil, values, rec::Tvd{gradients}, rec::Linear{gradients});
+rec::compute_limiters_async<Real>(exec, raw_tvd, factors, rec::BarthJespersen{}, rec::SharedMinimum{});
+// Exchange factors and derivatives before evaluating remote traces.
+const auto tvd = eu::Reconstruction{rec::limited(raw_tvd, factors)};
 ```
 
-Here TVD handles inner faces and the prepared cell factor limits the one-sided linear boundary trace. A custom stencil supplies `face<Scheme>(f)` or `face(f)` with owner/neighbour sides and `boundary_side(f)` suitable for the selected boundary scheme. Keep scheme geometry, factors and all accessed samples consistent; see `NUMERICS-RECONSTRUCTION.md`.
-
-Accessed reconstruction inputs must be finite, factors must lie in `[0,1]`, and indices/geometry must satisfy the scheme's stencil contract. The admissibility fallback below does not replace storage/stencil validation.
-
-Prefer extending schemes/data/stencils inside `eu::Reconstruction`. Replacing that adapter requires its full protocol: `scheme_type`, `boundary_scheme_type`, `.data` (including `values` and `factors`), `validate<Exec>(cells, extended, with_boundary)`, `interior<Real>(face)` returning five left/right values and `boundary<Real>(face)` returning five interior values.
+Keep the sampled fields, stencil, and prescribed boundary inputs current for the launch. The chosen formulas supply the interior traces. The closure below derives the exterior state. For explicit stencils, formula extension, and preparation contracts, see [Reconstruction](NUMERICS-RECONSTRUCTION.md).
 
 ## Physical faces and exterior states
 

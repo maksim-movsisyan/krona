@@ -113,7 +113,7 @@ struct BoundaryJacobianFaces {
         const auto f = static_cast<std::size_t>(face);
         const auto trace = physics.boundary_trace(f, current);
         const BoundaryLinearizationState<R> states{current.state, trace.primitive,
-            primitive<R>(physics.reconstruction.data.values, c.extended_index)};
+            primitive<R>(physics.reconstruction.values(), c.extended_index)};
         const auto derivative = [&] {
             if constexpr (requires { model.at(c, condition); })
                 return linearization(c, condition, model.at(c, condition), closure, states,

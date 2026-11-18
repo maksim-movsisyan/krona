@@ -1,6 +1,8 @@
 #include "common/test_support.hpp"
 
 #include <krona/transport/scalar/convection/operator.hpp>
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/transport/scalar/assembly.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
 #include <krona/linalg/bsr_matrix.hpp>
@@ -144,8 +146,9 @@ struct Inputs {
         Kokkos::parallel_for("test/convection_inputs", Kokkos::RangePolicy<Exec>(exec, 0, m.sizes.n_cells),
             Kernel{m,q,g,t,owned_only});
     }
-    auto data()
-    { return rec::data(krona::fields::pack(values.view()), rec::gradient_pack(gradients.view()), krona::fields::pack(factors.view())); }
+    auto packed_values() const { return krona::fields::pack(values.view()); }
+    auto slopes() const { return rec::gradient_pack(gradients.view()); }
+    auto limiter() const { return krona::fields::pack(factors.view()); }
 };
 
 /// @brief Computes b-A*phi through native algebra and compares with the direct residual.
@@ -216,7 +219,7 @@ void upwind(const Exec& exec)
 }
 
 /// @brief Checks affine deferred correction, matrix invariance and correction-only RHS updates.
-template<class Scheme, class R = double, class Layout = Kokkos::LayoutLeft>
+template<class R = double, class Layout = Kokkos::LayoutLeft, class Scheme>
 void affine_scheme(const Exec& exec, Scheme scheme)
 {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
@@ -224,7 +227,10 @@ void affine_scheme(const Exec& exec, Scheme scheme)
     Attached a(f, comm, exec); krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
     Boundary boundary(boundary_layout);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec); Inputs<R,Layout> input(a, exec);
-    const auto reconstruction = cv::make_reconstruction(a.plan, scheme, input.data(), 1);
+    const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+    const auto slopes = input.slopes();
+    const auto reconstruction = cv::make_reconstruction(
+        rec::face_profiles(stencil, input.packed_values(), scheme(slopes), rec::Linear{slopes}), 1);
     const double tolerance = std::is_same_v<R,float> ? 3e-6 : 2e-11;
     for (const Real velocity : {Real{3}, Real{-3}}) {
         // Deliberately wrong outflow values expose accidental use of a non-inflow boundary.
@@ -271,16 +277,16 @@ void affine_scheme(const Exec& exec, Scheme scheme)
 }
 
 /// @brief Checks linear upwind reconstruction in the native algebra path.
-void linear(const Exec& e) { affine_scheme(e, rec::SecondOrderUpwind{}); }
+void linear(const Exec& e) { affine_scheme(e, [](auto slopes) { return rec::Linear{slopes}; }); }
 
 /// @brief Checks TVD reconstruction in the native algebra path.
-void tvd(const Exec& e) { affine_scheme(e, rec::Tvd{}); }
+void tvd(const Exec& e) { affine_scheme(e, [](auto slopes) { return rec::Tvd{slopes}; }); }
 
 /// @brief Checks MUSCL-kappa reconstruction in the native algebra path.
-void muscl(const Exec& e) { affine_scheme(e, rec::MusclKappa{}); }
+void muscl(const Exec& e) { affine_scheme(e, [](auto slopes) { return rec::MusclKappa{slopes}; }); }
 
 /// @brief Checks float/AoS fields and strided components with TVD reconstruction.
-void strided_float(const Exec& e) { affine_scheme<rec::Tvd<>,float,Kokkos::LayoutRight>(e, rec::Tvd{}); }
+void strided_float(const Exec& e) { affine_scheme<float, Kokkos::LayoutRight>(e, [](auto slopes) { return rec::Tvd{slopes}; }); }
 
 /// @brief Checks zero limiter factors recover first order without reading invalid gradients.
 void limiting(const Exec& exec)
@@ -290,7 +296,9 @@ void limiting(const Exec& exec)
     Boundary boundary(boundary_layout); conditions(boundary);
     cv::ConvectionOperator convection(a.plan); ts::AssemblyStatus<Exec> status(exec); Inputs input(a,exec);
     input.factors.fill_async(exec,0.0); input.gradients.fill_async(exec,Kokkos::quiet_NaN_v<double>);
-    const auto reconstruction = cv::make_reconstruction(a.plan,rec::Limited<rec::Tvd<>>{},input.data(),1);
+    const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+    const auto profiles = rec::face_profiles(stencil, input.packed_values(), rec::Tvd{input.slopes()}, rec::Linear{input.slopes()});
+    const auto reconstruction = cv::make_reconstruction(rec::limited(profiles, input.limiter()), 1);
     Kokkos::View<double*,Space> plain("plain",f.host.n_own),limited("limited",f.host.n_own);
     Kokkos::deep_copy(exec,plain,0.0);Kokkos::deep_copy(exec,limited,0.0);
     status.begin_async();
@@ -529,7 +537,8 @@ void bsr(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
     Boundary boundary(boundary_layout);conditions(boundary,2,Real{-999});
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);Inputs<float,Kokkos::LayoutRight> input(a,exec);
-    const auto reconstruction=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},input.data(),1);
+    const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+    const auto reconstruction = cv::make_reconstruction(rec::face_profiles(stencil, input.packed_values(), rec::Linear{input.slopes()}), 1);
     linalg::BsrMatrix<double,Exec> matrix(a.assembly.pattern(),3);linalg::Vector<double,Exec> rhs(matrix.distribution());
     Kokkos::deep_copy(exec,matrix.overwrite_blocks(exec),0.0);Kokkos::deep_copy(exec,rhs.overwrite(exec),0.0);
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec,1);
@@ -564,6 +573,7 @@ void additive(const Exec& exec)
 
 /// @brief Supplies explicit polynomial stencils for independent cell-average QUICK checks.
 struct QuickStencil {
+    std::size_t required_input_size() const { return 3; }
     mesh::device::MeshView<Space> mesh;
     KOKKOS_INLINE_FUNCTION auto side(std::size_t cell,std::size_t face)const
     {
@@ -607,9 +617,14 @@ void quadratic_case(const Exec& exec)
         phi(i)=x*x+1.0/12;gx(i)=2*x;zero(i)=0;
     });
     const auto reconstruction=[&]{
-        if constexpr(Quick)return cv::make_reconstruction(rec::Quick{},rec::data(krona::fields::pack(phi)),QuickStencil{mesh});
-        else return cv::make_reconstruction(a.plan,rec::Quadratic{},rec::data(krona::fields::pack(phi),
-            rec::gradients(krona::fields::pack(gx),krona::fields::pack(zero),krona::fields::pack(zero)),rec::UnitFactors{},Hessians{},Moments{}));
+        const auto values = krona::fields::pack(phi);
+        if constexpr (Quick) {
+            return cv::make_reconstruction(rec::face_profiles(QuickStencil{mesh}, values, rec::Quick{}));
+        } else {
+            const rec::StencilData<Space, Real> stencil(mesh, a.plan.connectivity_view());
+            const auto slopes = rec::gradients(krona::fields::pack(gx), krona::fields::pack(zero), krona::fields::pack(zero));
+            return cv::make_reconstruction(rec::face_profiles(stencil, values, rec::Quadratic{slopes, Hessians{}, Moments{}}));
+        }
     }();
     for(const Real velocity:{Real{3},Real{-3}}){
         linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution());
@@ -643,7 +658,8 @@ void frozen_system(const Exec& exec)
     ts::SourceOperator source(a.mesh.view(),exec);ts::AssemblyStatus<Exec> status(exec);
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{Real{0.5}}};
     Inputs input(a,exec);input.values.fill_async(exec,0.0);input.gradients.fill_async(exec,0.0);
-    const auto reconstruction=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},input.data());
+    const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+    const auto reconstruction = cv::make_reconstruction(rec::face_profiles(stencil, input.packed_values(), rec::Linear{input.slopes()}));
     linalg::CsrMatrix<double,Exec> matrix(a.assembly.pattern());linalg::Vector<double,Exec> rhs(matrix.distribution()),x(matrix.distribution());
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
@@ -690,7 +706,9 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
     Inputs<double,Kokkos::LayoutRight> input(a,exec,true);
     halo::Exchange<double,Exec> exchange(a.mesh.view(),a.mesh.halo_plan(),comm,53,exec,halo::Transfer::HostStaged);
     exchange.add_field(input.values.view());exchange.add_field(input.gradients.view());exchange.add_field(input.factors.view());exchange.prepare();exchange.exchange();
-    const auto reconstruction=cv::make_reconstruction(a.plan,rec::Tvd{},input.data(),1);
+    const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+    const auto reconstruction = cv::make_reconstruction(
+        rec::face_profiles(stencil, input.packed_values(), rec::Tvd{input.slopes()}, rec::Linear{input.slopes()}), 1);
     cv::ConvectionOperator convection(a.plan);ts::AssemblyStatus<Exec> status(exec);
     const auto left_range=boundary.catalog().patches()[0].range,right_range=boundary.catalog().patches()[1].range;
     Kokkos::View<double*,Space> left("distributed left profile",left_range.end-left_range.begin);
@@ -751,13 +769,20 @@ void rejection(const Exec& exec,Reject which)
     }
     else if(which==Reject::ShortGradient){
         fields::FieldStorage<double,6,Exec> short_g("short gradients",static_cast<std::size_t>(f.host.n_cells-1),fields::FieldLocation::Custom,exec);
-        const auto r=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},rec::data(krona::fields::pack(input.values.view()),rec::gradient_pack(short_g.view())));
+        const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+        const auto r = cv::make_reconstruction(rec::face_profiles(stencil, input.packed_values(), rec::Linear{rec::gradient_pack(short_g.view())}));
         convection.add_system_async(target,boundary,status,VelocityFlux{},r);
     }else if(which==Reject::ShortFactors){
         fields::FieldStorage<double,1,Exec> short_f("short factors",static_cast<std::size_t>(f.host.n_cells-1),fields::FieldLocation::Custom,exec);
-        const auto r=cv::make_reconstruction(a.plan,rec::LimitedLinear{},rec::data(krona::fields::pack(input.values.view()),rec::gradient_pack(input.gradients.view()),krona::fields::pack(short_f.view())));
+        const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+        const auto profiles = rec::face_profiles(stencil, input.packed_values(), rec::Linear{input.slopes()});
+        const auto r = cv::make_reconstruction(rec::limited(profiles, krona::fields::pack(short_f.view())));
         convection.add_system_async(target,boundary,status,VelocityFlux{},r);
-    }else if(which==Reject::Component){const auto r=cv::make_reconstruction(a.plan,rec::SecondOrderUpwind{},input.data(),2);convection.add_system_async(target,boundary,status,VelocityFlux{},r);}
+    } else if (which == Reject::Component) {
+        const rec::StencilData<Space, Real> stencil(a.plan.mesh_view(), a.plan.connectivity_view());
+        const auto r = cv::make_reconstruction(rec::face_profiles(stencil, input.packed_values(), rec::Linear{input.slopes()}), 2);
+        convection.add_system_async(target, boundary, status, VelocityFlux{}, r);
+    }
     else if(which==Reject::Reconstruction)convection.add_system_async(target,boundary,status,VelocityFlux{},InvalidReconstruction{});
     else if(which==Reject::InPlace)convection.add_residual_async(target.rhs,target.rhs,boundary,status,VelocityFlux{});
     else if(which==Reject::Overflow)convection.add_system_async(target,boundary,status,VelocityFlux{Kokkos::finite_max_v<Real>/Real{2}});

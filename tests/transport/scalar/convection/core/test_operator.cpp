@@ -1,3 +1,5 @@
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <common/test_support.hpp>
 #include <krona/transport/scalar/convection/operator.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
@@ -117,8 +119,21 @@ struct NativeSystem {
 };
 
 
+struct MakeLinear {
+    auto operator()(auto slopes) const { return rec::Linear{slopes}; }
+};
+
+// Use namespace-scope types because equation() contains a KOKKOS_LAMBDA.
+struct MakeTvd {
+    auto operator()(auto slopes) const { return rec::Tvd{slopes}; }
+};
+
+struct MakeMuscl {
+    auto operator()(auto slopes) const { return rec::MusclKappa{slopes}; }
+};
+
 /// @brief Checks native convection assembly, direct residuals, frozen corrections and additive diffusion.
-template<class Storage, bool HighOrder, class Scheme = rec::SecondOrderUpwind>
+template<class Storage, bool HighOrder, class Scheme = MakeLinear>
 void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, bool empty=false,
               bool minimal=false, Scheme scheme={})
 {
@@ -141,8 +156,13 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
         g(i,0)=Storage(0.7); g(i,1)=Storage{0}; g(i,2)=Storage{0};
     });
     const auto reconstruction=[&]{
-        if constexpr(HighOrder) return cv::make_reconstruction(plan,scheme,rec::data(fields::pack(phi),rec::gradient_pack(g)));
-        else return cv::NoReconstruction{};
+        if constexpr (HighOrder) {
+            const rec::StencilData<Space, Real> stencil(plan.mesh_view(), plan.connectivity_view());
+            const auto slopes = rec::gradient_pack(g);
+            return cv::make_reconstruction(rec::face_profiles(stencil, fields::pack(phi), scheme(slopes), rec::Linear{slopes}));
+        } else {
+            return cv::NoReconstruction{};
+        }
     }();
     NativeSystem<Storage> system(f,exec); ts::AssemblyStatus<Exec> status(exec);
     constexpr bool float_storage = std::is_same_v<Storage, float>;
@@ -205,10 +225,14 @@ void upwind(const Exec&e){equation<double,false>(e);}
 void linear(const Exec&e){equation<double,true>(e);}
 
 /// @brief Checks the TVD reconstruction path against the assembled affine balance.
-void tvd(const Exec&e){equation<double,true>(e,false,false,false,false,rec::Tvd<>{});}
+void tvd(const Exec& e) {
+    equation<double, true>(e, false, false, false, false, MakeTvd{});
+}
 
 /// @brief Checks the MUSCL-kappa reconstruction path against the affine balance.
-void muscl(const Exec&e){equation<double,true>(e,false,false,false,false,rec::MusclKappa<>{});}
+void muscl(const Exec& e) {
+    equation<double, true>(e, false, false, false, false, MakeMuscl{});
+}
 
 /// @brief Checks convection with float state, coefficient and residual storage.
 void float_storage(const Exec&e){equation<float,true>(e);}

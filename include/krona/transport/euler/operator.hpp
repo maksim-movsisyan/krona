@@ -103,7 +103,7 @@ public:
         validate_jacobian_target(target.blocks, target.entries);
         validate_jacobian_boundary(reconstruction, boundary, time);
         cells = cell_range(cells);
-        submit_inner_jacobian(target, reconstruction.data.values, status, inner, inner_range({}), cells);
+        submit_inner_jacobian(target, reconstruction.values(), status, inner, inner_range({}), cells);
         submit_boundary_jacobian(target, reconstruction, boundary, status, closure, time, cells, outer);
     }
 
@@ -196,13 +196,16 @@ private:
         reconstruction.template validate<Exec>(cells,cells+static_cast<std::size_t>(s.n_faces-s.n_inner_faces),with_boundary);
         detail::validate_pack<Exec,true>(output,owned);
         if(owned==0)return;
-        detail::reject_exact_alias(reconstruction.data.values,output);
-        if constexpr(requires{reconstruction.data.gradients.x;}){
-            detail::reject_exact_alias(reconstruction.data.gradients.x,output);
-            detail::reject_exact_alias(reconstruction.data.gradients.y,output);
-            detail::reject_exact_alias(reconstruction.data.gradients.z,output);
-        }
-        detail::reject_exact_alias(reconstruction.data.factors,output);
+        detail::reject_exact_alias(reconstruction.values(),output);
+        reconstruction.profiles.visit_inputs([&](const char*, const auto& input, bool = false) {
+            if constexpr (requires { input.x; input.y; input.z; }) {
+                detail::reject_exact_alias(input.x, output);
+                detail::reject_exact_alias(input.y, output);
+                detail::reject_exact_alias(input.z, output);
+            } else {
+                detail::reject_exact_alias(input, output);
+            }
+        }, with_boundary);
     }
     template<class Boundary>
     void validate_boundary(const Boundary& boundary)const

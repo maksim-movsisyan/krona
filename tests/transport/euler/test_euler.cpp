@@ -48,19 +48,27 @@ void split_additive(const Exec& exec)
 }
 
 /// @brief Builds a reconstruction descriptor from explicit primitive gradients and mesh geometry.
-auto high_order(const Grid& grid,const auto& fields,auto gradients,auto scheme)
+template<class Fields, class Formula>
+auto high_order(const Grid& grid, const Fields& fields, Formula formula)
 {
-    return eu::Reconstruction{scheme,rec::data(fields.primitive(),rec::gradient_pack(gradients)),
-        rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
+    const rec::StencilData<Space, R> stencil(grid.storage.view(), grid.connectivity.view());
+    return eu::Reconstruction{rec::face_profiles(stencil, fields.primitive(), formula)};
 }
 
 /// @brief Supplies a configured reconstruction policy to check parameter forwarding.
+template<class Gradients>
 struct ScaledLinear {
-    static constexpr unsigned requirements=rec::Gradients;
-    R scale=0;
-    template<class T,class Side,class Data>
-    KOKKOS_INLINE_FUNCTION T increment(const Side& side,const Data& data,std::size_t component)const
-    {return static_cast<T>(scale)*rec::SecondOrderUpwind{}.template increment<T>(side,data,component);}
+    static constexpr auto geometry = rec::Geometry::Point;
+    rec::Linear<Gradients> linear;
+    R scale = 0;
+
+    template<class Visitor>
+    void visit_inputs(Visitor&& visit) const { linear.visit_inputs(visit); }
+
+    template<class Real, class Side, class Values>
+    KOKKOS_INLINE_FUNCTION Real increment(const Side& side, const Values& values, std::size_t component) const {
+        return static_cast<Real>(scale) * linear.template increment<Real>(side, values, component);
+    }
 };
 
 /// @brief Checks analytic affine face fluxes, configured schemes and zero-factor first-order recovery.
@@ -74,7 +82,7 @@ void affine(const Exec& exec)
         host(i,c)=static_cast<S>(c==0?0.1:c==3?0.2:c==12?0.05:0.);
     krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),host);});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    const auto reconstruction=high_order(grid,fields,gradients.view(),rec::SecondOrderUpwind{});
+    const auto reconstruction=high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())});
     status.begin_async();op.add_residual_async(reconstruction,fields.output(),boundary,status);
     check(status.check(comm).reconstruction_fallbacks==0,"affine states admissible");
     const auto result=fields.snapshot();const eu::Thermodynamics thermodynamics{gas()};
@@ -85,7 +93,7 @@ void affine(const Exec& exec)
         for(int c=0;c<5;++c)near(result(static_cast<std::size_t>(i),c),values[static_cast<std::size_t>(c)],tolerance(),"affine face flux residual");
     }
     fields.zero(exec);status.begin_async();
-    op.add_residual_async(high_order(grid,fields,gradients.view(),ScaledLinear{R{1}}),fields.output(),boundary,status);(void)status.check(comm);
+    op.add_residual_async(high_order(grid,fields,ScaledLinear{rec::Linear{rec::gradient_pack(gradients.view())}, R{1}}),fields.output(),boundary,status);(void)status.check(comm);
     const auto configured=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(configured(i,c),result(i,c),tolerance(),"boundary scheme inherits configured parameters");
     fields.zero(exec);status.begin_async();
@@ -95,14 +103,14 @@ void affine(const Exec& exec)
 
     // The TVD/Darwish adapter uses the same five-component batch and canonical stencil.
     fields.zero(exec);status.begin_async();
-    op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::Tvd<>{}),fields.output(),status);(void)status.check(comm);
+    op.add_inner_residual_async(high_order(grid,fields,rec::Tvd{rec::gradient_pack(gradients.view())}),fields.output(),status);(void)status.check(comm);
     const auto tvd=fields.snapshot();const auto f=ri::physical_flux(thermodynamics(profile(1.,true)),ri::Vector<R>{1,0,0});
     near(tvd(0,0),-static_cast<double>(f.mass),tolerance(),"TVD internal face");near(tvd(0,4),-static_cast<double>(f.energy),tolerance(),"TVD batch energy");
     fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
     const auto first_order=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,1,Exec> factors("factors",2,krona::fields::FieldLocation::Custom,exec);factors.fill_async(exec,S{0});
-    const auto limited=eu::Reconstruction{rec::LimitedLinear{},rec::data(fields.primitive(),rec::gradient_pack(gradients.view()),krona::fields::pack(factors.view())),
-        rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
+    const auto unlimited = high_order(grid, fields, rec::Linear{rec::gradient_pack(gradients.view())});
+    const auto limited = eu::Reconstruction{rec::limited(unlimited.profiles, krona::fields::pack(factors.view()))};
     status.begin_async();op.add_inner_residual_async(limited,fields.output(),status);(void)status.check(comm);
     const auto result_limited=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(result_limited(i,c),first_order(i,c),tolerance(),"zero external factors select first order");
@@ -119,7 +127,7 @@ void reconstruction_fallback(const Exec& exec)
     krona::fields::FieldStorage<S,15,Exec> gradients("bad_increment",2,krona::fields::FieldLocation::Custom,exec);
     gradients.fill_async(exec,S{0});auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
     h(0,0)=-10.;h(1,0)=10.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
-    status.begin_async();op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::SecondOrderUpwind{}),fields.output(),status);
+    status.begin_async();op.add_inner_residual_async(high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())}),fields.output(),status);
     const auto report=status.check(comm);check(report.reconstruction_fallbacks==4,"two bad sides per two row evaluations");
     const auto actual=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(actual(i,c),expected(i,c),tolerance(),"whole-side first-order fallback");
 }
@@ -326,7 +334,7 @@ void eos_domain(const Exec& exec)
     // Reconstruction leaves the EOS domain although original cell values remain admissible.
     h(0,0)=2.;h(1,0)=-2.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{RestrictedEOS{},PressureDomain{}}};status.begin_async();
-    op.add_inner_residual_async(high_order(grid,fields,gradients.view(),rec::SecondOrderUpwind{}),fields.output(),status);
+    op.add_inner_residual_async(high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())}),fields.output(),status);
     check(status.check(comm).reconstruction_fallbacks==4,"EOS domain checked before calling restricted EOS");
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),expected(i,c),tolerance(),"domain fallback");
 }

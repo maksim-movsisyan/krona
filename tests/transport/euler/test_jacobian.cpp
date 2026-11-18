@@ -178,9 +178,9 @@ void boundary_blocks(const Exec& exec, Grid& grid)
         for (std::size_t c = 0; c < 15; ++c)
             gradient_host(cell, c) = c == 0 ? S{1} / S{10} : (c == 12 ? S{1} / S{25} : S{0});
     krona::execution::complete(exec, [&] { Kokkos::deep_copy(exec, gradient.view().kokkos_view(), gradient_host); });
-    const auto reconstruction = eu::Reconstruction{rec::SecondOrderUpwind{},
-        rec::data(fields.primitive(), rec::gradient_pack(gradient.view())),
-        rec::MeshStencil<Space, R>{grid.storage.view(), grid.connectivity.view()}};
+    const rec::StencilData<Space, R> stencil(grid.storage.view(), grid.connectivity.view());
+    const auto reconstruction = eu::Reconstruction{rec::face_profiles(
+        stencil, fields.primitive(), rec::Linear{rec::gradient_pack(gradient.view())})};
 
     const auto fill = [&](R step) {
         auto p = fields.pressure.create_host_buffer();

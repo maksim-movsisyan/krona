@@ -35,7 +35,7 @@ struct Physics {
     KOKKOS_INLINE_FUNCTION auto prepare(boundary::physical::Primitive<R,true> q)const
     { return prepare_state(state_law, q); }
     KOKKOS_INLINE_FUNCTION auto base(std::size_t i)const {
-        const auto p=primitive<R>(reconstruction.data.values,i);
+        const auto p=primitive<R>(reconstruction.values(),i);
         return CellState<R>{p,prepare(p)};
     }
     KOKKOS_INLINE_FUNCTION auto reconstructed(const Kokkos::Array<R,5>& values,const CellState<R>& cell)const {
@@ -52,7 +52,7 @@ struct Physics {
             flag(flags,BadState);return numerics::riemann::Result<R>{{},R{0},numerics::riemann::Status::InvalidState};
         }
         auto l=left.state,r=right.state;
-        if constexpr(!std::is_same_v<typename Reconstruction::scheme_type,numerics::reconstruction::FirstOrder>){
+        if constexpr(!std::is_same_v<typename Reconstruction::inner_formula,numerics::reconstruction::FirstOrder>){
             const auto traces=reconstruction.template interior<R>(f);
             l=reconstructed(traces.left,left);r=reconstructed(traces.right,right);
         }
@@ -71,7 +71,7 @@ struct Physics {
         else return closure(c,condition,inside,face,model);
     }
     KOKKOS_INLINE_FUNCTION CellState<R> boundary_trace(std::size_t face, const CellState<R>& current) const {
-        if constexpr (!std::is_same_v<typename Reconstruction::boundary_scheme_type, numerics::reconstruction::FirstOrder>) {
+        if constexpr (!std::is_same_v<typename Reconstruction::boundary_formula, numerics::reconstruction::FirstOrder>) {
             const auto q = primitive(reconstruction.template boundary<R>(face));
             const auto candidate = prepare(q);
             if (state_valid(candidate)) return {q, candidate};
@@ -83,7 +83,7 @@ struct Physics {
     KOKKOS_INLINE_FUNCTION auto boundary_flux(const boundary::FaceContext<R>& c,const Condition& condition,
         const Model& model,const Closure& closure,const CellState<R>& current)const {
         const auto trace = boundary_trace(static_cast<std::size_t>(c.face), current);
-        const auto face=primitive<R>(reconstruction.data.values,c.extended_index);
+        const auto face=primitive<R>(reconstruction.values(),c.extended_index);
         const auto outside=exterior(c,condition,model,closure,trace.primitive,face);
         const auto r=prepare(outside);
         if(!state_valid(r)){

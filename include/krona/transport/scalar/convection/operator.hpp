@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/boundary/scalar/manager.hpp>
+#include <krona/transport/scalar/convection/plan.hpp>
 #include <krona/transport/scalar/convection/detail/kernels.hpp>
 #include <krona/transport/scalar/detail/views.hpp>
 

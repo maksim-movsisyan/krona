@@ -1,4 +1,7 @@
 #pragma once
+
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mesh/device/aux_storage.hpp>
@@ -125,7 +128,8 @@ struct Fields {
     auto physical(){return ph::primitive_views(pressure.view(),velocity.view(),temperature.view());}
     auto output(){return eu::conservative_fields(mass.view(),momentum.view(),energy.view());}
     auto reconstruction(const Grid& grid)const{
-        return eu::Reconstruction{rec::FirstOrder{},rec::data(primitive()),rec::MeshStencil<Space,R>{grid.storage.view(),grid.connectivity.view()}};
+        return eu::Reconstruction{rec::face_profiles(
+            rec::StencilData<Space, R>{grid.storage.view(), grid.connectivity.view()}, primitive(), rec::FirstOrder{})};
     }
     void zero(const Exec& exec,A value=0){mass.fill_async(exec,value);momentum.fill_async(exec,value);energy.fill_async(exec,value);}
     void initialize(const Grid& grid,const Exec& exec,bool affine=false){

@@ -8,25 +8,27 @@ namespace krona::apps::scalar_transport {
 namespace rec = numerics::reconstruction;
 namespace ts = transport::scalar;
 
-/// @brief Dispatches to one concrete scheme on the host before launching work.
-template<class Real, class Visitor>
-void with_reconstruction(const ts::ReconstructionOptions& options, const Visitor& visit) {
+/// @brief Passes a formula with its gradients to the visitor before launching device work.
+/// @tparam Real Scalar type storing the selected MUSCL parameter.
+/// @tparam Gradients Provider of the Cartesian derivative vectors.
+/// @tparam Visitor Host callable receiving the configured formula.
+template<class Real, class Gradients, class Visitor>
+void with_reconstruction(const ts::ReconstructionOptions& options, Gradients gradients, const Visitor& visit) {
     using Method = ts::ReconstructionMethod;
     using Limiter = ts::RatioLimiter;
     if (options.method == Method::Linear) {
-        visit(rec::SecondOrderUpwind{});
+        visit(rec::Linear{gradients});
         return;
     }
     mpi::require(options.method == Method::MusclKappa || options.method == Method::Tvd,
                  "Scalar transport: expected a high-order reconstruction");
     const auto with_skew = [&](auto skew) {
-        using Skew = decltype(skew);
         if (options.method == Method::MusclKappa) {
-            visit(rec::MusclKappa<Real, Skew>{static_cast<Real>(options.kappa), skew});
+            visit(rec::MusclKappa{gradients, static_cast<Real>(options.kappa), skew});
             return;
         }
         const auto tvd = [&](auto limiter) {
-            visit(rec::Tvd<decltype(limiter), rec::DarwishMoukalled, Skew>{limiter, {}, skew});
+            visit(rec::Tvd{gradients, limiter, rec::DarwishMoukalled{}, skew});
         };
         switch (options.tvd_limiter) {
             case Limiter::Minmod: return tvd(rec::tvd::Minmod{});

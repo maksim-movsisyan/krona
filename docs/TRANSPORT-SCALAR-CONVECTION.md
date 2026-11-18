@@ -219,33 +219,34 @@ The callable must be device-copyable and compile for every condition alternative
 
 ## Reconstruction
 
-Compute inputs externally, publish all accessed ghosts, then adapt the selected scalar component:
+Compute inputs and publish all sampled ghosts before submitting convection. In this example `dq` stores the three Cartesian derivatives for every real cell.
 
 ```cpp
-// dq has components (dphi/dx, dphi/dy, dphi/dz) for every real cell.
-// q and dq are already populated and remain alive.
-const auto input = rec::data(fields::pack(q), rec::gradient_pack(dq.view()));
-const auto reconstruction = cv::make_reconstruction(
-    plan, rec::SecondOrderUpwind{}, input);
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
+
+const rec::StencilData<Space, Real> stencil(plan.mesh_view(), plan.connectivity_view());
+const auto slopes = rec::gradient_pack(dq.view());
+const auto profiles = rec::face_profiles(stencil, fields::pack(q), rec::Linear{slopes});
+const auto reconstruction = cv::make_reconstruction(profiles);
 
 status.begin_async();
-convection.add_residual_async(q, residual, boundary, status, flux,
-    reconstruction);
+convection.add_residual_async(q, residual, boundary, status, flux, reconstruction);
 (void)status.check(comm);
 ```
 
-For several packed scalars, pass the selected component as the last argument to `make_reconstruction(plan, scheme, data, component)`. Gradient component order is `3*c + axis`. `Limited<...>` additionally needs previously computed factors in `data`; TVD computes its ratio limiter during reconstruction. Convection computes none of these inputs. See `NUMERICS-RECONSTRUCTION.md` for limiter preparation, Hessians and moments.
+Use `make_reconstruction(profiles, component)` to select one variable from a pack. The profile returns a correction to the transported scalar's base value, so the selected reconstruction component must refer to that same scalar.
 
-The mesh adapter uses both sides for inner faces. At outflow, schemes requiring `OtherValues` (such as MUSCL/TVD) default to one-sided `LimitedLinear`: no nonexistent exterior sample is read, and absent factors mean unit factors. Other schemes retain their own polynomial. An explicit one-sided outflow policy can be selected:
+For TVD or MUSCL, pass a one-sided profile explicitly for the interior trace at outflow. If limiting the full increment, prepare the factors from that same pair. Limiter bounds use the supplied neighbouring and physical-face samples.
 
 ```cpp
-const auto reconstruction = cv::make_reconstruction(
-    plan, rec::Tvd<>{}, input, rec::SecondOrderUpwind{});
+const auto raw = rec::face_profiles(stencil, extended_values, rec::Tvd{slopes}, rec::Linear{slopes});
+rec::compute_limiters_async<Real>(exec, raw, factors);
+// Publish factors to MPI ghosts along with the slopes before reconstructing.
+const auto reconstruction = cv::make_reconstruction(rec::limited(raw, factors));
 ```
 
-QUICK and larger/custom stencils use `make_reconstruction(scheme, data, stencil, component)`, with explicit `face(f)` (or `face<Scheme>(f)`) and `boundary_side(f)` methods. The stencil owns the choice of sample indices/geometry. All accessed samples must exist and be current; a check against `n_cells` cannot establish the validity of a larger stencil.
-
-Choose a concrete scheme on the host before submission, for example with a `switch` calling a templated lambda. No runtime scheme dispatch is needed inside face kernels. Reconstruction inputs must not overlap written coefficients, RHS or residual storage.
+For QUICK, pass a stencil supplying explicit `face(f)` and `boundary_side(f)` methods to `face_profiles`. Its declared `required_input_size()` covers the largest value index used on this rank. Keep all sampled data current and disjoint from written storage. Choose the concrete formula on the host for each launch. See [Reconstruction](NUMERICS-RECONSTRUCTION.md) for the custom stencil contract.
 
 ## Reuse a fixed upwind matrix
 

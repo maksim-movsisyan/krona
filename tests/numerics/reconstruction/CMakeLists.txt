@@ -4,7 +4,7 @@ target_link_libraries(krona_test_reconstruction PRIVATE krona_test_support krona
 if(NOT MPIEXEC_EXECUTABLE)
     message(FATAL_ERROR "Reconstruction tests require an MPI launcher")
 endif()
-foreach(case IN ITEMS first_order affine tvd darwish bounds venkat coupling ranges quick quadratic convergence mesh misuse)
+foreach(case IN ITEMS first_order affine tvd darwish bounds venkat coupling ranges quick quadratic convergence mesh misuse outflow_limiter)
     add_test(NAME "numerics.reconstruction.${case}"
         COMMAND "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 1 ${MPIEXEC_PREFLAGS}
             "$<TARGET_FILE:krona_test_reconstruction>" ${MPIEXEC_POSTFLAGS} "${case}")
@@ -21,11 +21,12 @@ set_tests_properties(numerics.reconstruction.mpi2 PROPERTIES
     ENVIRONMENT "OMP_NUM_THREADS=2;OMP_PROC_BIND=false")
 
 # Match invalid ranges and short descriptors with their specific diagnostics.
-set(cases range output gradient)
+set(cases range output gradient quick_extent)
 set(diagnostics
     "Reconstruction: invalid range or input/output extents"
     "Reconstruction: invalid range or input/output extents"
-    "Reconstruction: gradient extent is too short")
+    "Reconstruction: gradient extent is too short"
+    "Reconstruction: explicit stencil needs more values")
 list(LENGTH cases count)
 math(EXPR last "${count}-1")
 foreach(i RANGE "${last}")

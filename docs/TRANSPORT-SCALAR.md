@@ -280,7 +280,7 @@ pass uses the available gradients for nonorthogonal correction, starting
 from zero at initialization. If both nonorthogonal correction and cell
 limiting are active, refresh the face samples with the new gradients before
 computing limiter factors. Compute those factors using the selected
-unlimited reconstruction and exchange the gradients and any active factors.
+unlimited profiles for inner and physical faces, then exchange the gradients and any active factors.
 
 Boundary samples serve gradient and limiter stencils. Spatial assembly
 obtains the boundary contribution directly from the BC manager.

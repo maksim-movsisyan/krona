@@ -68,11 +68,13 @@ struct Samples {
     KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t) const { return 2; }
 
     /// @brief Returns a sample index and its owner-side reconstruction geometry.
-    KOKKOS_INLINE_FUNCTION rec::StencilEntry<double> operator()(std::size_t cell, std::size_t k) const
+    KOKKOS_INLINE_FUNCTION std::size_t sample(std::size_t, std::size_t k) const { return 1 + k; }
+
+    KOKKOS_INLINE_FUNCTION rec::CellSide<double> point(std::size_t cell, std::size_t k) const
     {
         const auto sample = k+1;
         const double sign = k == 0 ? -1.0 : 1.0;
-        return {sample, {cell, sample, {0.5*sign, 0, 0}, {sign, 0, 0}, 0.5}};
+        return {cell, sample, {0.5*sign, 0, 0}, {sign, 0, 0}, 0.5};
     }
 };
 
@@ -93,18 +95,19 @@ void mixed_factors(const Exec& exec)
         x(0, 0) = 4; x(0, 1) = x(0, 2) = 0;
         y(0, 0) = 2; y(0, 1) = y(0, 2) = 0;
     });
-    const auto raw = rec::data(fields::pack(a.as_const(), b.as_const()), rec::gradient_pack(fields::pack(x.as_const(), y.as_const())));
+    const auto values = fields::pack(a.as_const(), b.as_const());
+    const auto linear = rec::Linear{rec::gradient_pack(fields::pack(x.as_const(), y.as_const()))};
     const auto output = fields::pack(fa.view(), fb.view());
     static_assert(!decltype(output)::homogeneous);
-    rec::compute_limiters_async<double>(exec, Samples{}, raw, output);
+    rec::compute_limiters_async<double>(exec, Samples{}, values, linear, output);
     test::near(snapshot(fa.view().component(0), exec)(0), 0.25F, 0.0F, "float factor destination");
     test::near(snapshot(fb.view().component(0), exec)(0), 0.5, 0.0, "double factor destination");
 
     // Typed component writes must remain usable by a later mixed-type reconstruction.
-    const auto limited = rec::data(raw.values, raw.gradients, output);
+    const auto limited = rec::Limited{linear, output};
     Kokkos::View<double*, Space> traces("limited mixed traces", 2);
     Kokkos::parallel_for("test/mixed_factor_read", Kokkos::RangePolicy<Exec>(exec, 0, 1), KOKKOS_LAMBDA(int) {
-        const auto trace = rec::evaluate_side<double>(rec::LimitedLinear{}, Samples{}(0, 1).side, limited);
+        const auto trace = rec::evaluate_side<double>(limited, Samples{}.point(0, 1), values);
         traces(0) = trace[0]; traces(1) = trace[1];
     });
     const auto host = snapshot(traces, exec);
@@ -112,7 +115,7 @@ void mixed_factors(const Exec& exec)
     test::near(host(1), 1.0, 0.0, "limited double component");
 
     // SharedMinimum applies the strictest factor to both components and preserves tails.
-    rec::compute_limiters_async<double>(exec, Samples{}, raw, output, rec::BarthJespersen{}, rec::SecondOrderUpwind{}, rec::SharedMinimum{});
+    rec::compute_limiters_async<double>(exec, Samples{}, values, linear, output, rec::BarthJespersen{}, rec::SharedMinimum{});
     const auto ha = snapshot(fa.view().component(0), exec);
     const auto hb = snapshot(fb.view().component(0), exec);
     test::near(ha(0), 0.25F, 0.0F, "shared float destination"); test::near(hb(0), 0.25, 0.0, "shared double destination");
@@ -133,20 +136,22 @@ struct Tensors {
 
 /// @brief Requires cell moments while deliberately requiring no gradient or Hessian.
 struct MomentOnly {
-    static constexpr unsigned requirements = rec::Moments;
+    Tensors moments;
+    template<class Visitor> void visit_inputs(Visitor&& visit) const { visit("moment", moments); }
 
     /// @brief Uses only the owner's xx moment as the proposed increment.
     template<class R, class S, class D>
-    KOKKOS_INLINE_FUNCTION R increment(const S& s, const D& d, std::size_t) const { return static_cast<R>(d.moments(s.cell).xx); }
+    KOKKOS_INLINE_FUNCTION R increment(const S& s, const D&, std::size_t) const { return static_cast<R>(moments(s.cell).xx); }
 };
 
 /// @brief Requires a Hessian while deliberately requiring no gradient or moment.
 struct HessianOnly {
-    static constexpr unsigned requirements = rec::Hessians;
+    Tensors hessians;
+    template<class Visitor> void visit_inputs(Visitor&& visit) const { visit("Hessian", hessians); }
 
     /// @brief Uses only the selected scalar Hessian's xx component.
     template<class R, class S, class D>
-    KOKKOS_INLINE_FUNCTION R increment(const S& s, const D& d, std::size_t c) const { return static_cast<R>(d.hessians(s.cell, c).xx); }
+    KOKKOS_INLINE_FUNCTION R increment(const S& s, const D&, std::size_t c) const { return static_cast<R>(hessians(s.cell, c).xx); }
 };
 
 /// @brief Checks independent tensor requirements or deliberately shortens one required input.
@@ -158,11 +163,9 @@ void requirements_test(const Exec& exec)
         q(0) = 0.5; q(1) = 0; q(2) = 1;
     });
 
-    // Each custom scheme gets only its declared tensor; absent unrelated data stays valid.
-    const auto moments = rec::data(fields::pack(q), rec::NoGradients{}, rec::UnitFactors{}, rec::NoHessians{}, Tensors{RejectMoment ? 0U : 1U});
-    rec::compute_limiters_async(exec, Samples{}, moments, fields::pack(f), rec::BarthJespersen{}, MomentOnly{});
-    const auto hessians = rec::data(fields::pack(q), rec::NoGradients{}, rec::UnitFactors{}, Tensors{RejectHessian ? 0U : 1U});
-    rec::compute_limiters_async(exec, Samples{}, hessians, fields::pack(f), rec::BarthJespersen{}, HessianOnly{});
+    const auto values = fields::pack(q);
+    rec::compute_limiters_async(exec, Samples{}, values, MomentOnly{{RejectMoment ? 0U : 1U}}, fields::pack(f));
+    rec::compute_limiters_async(exec, Samples{}, values, HessianOnly{{RejectHessian ? 0U : 1U}}, fields::pack(f));
     test::near(snapshot(f, exec)(0), 0.25, 0.0, "independent tensor requirements");
 }
 

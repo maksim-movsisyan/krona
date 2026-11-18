@@ -14,6 +14,8 @@
 #include <krona/mesh/device/aux_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
+#include <krona/numerics/reconstruction/reconstruction.hpp>
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/toml_config/file.hpp>
 #include <krona/transport/euler/assembly.hpp>
 #include <krona/transport/euler/operator.hpp>
@@ -152,7 +154,7 @@ int solve(const Options& options, mpi::CommView comm) {
 
     const eu::EulerPlan<Exec, Real> plan(host, m, connectivity.view(), comm, exec);
     const eu::EulerOperator euler{plan, eu::Thermodynamics{gas}, NumericalFlux{config.flux}};
-    const rec::MeshStencil<Space, Real> stencil(m, connectivity.view());
+    const rec::StencilData<Space, Real> stencil(m, connectivity.view());
     const auto values = fields::pack(q_view);
     const auto closure = eu::EvaluatedExterior<>{};
     const auto inner_jacobian = eu::FrozenRusanov{gas};
@@ -225,7 +227,7 @@ int solve(const Options& options, mpi::CommView comm) {
     };
 
     if (config.reconstruction == ReconstructionOrder::First) {
-        const auto reconstruction = eu::Reconstruction{rec::FirstOrder{}, rec::data(values), stencil};
+        const auto reconstruction = eu::Reconstruction{rec::face_profiles(stencil, values, rec::FirstOrder{})};
         return run_iterations(reconstruction, [] {});
     }
 
@@ -235,9 +237,9 @@ int solve(const Options& options, mpi::CommView comm) {
     fields::FieldStorage<StorageReal, 5, Exec> limiter("primitive limiter", cells, fields::FieldLocation::Cell, exec);
     const numerics::gradient::GradientOperator<Exec> gradient(m, connectivity.view(), {}, {}, exec);
     const auto grad = rec::gradient_pack(gradients.view());
-    const auto unlimited = rec::data(values, grad);
+    const auto unlimited = rec::face_profiles(stencil, values, rec::Linear{grad});
     const auto factors = fields::pack(limiter.view());
-    const auto reconstruction = eu::Reconstruction{rec::LimitedLinear{}, rec::data(values, grad, factors), stencil};
+    const auto reconstruction = eu::Reconstruction{rec::limited(unlimited, factors)};
 
     const bool limit = config.limiter == Limiter::BarthJespersen;
     halo::Exchange<StorageReal, Exec> reconstruction_halo(m, device.halo_plan(), comm, 82, exec);
@@ -254,8 +256,7 @@ int solve(const Options& options, mpi::CommView comm) {
         boundary_status.check();
         gradient.apply_async(q_view, gradients.view());
         if (limit)
-            rec::compute_limiters_async<Real>(exec, stencil, unlimited, factors,
-                rec::BarthJespersen{}, rec::SecondOrderUpwind{});
+            rec::compute_limiters_async<Real>(exec, unlimited, factors);
         reconstruction_halo.exchange();
     });
 }

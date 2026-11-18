@@ -2,6 +2,7 @@
 #include "cli.hpp"
 #include "initial_field.hpp"
 #include "reconstruction.hpp"
+#include <krona/numerics/reconstruction/stencil_data.hpp>
 #include "source.hpp"
 
 #include <krona/boundary/scalar/tabulated_config.hpp>
@@ -255,15 +256,13 @@ int solve(const Options& options, mpi::CommView comm) {
     }
 
     const auto correction = grad::GradientCorrection{grad::cell_gradients(g.view())};
-    const rec::MeshStencil<Space, Real> stencil(m, connectivity.view());
+    const rec::StencilData<Space, Real> stencil(m, connectivity.view());
     const auto values = fields::pack(phi.view());
     const auto gradients = rec::gradient_pack(g.view());
     const auto factors = fields::pack(theta.view());
-    const auto unlimited = rec::data(values, gradients);
-    const auto limited = rec::data(values, gradients, factors);
 
     // Sample boundary slots for gradients and limiter bounds. Assembly reads BCs directly.
-    const auto prepare_iterate = [&](Real time) {
+    const auto prepare_iterate = [&](Real time, const auto& prepare_factors) {
         phi_halo.exchange();
         if (!gradient) return;
         const auto fill_boundary = [&](const auto& boundary_law, const auto& boundary_correction) {
@@ -279,18 +278,7 @@ int solve(const Options& options, mpi::CommView comm) {
         gradient->apply_async(phi.view(), g.view());
         if (limit && config.nonorthogonal_correction) fill(correction);
 
-        if (limit) {
-            with_reconstruction<Real>(config.reconstruction, [&](auto scheme) {
-                if (config.reconstruction.cell_limiter == ts::CellLimiter::BarthJespersen)
-                    rec::compute_limiters_async<Real>(exec, stencil, unlimited, factors, rec::BarthJespersen{}, scheme);
-                else {
-                    const auto epsilon = static_cast<Real>(config.reconstruction.regularization);
-                    mpi::require(std::isfinite(epsilon), "Scalar transport: limiter regularization is unrepresentable");
-                    rec::compute_limiters_async<Real>(exec, stencil, unlimited, factors,
-                        rec::Venkatakrishnan{rec::ConstantRegularization<Real>{epsilon}}, scheme);
-                }
-            });
-        }
+        prepare_factors();
         gradient_halo->exchange();
     };
 
@@ -339,20 +327,37 @@ int solve(const Options& options, mpi::CommView comm) {
         if (corrections) status.begin_async();
         for (int outer = 0; outer < config.outer.iterations; ++outer) {
             if (corrections) {
-                prepare_iterate(next);
-                {
+                const auto apply_corrections = [&](const auto& reconstruction, const auto& prepare_factors) {
+                    prepare_iterate(next, prepare_factors);
                     const auto b = Kokkos::subview(rhs.overwrite(exec), Kokkos::ALL(), 0);
                     Kokkos::deep_copy(exec, b, base_rhs);
-                    if (reconstruct) with_reconstruction<Real>(config.reconstruction, [&](auto scheme) {
-                        // A unit factor leaves the selected reconstruction unchanged.
-                        const auto reconstruction = cv::make_reconstruction(
-                            convection->plan(), rec::Limited{scheme}, limited);
+                    if constexpr (!std::is_same_v<std::remove_cvref_t<decltype(reconstruction)>, cv::NoReconstruction>)
                         convection->add_correction_async(b, boundary, status, flux, reconstruction, next);
-                    });
                     if (config.nonorthogonal_correction)
                         diffusion->add_correction_async(b, boundary, status, law, correction, next);
+                    rhs.commit();
+                };
+                if (reconstruct) {
+                    with_reconstruction<Real>(config.reconstruction, gradients, [&](auto formula) {
+                        // Use TVD or MUSCL between cells and the one-sided linear profile at outflow.
+                        // Factor preparation sees the same two formulas that the flux will use.
+                        const auto profiles = rec::face_profiles(stencil, values, formula, rec::Linear{gradients});
+                        const auto reconstruction = cv::make_reconstruction(rec::limited(profiles, factors));
+                        apply_corrections(reconstruction, [&] {
+                            if (!limit) return;
+                            if (config.reconstruction.cell_limiter == ts::CellLimiter::BarthJespersen) {
+                                rec::compute_limiters_async<Real>(exec, profiles, factors);
+                            } else {
+                                const auto epsilon = static_cast<Real>(config.reconstruction.regularization);
+                                mpi::require(std::isfinite(epsilon), "Scalar transport: limiter regularization is unrepresentable");
+                                rec::compute_limiters_async<Real>(exec, profiles, factors,
+                                    rec::Venkatakrishnan{rec::ConstantRegularization<Real>{epsilon}});
+                            }
+                        });
+                    });
+                } else {
+                    apply_corrections(cv::NoReconstruction{}, [] {});
                 }
-                rhs.commit();
             }
 
             solution.copy_from_component(q, exec);
