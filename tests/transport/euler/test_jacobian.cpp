@@ -1,5 +1,6 @@
 #include <common/test_support.hpp>
 #include "fixture.hpp"
+#include <krona/flow/conservative.hpp>
 #include <krona/transport/euler/assembly.hpp>
 #include <Tpetra_Core.hpp>
 
@@ -193,7 +194,7 @@ void boundary_blocks(const Exec& exec, Grid& grid)
                 const auto d = direction(grid.host.cell_gid[cell]);
                 const U delta{static_cast<R>(d.mass), krona::math::cast<R>(d.momentum), static_cast<R>(d.energy)};
                 const auto changed = state + delta * step;
-                w = model.primitive(ph::Conservative<R>{changed.mass, changed.momentum, changed.energy});
+                w = model.primitive(krona::flow::Conservative<R>{changed.mass, changed.momentum, changed.energy});
             }
             p(cell) = static_cast<S>(w.pressure);
             T(cell) = static_cast<S>(w.temperature);

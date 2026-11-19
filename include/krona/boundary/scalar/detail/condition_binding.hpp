@@ -1,27 +1,14 @@
 #pragma once
 
+#include <krona/boundary/detail/config_binding.hpp>
 #include <krona/boundary/scalar/conditions.hpp>
 #include <krona/boundary/scalar/config.hpp>
-#include <krona/mpi/error.hpp>
 
-#include <cmath>
-#include <limits>
 #include <type_traits>
 #include <utility>
 #include <variant>
 
 namespace krona::boundary::scalar::detail {
-
-/// @brief Checks that a parsed or sampled number fits the manager's calculation type.
-/// @tparam Real Boundary calculation type.
-/// @param parameter Constant from TOML or value sampled from a CSV profile.
-template<class Real>
-[[nodiscard]] Real checked_parameter(double parameter) {
-    mpi::require(std::isfinite(parameter) &&
-                 std::abs(parameter) <= static_cast<double>(std::numeric_limits<Real>::max()),
-                 "Scalar boundary: parameter is not representable in the selected precision");
-    return static_cast<Real>(parameter);
-}
 
 /// @brief Checks the condition's host metadata before using it on a patch.
 /// @tparam Exec Kokkos execution space that will read any provider data.
@@ -45,7 +32,7 @@ void validate_condition(const C& condition, PatchRange range) {
 /// @param parameter Number read from the configuration.
 template<class Real, class ConditionVariant>
 void assign_constant(ConditionVariant& destination, Kind kind, double parameter) {
-    const Real value = checked_parameter<Real>(parameter);
+    const Real value = boundary::detail::checked_parameter<Real>(parameter, "Scalar boundary");
     switch (kind) {
         case Kind::FixedValue: destination.template emplace<FixedValue<Real>>(FixedValue<Real>{value}); return;
         case Kind::NormalGradient: destination.template emplace<NormalGradient<Real>>(NormalGradient<Real>{value}); return;
@@ -71,21 +58,13 @@ void assign_resolved(ConditionVariant& destination, const ConditionConfig& confi
         return;
     }
 
-    // A profile resolver must bind exactly one registered condition before returning.
-    bool assigned = false;
     const auto assign = [&](auto condition) {
         using C = std::remove_cvref_t<decltype(condition)>;
         static_assert(std::is_constructible_v<ConditionVariant, C>, "Register the resolved condition type in Manager");
-        mpi::require(!assigned, "Scalar boundary: profile resolver assigned more than once");
         validate_condition<Exec>(condition, range);
         destination.template emplace<C>(std::move(condition));
-        assigned = true;
     };
-    if constexpr (requires { resolver(config, range, assign); })
-        resolver(config, range, assign);
-    else
-        resolver(config, assign);
-    mpi::require(assigned, "Scalar boundary: profile resolver did not assign a condition");
+    boundary::detail::resolve_profile_once(resolver, config, range, assign, "Scalar boundary");
 }
 
 } // namespace krona::boundary::scalar::detail

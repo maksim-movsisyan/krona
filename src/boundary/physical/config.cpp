@@ -13,12 +13,14 @@ namespace {
 using toml_config::TomlReader;
 using Parameter = ProfileParameter;
 
+/// @brief Reads one patch's numeric condition and records parameters supplied by CSV files.
 class ConditionReader {
 public:
     explicit ConditionReader(const TomlReader& reader) : reader_(reader) {}
 
     [[nodiscard]] ConfigCondition parse(const toml::table& table) {
         auto numeric = condition(table);
+        // Keep the numeric alternative when every parameter was given inline.
         if (profiles_.empty())
             return std::visit([](auto c) -> ConfigCondition { return c; }, numeric);
         return TabulatedConditionConfig{std::move(numeric), std::move(profiles_)};
@@ -28,12 +30,14 @@ private:
     const TomlReader& reader_;
     std::vector<ParameterProfile> profiles_;
 
+    // A string defers the parameter to the CSV binder. The numeric field is a placeholder in that case.
     double scalar(const toml::table& table, std::string_view key, Parameter parameter) {
         if (!table[key].is_string()) return reader_.number(table, key);
         profiles_.push_back({parameter, 0, std::filesystem::path{reader_.nonempty_string(table, key)}});
         return 0;
     }
 
+    // Each Cartesian component can independently be a number or a CSV file.
     Vector<double> vector(const toml::table& table, std::string_view key, Parameter parameter, bool required = true) {
         if (!required && !table.contains(key)) return {};
         const auto& entries = reader_.array(table, key);
@@ -67,6 +71,7 @@ private:
                 reader_.boolean(table, "allow_choking", false)};
     }
 
+    // An omitted backflow table selects rejection when the outlet reverses.
     Backflow<double> backflow(const toml::table& parent) {
         Backflow<double> result;
         if (!parent.contains("backflow")) return result;
@@ -90,7 +95,8 @@ private:
         return result;
     }
 
-    detail::ConfigVariant<> condition(const toml::table& table) {
+    // Read the allowed parameters for this condition and convert TOML names to typed numeric data.
+    detail::ConditionVariant<double> condition(const toml::table& table) {
         if (reader_.table(table, "scalar").contains("temperature"))
             reader_.error("scalar.temperature conflicts with the physical boundary temperature channel");
         const auto type = reader_.string(table, "type");
@@ -156,6 +162,9 @@ private:
     }
 };
 
+/// @brief Reads labelled patch definitions and the optional unlabelled condition.
+/// @param root Parsed TOML document.
+/// @param reader Reader carrying the configuration context for diagnostics.
 Configuration decode(const toml::table& root, const TomlReader& reader) {
     Configuration result;
     const auto& entries = reader.array(root, "boundary_condition");

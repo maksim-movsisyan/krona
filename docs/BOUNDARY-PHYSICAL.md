@@ -32,7 +32,7 @@ For a stationary isothermal wall, the face has zero velocity and the wall temper
 | `Compressible<EOS, Characteristics = NoCharacteristics>` | Thermal primitive states; EOS conversion. Pressure outlets and total-condition inlets additionally require a compatible characteristic policy. |
 | `Incompressible<Material, Thermal = false>` | Prescribed-density material; optional temperature equation. Pressure may be gauge pressure. |
 
-`Compressible::conservative(state)` returns density, momentum density and total-energy density. `primitive(conservative)` inverts them using the EOS. Energy references belong to the EOS. These are local device functions, not field-transfer operations.
+`Compressible::conservative(state)` returns a `flow::Conservative` with density, momentum density and total-energy density. `primitive(conservative)` recovers the specific internal energy before asking the EOS for pressure and temperature. Energy references belong to the EOS. Both functions operate on one state and can be used in device kernels.
 
 Use host/device descriptions of the same prepared mesh. Faces must be grouped and the mesh view must contain at least `FaceCells | Geometry`. Exterior faces are `[n_inner_faces, n_faces)`; interface faces are not processed. Layout construction validates owned owners, finite geometry, outward unit normals, positive areas and positive normal owner-to-face distances.
 

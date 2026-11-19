@@ -1,7 +1,7 @@
 #pragma once
 
+#include <krona/boundary/detail/config_binding.hpp>
 #include <krona/boundary/detail/tabulated_values.hpp>
-#include <krona/boundary/scalar/detail/condition_binding.hpp>
 #include <krona/boundary/scalar/manager.hpp>
 
 namespace krona::boundary::scalar {
@@ -38,7 +38,9 @@ void configure_tabulated(Manager<Exec, Real, CustomConditions...>& manager, cons
         const auto& path = std::get<std::filesystem::path>(spec.parameter);
         // Sample once during setup and keep the per-face values with the assigned condition.
         const auto provider = boundary::detail::load_patch_values<Real>(
-                path, range, host, comm, exec, detail::checked_parameter<Real>);
+            path, range, host, comm, exec, [](double value) {
+                return boundary::detail::checked_parameter<Real>(value, "Scalar boundary");
+            });
         switch (spec.kind) {
             case Kind::FixedValue: assign(fixed_value<Real>(provider)); return;
             case Kind::NormalGradient: assign(normal_gradient<Real>(provider)); return;

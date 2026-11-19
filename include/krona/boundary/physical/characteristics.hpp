@@ -6,21 +6,34 @@
 
 namespace krona::boundary::physical {
 
+/// @brief Model option for conditions that can run without a characteristic inlet or outlet policy.
 struct NoCharacteristics {};
 
-/// Calorically perfect-gas characteristic closure. A different EOS supplies its own policy.
-/// The invariant is local 1D normal compatibility, not a multidimensional nonreflecting BC.
+/// @brief Boundary policy for a calorically perfect gas using local one-dimensional normal compatibility.
 struct PerfectGasCharacteristics {
+    /// @brief Accepts an ideal-gas EOS whose parameters are checked by the model.
+    /// @tparam Real Floating-point type of the EOS parameters.
     template<class Real>
     void validate(const thermodynamics::IdealGas<Real>&) const {}
 
+    /// @brief Uses the interior entropy and outgoing characteristic to recover a pressure-outlet state.
+    /// @tparam EOS Ideal-gas equation of state.
+    /// @tparam Real Floating-point type of the face calculation.
+    /// @tparam Errors Error handler for an invalid characteristic state.
+    /// @param eos Supplies the sound speed, temperature and entropy.
+    /// @param c Face context with the outward normal.
+    /// @param inside State adjacent to the boundary.
+    /// @param pressure Target absolute pressure in the subsonic branch.
+    /// @param errors Receives any characteristic error.
     template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> outlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, Real pressure, const Errors& errors={}) const {
+                                                       const FaceContext<Real>& c, Primitive<Real,true> inside,
+                                                       Real pressure, const Errors& errors={}) const {
         const auto qi = eos.from_pT(inside.pressure,inside.temperature);
         const Real gm = static_cast<Real>(eos.gamma) - Real{1};
         const auto n = normal(c);
         const Real un = inside.velocity.dot(n);
+        // Preserve the outgoing invariant and recover only the new normal velocity.
         const Real invariant = un + Real{2}*qi.sound_speed/gm;
         auto qb = eos.from_ps(pressure,qi.entropy);
         if (!(gm>Real{0}) || !(qi.sound_speed>Real{0}) || !(qb.sound_speed>Real{0}) ||
@@ -40,9 +53,19 @@ struct PerfectGasCharacteristics {
         return {qb.pressure, inside.velocity + n*(ub-un), qb.temperature};
     }
 
+    /// @brief Finds a subsonic inflow consistent with a reservoir and the interior's outgoing characteristic.
+    /// @tparam EOS Ideal-gas equation of state.
+    /// @tparam Real Floating-point type of the face calculation.
+    /// @tparam Errors Error handler for incompatible reservoir or flow data.
+    /// @param eos Supplies thermodynamic properties of the interior and reservoir.
+    /// @param c Face context with the outward normal.
+    /// @param inside Adjacent state that supplies the outgoing characteristic.
+    /// @param specified Stagnation conditions, inward unit direction and sonic fallback option.
+    /// @param errors Receives any characteristic error.
     template<class EOS,class Real,class Errors=detail::AbortErrors>
     KOKKOS_INLINE_FUNCTION Primitive<Real,true> inlet(const EOS& eos,
-        const FaceContext<Real>& c, Primitive<Real,true> inside, TotalConditionsInlet<Real> specified, const Errors& errors={}) const {
+                                                      const FaceContext<Real>& c, Primitive<Real,true> inside,
+                                                      TotalConditionsInlet<Real> specified, const Errors& errors={}) const {
         const auto n = normal(c);
         const Real mu = specified.direction.dot(n);
         if (!(mu < Real{0})) { errors.fail(Error::Characteristics,"Physical boundary: inlet direction must point into the domain"); return inside; }
@@ -58,6 +81,7 @@ struct PerfectGasCharacteristics {
         if (resting_invariant < invariant) {
             errors.fail(Error::Characteristics,"Physical boundary: total inlet data admit no inward characteristic solution"); return inside;
         }
+        // At the sonic endpoint, the inward normal speed equals the static sound speed.
         const Real sonic_speed = Kokkos::sqrt(stagnation.sound_speed*stagnation.sound_speed/(mu*mu+gm/Real{2}));
         const Real sonic_sound = -mu*sonic_speed;
         Real speed = 0;
@@ -67,6 +91,7 @@ struct PerfectGasCharacteristics {
             }
             speed = sonic_speed;
         } else {
+            // Solve for the speed along the prescribed direction on the subsonic branch.
             const Real a = mu*mu + Real{2}/gm;
             const Real b = -Real{2}*invariant*mu;
             const Real d = (invariant-resting_invariant)*(invariant+resting_invariant);
@@ -75,6 +100,7 @@ struct PerfectGasCharacteristics {
             speed = b > Real{0} ? -Real{2}*d/(b+root) : (-b+root)/(Real{2}*a);
             speed = Kokkos::fmin(sonic_speed,Kokkos::fmax(Real{0},speed));
         }
+        // Subtract kinetic energy from the reservoir enthalpy to recover the static state.
         const Real enthalpy=stagnation.enthalpy-speed*speed/Real{2};
         if (!(enthalpy>Real{0}) || !Kokkos::isfinite(enthalpy)) {
             errors.fail(Error::Characteristics,"Physical boundary: invalid inlet static enthalpy"); return inside;

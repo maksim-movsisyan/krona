@@ -109,18 +109,11 @@ public:
     template<class Resolver>
     void configure(const Configuration& config, Resolver&& resolver) {
         mpi::guarded([&] {
-            mpi::require(config.patches.size() == conditions_.size(),
-                         "Scalar boundary: configuration must describe every mesh patch");
-            std::vector<bool> seen(conditions_.size(), false);
-            for (const auto& entry : config.patches) {
-                mpi::require(entry.patch_id >= 0 && static_cast<std::uint64_t>(entry.patch_id) < conditions_.size(),
-                             "Scalar boundary: configuration patch ID is out of range");
-                const std::size_t p = static_cast<std::size_t>(entry.patch_id);
-                mpi::require(!seen[p], "Scalar boundary: duplicate configuration patch ID");
-                mpi::require(entry.name == catalog().patches()[p].name, "Scalar boundary: patch name does not match the mesh");
-                seen[p] = true;
-                detail::assign_resolved<Exec, Real>(conditions_[p], entry.condition, catalog().patches()[p].range, resolver);
-            }
+            boundary::detail::bind_configured_patches(catalog(), config.patches,
+                [&](const PatchConfig& entry, PatchRange range) {
+                    const std::size_t id = static_cast<std::size_t>(entry.patch_id);
+                    detail::assign_resolved<Exec, Real>(conditions_[id], entry.condition, range, resolver);
+                });
             if (config.unlabelled)
                 detail::assign_resolved<Exec, Real>(unlabelled_, *config.unlabelled, catalog().unlabelled(), resolver);
             else unlabelled_.template emplace<std::monostate>();
