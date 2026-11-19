@@ -12,14 +12,18 @@
 
 namespace krona::boundary::profile {
 
-/// @brief Interpolates a scalar table along one, two or three Cartesian axes on the host.
+/// @brief Stores a Cartesian table of scalar values and interpolates it on the host.
+/// @details A boundary configuration can sample the table at local face centroids during setup.
 class TabulatedProfile {
 public:
     /// @brief Coordinates in x, y, z order. An empty vector omits that axis.
     using Axes = std::array<std::vector<double>, 3>;
 
-    /// @brief Takes a complete Cartesian table in x-fastest order, skipping omitted axes.
-    /// Each active axis needs at least two finite, strictly increasing coordinates.
+    /// @brief Takes ownership of the axes and grid values and checks that the grid is complete.
+    /// @param axes Coordinates in x, y, z order. Supply at least one axis. Each active axis
+    /// needs at least two finite, strictly increasing coordinates.
+    /// @param values One finite value per grid point. X varies fastest, then y and z.
+    /// Skip omitted axes when flattening the grid.
     TabulatedProfile(Axes axes, std::vector<double> values)
         : axes_(std::move(axes)), values_(std::move(values)) {
         std::size_t extent = 1;
@@ -33,6 +37,8 @@ public:
             }
             mpi::require(axis.size() < std::numeric_limits<std::size_t>::max() / extent,
                          "Profile table extent overflows size_t");
+
+            // A step along this axis skips the product of all earlier active axis lengths.
             strides_[d] = extent;
             extent *= axis.size();
         }
@@ -43,8 +49,8 @@ public:
                      "Profile values must be finite");
     }
 
-    /// @brief Evaluates a point with linear, bilinear or trilinear interpolation.
-    /// Omitted axes are ignored.
+    /// @brief Interpolates linearly along each active axis. Both endpoints of an active axis are valid.
+    /// @param x,y,z Point coordinates. Coordinates along omitted axes are ignored.
     [[nodiscard]] double evaluate(double x, double y, double z) const {
         const std::array point{x, y, z};
         std::size_t base = 0;
@@ -56,6 +62,7 @@ public:
             mpi::require(axis.front() <= coordinate && coordinate <= axis.back(),
                          "Profile coordinate is outside the tabulated axis");
 
+            // Keep the last node available as the upper neighbour when the point is on that node.
             const auto upper = std::upper_bound(axis.begin(), axis.end() - 1, coordinate);
             const auto lower = upper - 1;
             base += static_cast<std::size_t>(lower - axis.begin()) * strides_[d];
@@ -66,6 +73,7 @@ public:
                                                   (*upper * 0.5 - *lower * 0.5);
         }
 
+        // Interpolate the corners of the enclosing interval, rectangle or box along x, then y and z.
         const auto along_x = [&](std::size_t i) {
             return strides_[0] == 0 ? values_[i] : std::lerp(values_[i], values_[i + strides_[0]], weight[0]);
         };
@@ -78,7 +86,7 @@ public:
 private:
     Axes axes_;
     std::vector<double> values_;
-    std::array<std::size_t, 3> strides_{};
+    std::array<std::size_t, 3> strides_{}; ///< Flat-grid stride per axis, zero when omitted.
 };
 
 } // namespace krona::boundary::profile
