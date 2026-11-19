@@ -495,8 +495,9 @@ void file_fill_case(const Exec& exec)
     near(host(3), Real{8}, tolerance, "Updated condition overrides the file binding");
     near(host(4), Real{8}, tolerance, "Updated condition covers its entire patch");
 
+    // The distributed case runs this extra scalar check only on the rank with local faces.
     scalar::Manager<Exec, Real> tracer_manager(manager_layout,
-        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer", krona::mpi::CommView::world()));
+        scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "tracer", krona::mpi::CommView::self()));
     krona::fields::FieldStorage<Real, 1, Exec> tracer(
         "tracer", tracer_manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, tracer.view().component(0));
@@ -695,6 +696,7 @@ void distributed_case(const Exec& exec)
     krona::mpi::check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "MPI_Comm_rank");
     krona::mpi::check(MPI_Comm_size(MPI_COMM_WORLD, &ranks), "MPI_Comm_size");
     equal(ranks, 2, "Distributed scalar boundary test requires two ranks");
+    // Both branches read the temperature configuration collectively before doing local boundary work.
     if (rank == 0) file_fill_case(exec); else empty_labels_case(exec);
     int local = 1, total = 0;
     krona::mpi::check(MPI_Allreduce(&local, &total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD), "MPI_Allreduce");

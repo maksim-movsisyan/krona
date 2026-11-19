@@ -3,6 +3,7 @@
 #include <krona/execution/utils.hpp>
 #include <krona/mpi/error.hpp>
 #include <krona/boundary/scalar/config.hpp>
+#include <krona/boundary/scalar/detail/condition_binding.hpp>
 #include <krona/boundary/scalar/detail/kernels.hpp>
 #include <krona/boundary/layout.hpp>
 #include <krona/numerics/gradient/correction.hpp>
@@ -10,7 +11,6 @@
 #include <krona/fields/fields_view.hpp>
 
 #include <cmath>
-#include <limits>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -18,76 +18,94 @@
 
 namespace krona::boundary::scalar {
 
-namespace detail {
-template<class Real>
-[[nodiscard]] Real checked_parameter(double parameter) {
-    mpi::require(std::isfinite(parameter) &&
-                 std::abs(parameter) <= static_cast<double>(std::numeric_limits<Real>::max()),
-                 "Scalar boundary: parameter is not representable in the selected precision");
-    return static_cast<Real>(parameter);
-}
-} // namespace detail
-
-/// @brief Host dispatch per patch; typed conditions execute in portable Kokkos kernels.
-/// Borrows a shared BoundaryLayout; owns conditions, never a field. Finalize before dispatch.
+/// @brief Stores the patch conditions for one scalar and dispatches their concrete types to Kokkos.
+/// @tparam Exec Kokkos execution space used for boundary work.
+/// @tparam Real Floating-point type used for face geometry and relations. Field storage may use another type.
+/// @tparam CustomConditions Additional condition types, including built-in formulas with custom providers.
+/// @details Share a BoundaryLayout between managers on the same mesh. Each manager owns its
+/// condition objects and receives the field or callback at dispatch. Assign conditions and call
+/// finalize() before dispatch. Keep the layout, mesh and borrowed input/output buffers alive through use.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal, class... CustomConditions>
 class Manager {
     static_assert(std::is_floating_point_v<Real>);
     using memory_space = typename Exec::memory_space;
     using policy_type = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
+
+    // monostate marks an unassigned patch. The host picks the concrete type before launch.
     using condition_type = std::variant<std::monostate, FixedValue<Real>, NormalGradient<Real>,
                                         FixedFlux<Real>, std::remove_cvref_t<CustomConditions>...>;
 
 public:
+    /// @brief Shared patch catalog, geometry and execution instance used by this manager.
     using layout_type = BoundaryLayout<Exec, Real>;
+
+    /// @brief Creates a manager with an empty condition slot for each labelled patch.
+    /// @param layout Existing layout that must outlive the manager and its submitted work.
     explicit Manager(const layout_type& layout) : layout_(&layout) {
         execution::require_kokkos();
         mpi::guarded([&] { conditions_.resize(catalog().patches().size()); });
     }
+
+    /// @brief Creates a manager and binds numeric conditions from one scalar's configuration.
+    /// @param layout Existing layout that supplies the patch IDs and names.
+    /// @param config Conditions to bind. Call finalize() before using them.
     Manager(const layout_type& layout, const Configuration& config) : Manager(layout)
     { configure(config); }
-    
+
+    // Guard against binding a temporary layout to the manager's borrowed pointer.
     Manager(layout_type&&) = delete;
     Manager(layout_type&&, const Configuration&) = delete;
 
+    // Keep the conditions and their finalization state in one host object.
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
     Manager(Manager&&) = delete;
     Manager& operator=(Manager&&) = delete;
 
-    /// @brief Assigns a built-in or one of CustomConditions; copied parameters may change between applies.
+    /// @brief Replaces the condition on a labelled patch. Call finalize() before the next dispatch.
+    /// @tparam C Built-in condition or one of the types registered in CustomConditions.
+    /// @param patch_id ID from the mesh patch catalog.
+    /// @param condition Condition to bind. Its parameters are copied into later kernel submissions.
     template<class C>
     void set(mesh::PatchId patch_id, C condition) {
         static_assert(std::is_constructible_v<condition_type, C>, "Add the custom condition type to Manager's template parameters");
         mpi::require(patch_id >= 0 && static_cast<std::size_t>(patch_id) < conditions_.size(),
                      "Scalar boundary: unknown patch ID");
         mpi::guarded([&] {
-            validate_condition(condition, catalog().patches()[static_cast<std::size_t>(patch_id)].range);
+            detail::validate_condition<Exec>(condition, catalog().patches()[static_cast<std::size_t>(patch_id)].range);
             conditions_[static_cast<std::size_t>(patch_id)].template emplace<C>(std::move(condition));
             finalized_ = false;
         });
     }
 
+    /// @brief Replaces the shared condition for boundary faces without a label.
+    /// @tparam C Built-in condition or one of the types registered in CustomConditions.
+    /// @param condition Condition to bind. Call finalize() before the next dispatch.
     template<class C>
     void set_unlabelled(C condition) {
         static_assert(std::is_constructible_v<condition_type, C>);
         mpi::guarded([&] {
-            validate_condition(condition, catalog().unlabelled());
+            detail::validate_condition<Exec>(condition, catalog().unlabelled());
             unlabelled_.template emplace<C>(std::move(condition));
             finalized_ = false;
         });
     }
 
-    /// @brief Binds labelled patches by ID and exact name and applies the optional unlabelled condition.
-    /// finalize() requires an explicit condition when the mesh has unlabelled boundary faces.
+    /// @brief Replaces all patch bindings using numeric parameters from one scalar's configuration.
+    /// @param config One entry per labelled mesh patch, plus the unlabelled condition when supplied.
+    /// @details Match both the ID and the name of each patch. Use configure_tabulated() for CSV
+    /// profiles. Finalize after binding, with an explicit condition for any unlabelled faces.
     void configure(const Configuration& config) {
         configure(config, [](const ConditionConfig&, PatchRange, const auto&) {
             mpi::fatal("Scalar boundary: CSV profile requires configure_tabulated");
         });
     }
 
-    /// @brief Resolver(spec, range, assign) must call assign(typed_condition) once for each CSV profile.
-    /// Numeric conditions, patch-ID/name checks and finalization retain the ordinary configure contract.
+    /// @brief Binds the configuration and uses a host callback to turn each profile path into a condition.
+    /// @tparam Resolver Callback accepting (spec, range, assign) or (spec, assign).
+    /// @param config Conditions for all labelled patches and optionally the unlabelled group.
+    /// @param resolver Called for profile paths, including empty local ranges. Call assign(condition)
+    /// exactly once and use a condition type supported by the manager.
     template<class Resolver>
     void configure(const Configuration& config, Resolver&& resolver) {
         mpi::guarded([&] {
@@ -101,15 +119,19 @@ public:
                 mpi::require(!seen[p], "Scalar boundary: duplicate configuration patch ID");
                 mpi::require(entry.name == catalog().patches()[p].name, "Scalar boundary: patch name does not match the mesh");
                 seen[p] = true;
-                assign_resolved(conditions_[p], entry.condition, catalog().patches()[p].range, resolver);
+                detail::assign_resolved<Exec, Real>(conditions_[p], entry.condition, catalog().patches()[p].range, resolver);
             }
-            if (config.unlabelled) assign_resolved(unlabelled_, *config.unlabelled, catalog().unlabelled(), resolver);
+            if (config.unlabelled)
+                detail::assign_resolved<Exec, Real>(unlabelled_, *config.unlabelled, catalog().unlabelled(), resolver);
             else unlabelled_.template emplace<std::monostate>();
             finalized_ = false;
         });
     }
 
-    /// @brief Host-only completeness/provider checks. No kernels, fences or MPI communication.
+    /// @brief Checks the patch bindings and records whether relation evaluation requires a flux law.
+    /// @details This step is local and runs on the host. It validates every labelled patch, including
+    /// empty local ranges. Changing the time or the contents of an existing provider buffer needs
+    /// only correct execution ordering. Replacing a binding requires another finalize().
     void finalize() {
         mpi::guarded([&] {
             require_complete();
@@ -118,7 +140,7 @@ public:
                 std::visit([&](const auto& typed) {
                     using C = std::remove_cvref_t<decltype(typed)>;
                     if constexpr (!std::is_same_v<C, std::monostate>) {
-                        validate_condition(typed, range);
+                        detail::validate_condition<Exec>(typed, range);
                         needs_law_ = needs_law_ || requires_flux_law<C>;
                     }
                 }, condition);
@@ -129,10 +151,13 @@ public:
             finalized_ = true;
         });
     }
+
+    /// @brief Reports whether the current bindings have passed finalize().
     [[nodiscard]] bool finalized() const noexcept { return finalized_; }
 
-    /// @brief Calls visitor(range, typed_condition) on the host for every nonempty local patch.
-    /// The same dispatch supports field filling and solver-specific implicit assembly.
+    /// @brief Calls a host visitor once per nonempty local patch, including the unlabelled range.
+    /// @tparam Visitor Callable that accepts (range, condition) for every condition type in the manager.
+    /// @param visitor Receives the local face range and its concrete condition.
     template<class Visitor>
     void for_each_patch(Visitor&& visitor) const {
         require_finalized();
@@ -143,10 +168,16 @@ public:
         });
     }
 
-    /// @brief Calls a device-callable sink(context, typed_condition); no reconstruction or flux law is imposed.
+    /// @brief Queues a callback for each local boundary face. The callback gets the condition itself.
+    /// @tparam Sink Device-callable object accepting (context, condition) for every supported condition type.
+    /// @param sink Callback that decides how to use the face and condition.
+    /// @param time Time passed to every face context in this submission.
+    /// @details Submits one kernel per nonempty local patch on the layout's execution instance and
+    /// returns after submission. Use evaluate_async() when the callback needs the affine relation.
     template<class Sink>
     void for_each_face_async(Sink sink, Real time = 0) const {
         mpi::require(std::isfinite(time), "Scalar boundary: time must be finite");
+        // Resolve the condition type on the host before dispatching a typed kernel for the patch.
         for_each_patch([&](PatchRange range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
             Kokkos::parallel_for("boundary/scalar/for_each_face", policy_type(execution_space(), range.begin, range.end),
@@ -154,14 +185,30 @@ public:
         });
     }
 
-    /// @brief Fills boundary slots only; FixedFlux requires an explicit flux-to-gradient law.
+    /// @brief Queues writes to the boundary face slots of a scalar field.
+    /// @tparam Field Writable single-component field view.
+    /// @tparam Law Converts prescribed flux density to a normal derivative when a FixedFlux patch is bound.
+    /// @tparam Correction Device-callable object returning the explicit tangential correction for each face.
+    /// @param field Extended field with owned cells, MPI ghosts and boundary face slots in that order.
+    /// @param status Open diagnostic batch on the layout's execution instance. Call check() to finish it.
+    /// @param law The flux law used by flux conditions.
+    /// @param correction Explicit correction, typically the owner gradient dotted with the tangential displacement.
+    /// @param time Time supplied to the condition and its providers through the face context.
     template<class Field, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
     void apply_async(Field field, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const {
         static_assert(Field::components == 1, "Use apply_component_async for a selected component");
         apply_component_async(field.component(0), status, law, correction, time);
     }
 
-    /// @brief Supports writable rank-one Kokkos Views, including strided component subviews.
+    /// @brief Queues writes to the boundary slots of a selected scalar component.
+    /// @tparam View Writable rank-one Kokkos view. Strided component subviews are supported.
+    /// @tparam Law Converts prescribed flux density to a normal derivative when needed.
+    /// @tparam Correction Device-callable object returning the explicit tangential correction for each face.
+    /// @param field Component with at least required_field_size() entries. Cell values stay in place.
+    /// @param status Open diagnostic batch on the layout's execution instance.
+    /// @param law Flux-to-gradient conversion for prescribed fluxes.
+    /// @param correction Explicit correction to the owner value at the face.
+    /// @param time Time supplied to the condition and its providers through the face context.
     template<class View, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
     void apply_component_async(View field, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const {
         validate_view(field, required_field_size());
@@ -172,7 +219,15 @@ public:
             field, law, correction, status.device_flags(execution_space())}, time);
     }
 
-    /// @brief Calls sink(context, relation); returned normal gradients already include the correction.
+    /// @brief Queues a callback with the affine face value and normal derivative, useful for matrix assembly.
+    /// @tparam Sink Device-callable object accepting (context, Relation<Real>).
+    /// @tparam Law Converts prescribed flux density to a normal derivative when needed.
+    /// @tparam Correction Device-callable object returning the explicit tangential correction for each face.
+    /// @param sink Callback receiving the face context and the corrected relation coefficients.
+    /// @param status Open diagnostic batch on the layout's execution instance.
+    /// @param law Flux-to-gradient conversion for prescribed fluxes.
+    /// @param correction Explicit correction to the owner value at the face.
+    /// @param time Time supplied to the condition and its providers through the face context.
     template<class Sink, class Law = NoFluxLaw, class Correction = numerics::gradient::NoCorrection>
     void evaluate_async(Sink sink, Status<Exec>& status, Law law = {}, Correction correction = {}, Real time = 0) const {
         validate_relation_inputs<Law>(correction);
@@ -180,21 +235,29 @@ public:
             sink, law, correction, status.device_flags(execution_space())}, time);
     }
 
+    /// @brief Returns the borrowed geometry used to build face contexts.
     [[nodiscard]] GeometryView<memory_space> geometry_view() const noexcept { return layout_->geometry_view(); }
+    /// @brief Returns the layout's host catalog of patch IDs, names and local ranges.
     [[nodiscard]] const PatchCatalog& catalog() const noexcept { return layout_->catalog(); }
+    /// @brief Returns the execution instance on which the manager submits work.
     [[nodiscard]] const Exec& execution_space() const noexcept { return layout_->execution_space_instance(); }
+    /// @brief Returns the number of local cells, including MPI ghosts, plus the boundary face count.
     [[nodiscard]] std::size_t required_field_size() const noexcept { return layout_->required_field_size(); }
+    /// @brief Returns the layout shared with any other managers on this mesh.
     [[nodiscard]] const layout_type& layout() const noexcept { return *layout_; }
 
 private:
-    const layout_type* layout_;
-    std::vector<condition_type> conditions_;
-    condition_type unlabelled_;
-    bool finalized_ = false, needs_law_ = false;
+    const layout_type* layout_;             ///< Shared layout borrowed from the caller.
+    std::vector<condition_type> conditions_; ///< Labelled conditions indexed by patch ID.
+    condition_type unlabelled_;              ///< Shared binding for local boundary faces without a label.
+    bool finalized_ = false;                ///< The current patch bindings passed finalize().
+    bool needs_law_ = false;                ///< Cached by finalize() for relation-based submissions.
 
+    /// @brief Reports a dispatch attempted before finalizing the current bindings.
     void require_finalized() const
     { mpi::require(finalized_, "Scalar boundary: call finalize() after assigning conditions"); }
 
+    /// @brief Checks that every labelled patch and any globally required unlabelled group has a condition.
     void require_complete() const {
         for (const auto& condition : conditions_)
             mpi::require(!std::holds_alternative<std::monostate>(condition),
@@ -203,6 +266,11 @@ private:
                      "Scalar boundary: unlabelled faces need an explicit condition");
     }
 
+    /// @brief Passes the concrete condition to the host visitor when the patch has work on this rank.
+    /// @tparam Visitor Host callback accepting the range and concrete condition.
+    /// @param range Local interval of face IDs.
+    /// @param condition Condition stored for this range.
+    /// @param visitor Visitor supplied to for_each_patch().
     template<class Visitor>
     static void visit(PatchRange range, const condition_type& condition, Visitor& visitor) {
         if (range.empty()) return;
@@ -212,48 +280,10 @@ private:
         }, condition);
     }
 
-    template<class C>
-    static void validate_condition(const C& condition, PatchRange range) {
-        if constexpr (is_fixed_value<C>) profile::validate<Exec>(condition.value, range);
-        else if constexpr (is_normal_gradient<C>) profile::validate<Exec>(condition.gradient, range);
-        else if constexpr (is_fixed_flux<C>) profile::validate<Exec>(condition.flux, range);
-        else if constexpr (requires { condition.template validate<Exec>(range); })
-            condition.template validate<Exec>(range);
-    }
-
-    template<class Resolver>
-    static void assign_resolved(condition_type& destination, const ConditionConfig& config,
-                                PatchRange range, Resolver& resolver) {
-        if (const auto* value = std::get_if<double>(&config.parameter)) {
-            assign_constant(destination, config.kind, *value);
-            return;
-        }
-        bool assigned = false;
-        const auto assign = [&](auto condition) {
-            using C = std::remove_cvref_t<decltype(condition)>;
-            static_assert(std::is_constructible_v<condition_type, C>, "Register the resolved condition type in Manager");
-            mpi::require(!assigned, "Scalar boundary: profile resolver assigned more than once");
-            validate_condition(condition, range);
-            destination.template emplace<C>(std::move(condition));
-            assigned = true;
-        };
-        if constexpr (requires { resolver(config, range, assign); })
-            resolver(config, range, assign);
-        else
-            resolver(config, assign);
-        mpi::require(assigned, "Scalar boundary: profile resolver did not assign a condition");
-    }
-
-    static void assign_constant(condition_type& destination, Kind kind, double parameter) {
-        const Real value = detail::checked_parameter<Real>(parameter);
-        switch (kind) {
-            case Kind::FixedValue: destination.template emplace<FixedValue<Real>>(FixedValue<Real>{value}); return;
-            case Kind::NormalGradient: destination.template emplace<NormalGradient<Real>>(NormalGradient<Real>{value}); return;
-            case Kind::FixedFlux: destination.template emplace<FixedFlux<Real>>(FixedFlux<Real>{value}); return;
-        }
-        mpi::fatal("Scalar boundary: unknown condition kind");
-    }
-
+    /// @brief Checks that the execution space can access enough usable entries in the component view.
+    /// @tparam View Rank-one Kokkos view for a field component.
+    /// @param view Component to be written by the boundary kernels.
+    /// @param count Minimum number of entries, including boundary face slots.
     template<class View>
     static void validate_view(const View& view, std::size_t count) {
         static_assert(Kokkos::is_view<View>::value && View::rank == 1);
@@ -264,6 +294,10 @@ private:
                         "Scalar boundary: invalid View storage");
     }
 
+    /// @brief Checks the bound conditions, whether a flux law is available, and optional correction metadata.
+    /// @tparam Law Type supplied for flux-to-gradient conversion.
+    /// @tparam Correction Tangential correction with an optional host validation method.
+    /// @param correction Correction whose storage is checked against the owned-cell count when supported.
     template<class Law, class Correction>
     void validate_relation_inputs(const Correction& correction) const {
         require_finalized();
