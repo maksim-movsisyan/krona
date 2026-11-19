@@ -3,6 +3,7 @@
 #include "initial_field.hpp"
 
 #include <krona/boundary/physical/fields.hpp>
+#include <krona/flow/conservative.hpp>
 #include <krona/numerics/riemann/eos.hpp>
 #include <krona/mesh/device/aux_view.hpp>
 
@@ -19,7 +20,7 @@ using Space = Exec::memory_space;
 using CellPolicy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
 using MeshView = mesh::device::MeshView<Space>;
 using Gas = thermodynamics::IdealGas<Real>;
-using Conserved = Kokkos::View<ri::Conservative<Real>*, Space>;
+using Conserved = Kokkos::View<flow::Conservative<Real>*, Space>;
 
 /// @brief Checks that positive p and T will survive storing the primitive field.
 template<class Views>
@@ -46,8 +47,8 @@ void initialize_state(const Exec& exec, MeshView mesh, Conserved conserved, View
 
             const auto flux_state = ri::from_pT(gas, state.pressure, state.temperature, state.velocity);
             const auto value = ri::conservative(flux_state);
-            if (!(value.mass > Real{0}) || !Kokkos::isfinite(value.mass) || !math::isfinite(value.momentum)
-                || !(value.energy > Real{0}) || !Kokkos::isfinite(value.energy)) {
+            if (!(value.density > Real{0}) || !Kokkos::isfinite(value.density) || !math::isfinite(value.momentum)
+                || !(value.total_energy_density > Real{0}) || !Kokkos::isfinite(value.total_energy_density)) {
                 ++bad;
                 return;
             }
@@ -107,7 +108,7 @@ void update_state(const Exec& exec, Conserved conserved, Increment increment, Vi
     Kokkos::parallel_reduce("euler_steady/update", CellPolicy(exec, 0, conserved.extent(0)),
         KOKKOS_LAMBDA(std::size_t cell, std::size_t& bad) {
             const auto first = 5 * cell;
-            const ri::Conservative<Real> delta{static_cast<Real>(increment(first, 0)),
+            const flow::Conservative<Real> delta{static_cast<Real>(increment(first, 0)),
                 {static_cast<Real>(increment(first + 1, 0)), static_cast<Real>(increment(first + 2, 0)),
                  static_cast<Real>(increment(first + 3, 0))}, static_cast<Real>(increment(first + 4, 0))};
             const auto next = conserved(cell) + delta * relaxation;

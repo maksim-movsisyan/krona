@@ -4,6 +4,7 @@
 #include <vector> 
 
 namespace r = krona::numerics::riemann;
+namespace flow = krona::flow;
 using krona::test::check;
 using krona::test::near;
 using krona::test::Exec;
@@ -13,7 +14,7 @@ template<class R> auto state(R rho,R u,R p,R v=0,R w=0)
 { return r::ideal_gas_from_rhop(krona::thermodynamics::IdealGas<R>{},rho,r::Vector<R>{u,v,w},p); }
 
 /// @brief Compares every conservative flux component against a reference.
-template<class R> void compare(r::Conservative<R> a,r::Conservative<R> b,R tol)
+template<class R> void compare(r::Flux<R> a,r::Flux<R> b,R tol)
 {
     near(a.mass,b.mass,tol,"mass flux"); near(a.energy,b.energy,tol,"energy flux");
     near(a.momentum.x,b.momentum.x,tol,"x momentum");
@@ -71,7 +72,7 @@ void contacts(const Exec&)
 
     // These shock states have the same exact mass, momentum and energy flux.
     const auto l=state(1.,2.,1.),q=state(24./11.,11./12.,19./6.);
-    compare(r::Roe{1.4}(l,q,{1,0,0}).flux,r::Conservative<double>{2.,{5.,0,0},11.},1.e-12);
+    compare(r::Roe{1.4}(l,q,{1,0,0}).flux,r::Flux<double>{2.,{5.,0,0},11.},1.e-12);
 }
 
 /// @brief Supplies reversed wave bounds to exercise invalid-fan diagnostics.
@@ -172,9 +173,10 @@ double exact_sod(double x,double t)
 template<class Solver> void sod_run(Solver solver)
 {
     constexpr int count=240;const double dx=1./count;
-    std::vector<r::Conservative<double>> q(count),next(count),flux(count+1);
+    std::vector<flow::Conservative<double>> q(count),next(count);
+    std::vector<r::Flux<double>> flux(count+1);
     for(int i=0;i<count;++i)q[i]=r::conservative(i<count/2?state(1.,0.,1.):state(0.125,0.,0.1));
-    const auto initial=q;double t=0; r::Conservative<double> boundary{};
+    const auto initial=q;double t=0; r::Flux<double> boundary{};
     const krona::thermodynamics::IdealGas<double> gas{};
 
     // Use face wave speeds for the CFL step and update cells by conservative flux differences.
@@ -184,15 +186,23 @@ template<class Solver> void sod_run(Solver solver)
             const auto result=solver(l,rr,r::Vector<double>{1,0,0});check(result.valid(),"Sod flux valid");
             flux[f]=result.flux;speed=std::max(speed,result.max_signal_speed);}
         const double dt=std::min(0.3*dx/speed,0.15-t);
-        for(int i=0;i<count;++i){next[i]=q[i]-(flux[i+1]-flux[i])*(dt/dx);
+        for(int i=0;i<count;++i){
+            const auto transfer=(flux[i+1]-flux[i])*(dt/dx);
+            next[i]=q[i]-flow::Conservative<double>{transfer.mass,transfer.momentum,transfer.energy};
             check(r::detail::valid(r::from_conservative(gas,next[i])),"positive Sod state");}
         boundary=boundary+(flux[count]-flux[0])*dt;q.swap(next);t+=dt;
     }
 
     // Account for boundary transport when comparing total conserved quantities.
-    double error=0;r::Conservative<double> change{};
-    for(int i=0;i<count;++i){error+=dx*std::abs(q[i].mass-exact_sod((i+0.5)*dx,t));change=change+(q[i]-initial[i])*dx;}
-    check(error<0.025,"Sod density L1 error");compare(change+boundary,r::Conservative<double>{},2.e-13);
+    double error=0;flow::Conservative<double> change{};
+    for(int i=0;i<count;++i){error+=dx*std::abs(q[i].density-exact_sod((i+0.5)*dx,t));change=change+(q[i]-initial[i])*dx;}
+    check(error<0.025,"Sod density L1 error");
+    const auto balance=change+flow::Conservative<double>{boundary.mass,boundary.momentum,boundary.energy};
+    near(balance.density,0.,2.e-13,"total mass balance");
+    near(balance.momentum.x,0.,2.e-13,"total x momentum balance");
+    near(balance.momentum.y,0.,2.e-13,"total y momentum balance");
+    near(balance.momentum.z,0.,2.e-13,"total z momentum balance");
+    near(balance.total_energy_density,0.,2.e-13,"total energy balance");
 }
 
 /// @brief Runs the Sod accuracy and conservation checks for all four solvers.

@@ -25,13 +25,15 @@ namespace ri = krona::numerics::riemann;
 
 Call a solver as `solver(left, right, normal)`. **The normal is unit length and points from left to right.** On a mesh face, use owner as left, neighbour as right, and the owner-to-neighbour normal. The implementation checks unit length with a tolerance based on `R` and `GeometryReal`. No coordinate rotation is needed.
 
-`Conservative<R>` is used for both conservative states and fluxes:
+`conservative(state)` returns `krona::flow::Conservative<R>`. `physical_flux()` and a solver's `result.flux` use `riemann::Flux<R>`.
 
-| Member | From `conservative(state)` | In a solver's `result.flux` |
+| Quantity | Conservative state (per unit volume) | Flux (per unit face area) |
 |---|---|---|
-| `mass` | `rho` | Mass flux per unit face area. |
-| `momentum` | `rho * velocity` | Three momentum flux components per unit area, in global coordinates. |
-| `energy` | `rho * (e + velocity.norm2()/2)` | Total-energy flux per unit area. |
+| Mass | `density = rho` | `mass` |
+| Momentum | `momentum = rho * velocity` | `momentum` in mesh coordinates |
+| Total energy | `total_energy_density = rho * (e + velocity.norm2()/2)` | `energy` |
+
+For a wave propagating at a signed speed `S`, `wave_flux(U_right - U_left, S)` converts the jump in conservative densities into a flux contribution per unit area.
 
 For identical states, the numerical flux agrees with `physical_flux(state, normal)`:
 
@@ -78,7 +80,7 @@ The solver state omits temperature and entropy. Prepare it from an EOS or reuse 
 |---|---|
 | `from_thermodynamics(q, velocity)` | Copies `density`, `pressure`, `internal_energy` and `sound_speed` from `q`, adds velocity, and returns a `State<R>`. `R` is the velocity scalar type. No EOS call, allocation or retained reference. |
 | `from_pT(eos, p, T, velocity)` | Calls the generic EOS's `from_pT(p,T)`, then converts its result to a solver state. |
-| `from_conservative(eos, U)` | Extracts `rho`, computes velocity and **specific internal energy** `e = U.energy/rho - velocity.norm2()/2`, then uses `from_rhoe(rho,e)`. |
+| `from_conservative(eos, U)` | Uses `flow::try_split_conservative` to recover density, velocity and specific internal energy, then calls `from_rhoe(rho,e)` for a generic EOS. |
 | `ideal_gas_from_rhop(gas, rho, velocity, p)` | Specialized ideal-gas path using density/pressure directly: `e = p/((gamma-1)*rho)`, `a = sqrt(gamma*p/rho)`. |
 
 The supplied `thermodynamics::IdealGas` also has specialized `from_pT` and `from_conservative` overloads. They avoid evaluating unused entropy/logarithms. Invalid inputs produce invalid-state markers (zeros and/or NaNs), which a subsequent solver call rejects. They do not return `Result`/`Status` themselves.

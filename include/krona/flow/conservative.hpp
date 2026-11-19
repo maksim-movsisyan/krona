@@ -11,15 +11,32 @@ struct Conservative {
     Scalar density{};                 ///< Mass per unit volume.
     math::Vector3<Scalar> momentum{}; ///< Momentum per unit volume, rho*u.
     Scalar total_energy_density{};    ///< Total energy per unit volume, rho*E.
+
+    /// @brief Adds states or increments component by component.
+    KOKKOS_INLINE_FUNCTION constexpr Conservative operator+(Conservative other) const noexcept {
+        return {density + other.density, momentum + other.momentum,
+                total_energy_density + other.total_energy_density};
+    }
+
+    /// @brief Forms the componentwise difference between two states or increments.
+    KOKKOS_INLINE_FUNCTION constexpr Conservative operator-(Conservative other) const noexcept {
+        return {density - other.density, momentum - other.momentum,
+                total_energy_density - other.total_energy_density};
+    }
+
+    /// @brief Scales every component of the state or increment by the same factor.
+    KOKKOS_INLINE_FUNCTION constexpr Conservative operator*(Scalar factor) const noexcept {
+        return {factor * density, momentum * factor, factor * total_energy_density};
+    }
 };
 
 /// @brief Density, velocity and internal energy per unit mass recovered from a flow state.
 /// @tparam Scalar Floating-point type of the recovered values.
 template <class Scalar> 
 struct InternalEnergyState {
-    Scalar density{};
-    math::Vector3<Scalar> velocity{};
-    Scalar internal_energy{};
+    Scalar density{};                 ///< Mass per unit volume.
+    math::Vector3<Scalar> velocity{}; ///< Cartesian velocity.
+    Scalar internal_energy{};         ///< Specific internal energy e (J/kg), using the EOS energy reference.
 };
 
 /// @brief Forms conservative densities from rho, velocity and specific internal energy.

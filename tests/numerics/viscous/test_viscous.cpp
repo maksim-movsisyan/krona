@@ -13,7 +13,7 @@ using krona::test::Exec;
 using krona::test::check;
 using krona::test::near;
 using Vector=r::Vector<double>;
-using Flux=r::Conservative<double>;
+using Flux=r::Flux<double>;
 
 /// @brief Checks that every independent stress component is zero.
 void zero_stress(v::SymmetricStress<double> s)
@@ -242,14 +242,14 @@ struct Batch {
         const r::Vector<R> n{0,1,0};
         const auto t=v::NewtonianStress{}.traction(g,n,static_cast<R>(1.5),static_cast<R>(0.25));
         const auto q=v::FourierHeatFlux{}.template operator()<R>(r::Vector<R>{0,2,0},n,static_cast<R>(2.5));
-        output(i)=v::outward_flux<r::Conservative<R>>(v::surface_transport(t,q),r::Vector<R>{4,1,0});
+        output(i)=v::outward_flux<r::Flux<R>>(v::surface_transport(t,q),r::Vector<R>{4,1,0});
     }
 };
 
 /// @brief Compares completed device fluxes with analytic momentum and energy references.
 template<class R> void batch(const Exec& exec)
 {
-    using Output=Kokkos::View<v::Result<r::Conservative<R>>*,typename Exec::memory_space>;
+    using Output=Kokkos::View<v::Result<r::Flux<R>>*,typename Exec::memory_space>;
     Output output("viscous/flux",37);
     krona::test::complete(exec,[&]{
         Kokkos::parallel_for("viscous/flux",Kokkos::RangePolicy<Exec>(exec,0,37),Batch<R,Output>{output});

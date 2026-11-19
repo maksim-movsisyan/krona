@@ -10,11 +10,15 @@ namespace la = krona::linalg;
 using krona::test::check;
 using krona::test::near;
 
-using U = ri::Conservative<R>;
-using Delta = ri::Conservative<double>;
+using U = krona::flow::Conservative<R>;
+using Delta = krona::flow::Conservative<double>;
 
 template<class T>
-auto components(ri::Conservative<T> q)
+auto components(krona::flow::Conservative<T> q)
+{ return std::array<T, 5>{q.density, q.momentum.x, q.momentum.y, q.momentum.z, q.total_energy_density}; }
+
+template<class T>
+auto components(ri::Flux<T> q)
 { return std::array<T, 5>{q.mass, q.momentum.x, q.momentum.y, q.momentum.z, q.energy}; }
 
 Delta direction(krona::GlobalIndex gid)
@@ -106,8 +110,7 @@ void inner_blocks(const Exec& exec, Grid& grid)
 
     // Independent finite differences of the frozen Rusanov flux, with native remote-column import.
     const auto eos = krona::thermodynamics::IdealGas<double>{static_cast<double>(gas().gamma), 1.0};
-    using D = ri::Conservative<double>;
-    std::array<D, 2> expected{};
+    std::array<ri::Flux<double>, 2> expected{};
     for (std::size_t f = 0; f < static_cast<std::size_t>(grid.host.n_inner_faces); ++f) {
         const auto i = static_cast<std::size_t>(grid.host.face_owner[f]);
         const auto j = static_cast<std::size_t>(grid.host.face_neigh[f]);
@@ -127,7 +130,7 @@ void inner_blocks(const Exec& exec, Grid& grid)
             };
             const auto a = perturb(l, i), b = perturb(r, j);
             return (ri::physical_flux(a, n) + ri::physical_flux(b, n) -
-                    (ri::conservative(b) - ri::conservative(a)) * speed) * 0.5;
+                    ri::wave_flux(ri::conservative(b) - ri::conservative(a), speed)) * 0.5;
         };
         const double step = 1e-5;
         const auto derivative = (flux(step) - flux(-step)) * (grid.host.face_area[f] / (2 * step));
@@ -192,9 +195,10 @@ void boundary_blocks(const Exec& exec, Grid& grid)
             if (cell < grid.host.cell_gid.size()) {
                 const auto state = ri::conservative(law(w));
                 const auto d = direction(grid.host.cell_gid[cell]);
-                const U delta{static_cast<R>(d.mass), krona::math::cast<R>(d.momentum), static_cast<R>(d.energy)};
+                const U delta{static_cast<R>(d.density), krona::math::cast<R>(d.momentum),
+                              static_cast<R>(d.total_energy_density)};
                 const auto changed = state + delta * step;
-                w = model.primitive(krona::flow::Conservative<R>{changed.mass, changed.momentum, changed.energy});
+                w = model.primitive(changed);
             }
             p(cell) = static_cast<S>(w.pressure);
             T(cell) = static_cast<S>(w.temperature);

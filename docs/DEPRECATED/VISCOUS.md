@@ -167,11 +167,11 @@ constructible from `{mass, {mx,my,mz}, energy}`, exposing `.mass`, `.momentum.x`
 local calculation. This avoids an unnecessary dependency on the Riemann module
 or a second, competing five-component flow type.
 
-The existing `riemann::Conservative<Real>` already satisfies this contract:
+The existing `riemann::Flux<Real>` already satisfies this contract:
 
 ```cpp
 #include <krona/numerics/riemann/types.hpp>
-using Flux = krona::numerics::riemann::Conservative<Real>;
+using Flux = krona::numerics::riemann::Flux<Real>;
 
 const auto fv = viscous::outward_flux<Flux>(surface, face_velocity);
 if (fv.valid()) {

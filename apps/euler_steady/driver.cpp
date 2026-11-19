@@ -87,7 +87,7 @@ void write_solution(const mesh::host::MeshPart& host, const std::filesystem::pat
     const auto cells = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, conserved);
     const auto count = cells.extent(0);
     std::vector<Real> density(count);
-    for (std::size_t i = 0; i < count; ++i) density[i] = cells(i).mass;
+    for (std::size_t i = 0; i < count; ++i) density[i] = cells(i).density;
 
     const auto primitive = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, q);
     const auto component = [&](std::size_t c) {

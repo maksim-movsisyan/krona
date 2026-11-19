@@ -94,7 +94,7 @@ struct Physics {
 };
 
 template<class A,class R>
-KOKKOS_INLINE_FUNCTION void accumulate(Kokkos::Array<A,5>& sum,const numerics::riemann::Conservative<R>& f,A factor) {
+KOKKOS_INLINE_FUNCTION void accumulate(Kokkos::Array<A,5>& sum,const numerics::riemann::Flux<R>& f,A factor) {
     sum[0]+=factor*static_cast<A>(f.mass);sum[1]+=factor*static_cast<A>(f.momentum.x);
     sum[2]+=factor*static_cast<A>(f.momentum.y);sum[3]+=factor*static_cast<A>(f.momentum.z);sum[4]+=factor*static_cast<A>(f.energy);
 }

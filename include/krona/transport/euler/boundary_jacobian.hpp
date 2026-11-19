@@ -25,7 +25,7 @@ KOKKOS_INLINE_FUNCTION auto primitive_array(boundary::physical::Primitive<R, tru
 { return Kokkos::Array<R, 5>{q.pressure, q.velocity.x, q.velocity.y, q.velocity.z, q.temperature}; }
 
 template<class R>
-KOKKOS_INLINE_FUNCTION auto conservative_array(numerics::riemann::Conservative<R> q)
+KOKKOS_INLINE_FUNCTION auto flux_array(numerics::riemann::Flux<R> q)
 { return Kokkos::Array<R, 5>{q.mass, q.momentum.x, q.momentum.y, q.momentum.z, q.energy}; }
 
 template<class R, class Sample>
@@ -41,7 +41,7 @@ KOKKOS_INLINE_FUNCTION bool differentiate_flux_column(const Sample& flux, const 
         const bool up = forward > R{0} && upper.valid();
         const bool down = backward > R{0} && lower.valid();
         if (up && down) {
-            const auto a = conservative_array(upper.flux), b = conservative_array(lower.flux);
+            const auto a = flux_array(upper.flux), b = flux_array(lower.flux);
             for (std::size_t row = 0; row < 5; ++row) {
                 const R right = (a[row] - base[row]) / forward;
                 const R left = (base[row] - b[row]) / backward;
@@ -53,7 +53,7 @@ KOKKOS_INLINE_FUNCTION bool differentiate_flux_column(const Sample& flux, const 
         if (!up && !down) continue;
 
         // Use a quadratic one-sided stencil when a probe leaves the admissible domain.
-        const auto a = conservative_array(up ? upper.flux : lower.flux);
+        const auto a = flux_array(up ? upper.flux : lower.flux);
         const R first_step = up ? forward : -backward;
         auto second = point;
         second[column] = x + R{2} * first_step;
@@ -61,7 +61,7 @@ KOKKOS_INLINE_FUNCTION bool differentiate_flux_column(const Sample& flux, const 
         if (second_step == first_step) continue;
         const auto far = flux(second);
         if (!far.valid()) continue;
-        const auto b = conservative_array(far.flux);
+        const auto b = flux_array(far.flux);
         for (std::size_t row = 0; row < 5; ++row) {
             const R near_slope = (a[row] - base[row]) / first_step;
             const R far_slope = (b[row] - base[row]) / second_step;
@@ -98,7 +98,7 @@ struct FiniteDifferenceBoundary {
         const auto point = detail::primitive_array(states.trace);
         const auto base = flux(point);
         if (!base.valid()) return {};
-        const auto reference = detail::conservative_array(base.flux);
+        const auto reference = detail::flux_array(base.flux);
         const R relative_step = Kokkos::cbrt(Kokkos::epsilon_v<R>);
         ri::Matrix5<R> trace_jacobian;
         for (std::size_t column = 0; column < 5; ++column) {

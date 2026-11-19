@@ -16,8 +16,8 @@ KOKKOS_INLINE_FUNCTION bool state_valid(numerics::riemann::State<R> q) {
     const auto u=numerics::riemann::conservative(q);
     return Kokkos::isfinite(q.density)&&q.density>R{0}&&Kokkos::isfinite(q.pressure)&&q.pressure>R{0}&&
         Kokkos::isfinite(q.internal_energy)&&Kokkos::isfinite(q.sound_speed)&&q.sound_speed>R{0}&&
-        Kokkos::isfinite(u.mass)&&Kokkos::isfinite(u.momentum.x)&&Kokkos::isfinite(u.momentum.y)&&
-        Kokkos::isfinite(u.momentum.z)&&Kokkos::isfinite(u.energy);
+        Kokkos::isfinite(u.density)&&Kokkos::isfinite(u.momentum.x)&&Kokkos::isfinite(u.momentum.y)&&
+        Kokkos::isfinite(u.momentum.z)&&Kokkos::isfinite(u.total_energy_density);
 }
 template<class R, class StateLaw>
 KOKKOS_INLINE_FUNCTION numerics::riemann::State<R> prepare_state(const StateLaw& law,
