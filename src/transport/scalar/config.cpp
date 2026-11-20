@@ -8,11 +8,13 @@
 namespace krona::transport::scalar {
 namespace {
 
+/// @brief Rejects an invalid tolerance pair before configuring the linear solver.
 void validate_tolerances(const toml_config::TomlReader& reader, double relative, double absolute) {
     if (relative < 0 || relative >= 1 || absolute < 0 || (relative == 0 && absolute == 0))
         reader.error("tolerances require 0 <= relative < 1, absolute >= 0 and at least one nonzero value");
 }
 
+/// @brief Reads the spatial schemes and checks dependencies between them.
 void read_numerics(Configuration& c, const toml::table& n, const toml_config::TomlReader& reader) {
     reader.check_keys(n, {"gradient", "reconstruction", "diffusion"}, "numerics");
 
@@ -51,6 +53,8 @@ void read_numerics(Configuration& c, const toml::table& n, const toml_config::To
     options.regularization = reader.number(r, "regularization", options.regularization);
     if (options.kappa < -1 || options.kappa > 1) reader.error("reconstruction.kappa must be in [-1, 1]");
     if (options.regularization < 0) reader.error("reconstruction.regularization must be nonnegative");
+
+    // Reject explicitly configured options that the selected reconstruction would ignore.
     if (r.contains("kappa") && options.method != RM::MusclKappa)
         reader.error("reconstruction.kappa requires muscl_kappa");
     if (r.contains("skew_correction") && options.method != RM::MusclKappa && options.method != RM::Tvd)
@@ -67,6 +71,7 @@ void read_numerics(Configuration& c, const toml::table& n, const toml_config::To
     const auto& d = reader.table(n, "diffusion");
     reader.check_keys(d, {"nonorthogonal_correction", "require_orthogonal", "orthogonality_tolerance"}, "diffusion");
     c.nonorthogonal_correction = reader.boolean(d, "nonorthogonal_correction", c.nonorthogonal_correction);
+    // The uncorrected scheme requires orthogonal geometry by default.
     c.require_orthogonal = reader.boolean(d, "require_orthogonal", !c.nonorthogonal_correction);
     c.orthogonality_tolerance = reader.number(d, "orthogonality_tolerance", c.orthogonality_tolerance);
     if (c.orthogonality_tolerance < 0 || c.orthogonality_tolerance >= 1)
@@ -77,6 +82,7 @@ void read_numerics(Configuration& c, const toml::table& n, const toml_config::To
         reader.error("reconstruction and diffusion correction require a gradient method");
 }
 
+/// @brief Decodes one scalar table and validates the settings the application will consume.
 Configuration decode(const toml::table& root, std::string_view field, const toml_config::TomlReader& reader) {
     if (field.empty()) reader.error("field name must not be empty");
     const auto& all = reader.table(root, "scalars", true);
@@ -100,6 +106,7 @@ Configuration decode(const toml::table& root, std::string_view field, const toml
     if (!(c.density > 0) || c.diffusion < 0 || (c.diffusion_enabled && !(c.diffusion > 0)))
         reader.error("density and enabled diffusion coefficient must be positive");
 
+    // Scheme checks use the just-read convection and diffusion switches.
     read_numerics(c, reader.table(t, "numerics"), reader);
 
     const auto& ti = reader.table(t, "time");

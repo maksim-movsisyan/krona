@@ -96,7 +96,7 @@ The following example starts from `phi = 2` with unit density and source density
 ```cpp
 #include <krona/transport/scalar/transient/operator.hpp>
 #include <krona/transport/scalar/assembly.hpp>
-#include <krona/transport/scalar/source.hpp>
+#include <krona/transport/scalar/source/operator.hpp>
 #include <krona/linalg/solver.hpp>
 
 using namespace krona;
@@ -142,7 +142,7 @@ for (int step = 0; step < 10; ++step) {
             mass, tt::time_history(newest, tt::TimeLevel{mass, q_nm1}));
     sources.add_async(target.rhs, status, ts::UniformSource<Real>{1});
     // Add any spatial contributions for this equation here.
-    (void)status.check(comm);
+    (void)status.check();
     matrix.commit();
     rhs.commit();
 
@@ -180,7 +180,7 @@ Kokkos::deep_copy(exec, residual, Real{0});
 status.begin_async();
 temporal.add_residual_async(q_new, residual, status, derivative, mass, history);
 sources.add_async(residual, status, ts::UniformSource<Real>{1});
-(void)status.check(comm);
+(void)status.check();
 ```
 
 Without the separate source call this adds only `-d(M*phi)/dt`. For Backward Euler:
@@ -210,7 +210,7 @@ Current/history inputs and mass-provider storage must not overlap written coeffi
 
 The standard `make_system_view(matrix, rhs, assembly, exec, component)` supports CSR and a selected diagonal BSR equation/variable slice. For BSR it targets `(block, component, component)` and RHS DOFs `cell * block_size + component`. It requires the matrix's exact shared assembly graph and the RHS's exact matrix distribution. Other block components are untouched. Initialize the whole intended equation/system and assemble other components before solving a full block system.
 
-For another backend, construct `SystemView{values, rhs, entries}` directly; the operator imposes no native matrix type. Assembly is additive and only changes diagonals/RHS, preserving off-diagonal coefficients. It does not clear targets or check solvability of the completed system. Positive temporal diagonals do not set `AssemblyReport::has_diffusion_anchor`; that flag describes diffusion boundary contributions only.
+For another backend, construct `SystemView{values, rhs, entries}` directly; the operator imposes no native matrix type. Assembly is additive and only changes diagonals/RHS, preserving off-diagonal coefficients. It does not clear targets or check solvability of the completed system. Positive temporal diagonals do not set `AssemblyReport::has_local_diffusion_anchor`; that flag describes diffusion boundary contributions only.
 
 Coefficients are calculated in computation `Real`, then converted to the output scalar. The added temporal diagonal must remain positive/finite in coefficient storage. Nonfinite or unrepresentable contributions and accumulated targets are rejected through assembly diagnostics.
 
@@ -223,11 +223,11 @@ Coefficients are calculated in computation `Real`, then converted to the output 
 | `TransientOperator` construction | Local setup requiring active Kokkos; stores no arrays and launches no work. |
 | `AssemblyStatus::begin_async()` | Queues diagnostic flag reset; does not clear equation outputs. |
 | `add_system_async()`, `add_residual_async()` | Queue owned-cell kernels on the operator's instance; no allocation, fence, halo exchange, MPI, commit or history update. |
-| `AssemblyStatus::check(comm)` | Copies flags to host, fences its instance and performs an MPI all-reduce. Does not commit algebra wrappers. |
+| `AssemblyStatus::check()` | Copies the local flags to host, fences the execution instance and checks the flags. |
 | Matrix/vector `commit()` | Completes pending native access and closes its batch; no MPI collective. |
 | History copies with `deep_copy(exec, ...)` | May remain queued; order on the same instance or fence before other consumers. |
 
-Use one `begin_async()` → contributions → `check(comm)` batch on the same execution instance. All ranks, including empty ranks, call collective checks/solves in the same order. A valid later contribution does not erase earlier errors. Host validation and kernel submission are enclosed in `mpi::guarded`, following the distributed fatal-error policy. Validation rejects incompatible views/coefficient conversion; kernel flags report invalid masses, nonfinite time-layer values, invalid diagonal positions and nonfinite/unrepresentable additions. A failed batch is not rolled back. A pending status destructor fences its instance but does not perform the collective error check.
+Use one `begin_async()` → contributions → `check()` batch on the same execution instance. Each rank checks its own flags. An error detected by any rank aborts the MPI job through `mpi::require`. All ranks, including empty ranks, call the collective solve in the same order. Host validation catches incompatible views or invalid coefficient conversion. Kernel flags report invalid masses, nonfinite time-layer values, invalid diagonal positions and nonfinite or unrepresentable additions. Flags persist across contributions, and some entries may already have been updated when an error is detected. Call `check()` explicitly to validate a batch. The destructor only waits for pending work.
 
 `AssemblyStatus` owns a small device flag array and host mirror. The transient operator owns only two values: count and execution instance. History/mass providers retain their supplied members by value; managed views retain allocations, unmanaged views borrow. Neither form preserves old data against overwriting. `DensityVolumeMass` creates no mass array. Application code owns the field/history allocations and performs all snapshots, rotations and algebra transfers.
 

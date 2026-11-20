@@ -34,11 +34,13 @@ void assemble_equation(const Attached& a, Matrix& matrix,
             if (i < target.rhs.extent(0) && (!Kokkos::isfinite(target.rhs(i)) || !(target.values(target.entries.diagonal(i)) > Scalar{0})))
                 ts::detail::flag(flags, ts::detail::BadSystem);
         });
-    const auto report = status.check(a.plan.communicator());
+    const auto report = status.check();
 
-    // Close algebra access states before solve; require a boundary anchor for steady diffusion.
+    // This fixture requires an anchor somewhere in the global steady diffusion problem.
+    const bool has_anchor = mpi::allreduce<mpi::Reduction::logical_or>(
+        a.plan.communicator(), report.has_local_diffusion_anchor);
     matrix.commit(); rhs.commit();
-    mpi::require(matrix.distribution().global_size() == 0 || report.has_diffusion_anchor,
+    mpi::require(matrix.distribution().global_size() == 0 || has_anchor,
                  "Diffusion test: pure Neumann problem requires an explicit reference");
 }
 

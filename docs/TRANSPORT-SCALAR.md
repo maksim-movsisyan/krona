@@ -316,8 +316,9 @@ limiter, and additive transport kernels enqueue work on that instance.
 The driver's halo exchanges complete before their consumers proceed.
 Base assembly checks diagnostics before the solve. The outer passes accumulate
 boundary and correction flags and check them once after the loop.
-`boundary::scalar::Status::check()` waits locally and
-`AssemblyStatus::check(comm)` reduces the assembly flags across ranks.
+Both `boundary::scalar::Status::check()` and `AssemblyStatus::check()` wait
+on the local execution instance and check that rank's flags. A kernel error
+is reported through `mpi::require`, which aborts the MPI job.
 Native matrix and vector accesses are committed before the blocking collective
 linear solve. The outer loop avoids the additional full residual pass and its
 MPI norm reduction. VTU output involves all participating ranks.

@@ -4,14 +4,16 @@
 
 namespace krona::transport::scalar {
 
-/// @brief Borrowed scalar equation slice: native-entry coefficients, owned RHS and matching entry map.
-/// Arrays are writable rank-one views, including strided BSR diagonal-component slices.
-/// Initialize targets once before adding contributions; make_system_view() checks graph/distribution attachment.
+/// @brief Borrows a matrix coefficient slice, its RHS and the entry map for scalar assembly.
+/// Initialize the writable slices before the first additive contribution.
+/// @tparam Values Writable rank-one matrix view indexed by native entry ID.
+/// @tparam Rhs Writable rank-one RHS view indexed by owned cell ID. The view can be strided.
+/// @tparam Entries Map from local rows and faces to entries in values.
 template<class Values, class Rhs, class Entries>
 struct SystemView {
-    Values values;
-    Rhs rhs;
-    Entries entries;
+    Values values;   ///< Matrix coefficients for the selected scalar equation.
+    Rhs rhs;         ///< Right-hand side for the same scalar equation.
+    Entries entries; ///< Entry map for the layout and numbering of this matrix.
 };
 
 } // namespace krona::transport::scalar

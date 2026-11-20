@@ -1,7 +1,7 @@
 #pragma once
 
 #include <krona/transport/diffusion/isotropic.hpp>
-#include <krona/transport/scalar/source.hpp>
+#include <krona/transport/scalar/source/providers.hpp>
 #include <krona/transport/scalar/diffusion/plan.hpp>
 #include <krona/transport/scalar/diffusion/detail/correction.hpp>
 

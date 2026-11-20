@@ -6,10 +6,15 @@
 
 namespace krona::transport::scalar {
 
-/// @brief Opens native ReadWrite access without zeroing or commit; native access may synchronize host changes.
-/// Matrix graph must be the shared assembly graph; RHS must use this matrix's point distribution.
-/// A BSR component selects one diagonal equation/variable block slice and its AoS RHS component.
-/// The assembly plan must describe the same local cell/face numbering as the spatial operator.
+/// @brief Opens native read-write views for additive scalar assembly.
+/// Native access may synchronize host changes. The caller initializes new targets and commits both wrappers.
+/// @tparam Matrix KRONA CSR or BSR matrix storing the coefficients.
+/// @tparam Exec Kokkos execution space used for the native views and assembly submissions.
+/// @param matrix Matrix that shares its graph with assembly.
+/// @param rhs Right-hand side on the matrix's point distribution.
+/// @param assembly Entry map with the same local cell and face numbering as the spatial operator.
+/// @param exec Execution instance on which the views will be used.
+/// @param component Equation and variable selected within each BSR block. Use zero for CSR.
 template<class Matrix, class Exec = typename Matrix::execution_space>
 [[nodiscard]] auto make_system_view(Matrix& matrix, linalg::Vector<typename Matrix::scalar_type, Exec>& rhs,
     const linalg::FaceAssemblyPlan<Exec>& assembly, const Exec& exec = {}, linalg::LocalOrdinal component = 0) {
@@ -19,6 +24,8 @@ template<class Matrix, class Exec = typename Matrix::execution_space>
                  "Scalar transport: RHS must share the matrix distribution");
     const auto width = matrix.block_size();
     mpi::require(component >= 0 && component < width, "Scalar transport: invalid block component");
+
+    // For BSR, take the same diagonal component from each block, including off-diagonal blocks.
     const auto values = [&] {
         if constexpr (Matrix::block_storage)
             return Kokkos::subview(matrix.edit_blocks(exec), Kokkos::ALL(), component, component);
@@ -29,6 +36,7 @@ template<class Matrix, class Exec = typename Matrix::execution_space>
     using Scalar = typename Matrix::scalar_type;
     using Rhs = Kokkos::View<Scalar*, Kokkos::LayoutStride, typename decltype(native_rhs)::memory_space,
                              Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+    // The RHS stores cell components together. Select one component every width entries.
     auto* pointer = count == 0 ? native_rhs.data() : native_rhs.data()+static_cast<std::size_t>(component)*native_rhs.stride(0);
     const Rhs component_rhs(pointer,
         Kokkos::LayoutStride(count, static_cast<std::size_t>(width)*native_rhs.stride(0)));

@@ -2,6 +2,8 @@
 
 #include <krona/transport/scalar/diffusion/operator.hpp>
 #include <krona/transport/scalar/assembly.hpp>
+#include <krona/transport/scalar/source/operator.hpp>
+#include <krona/mpi/collectives.hpp>
 #include <krona/linalg/solver.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -375,7 +377,7 @@ void assembly_case(const Exec& exec) {
         status.begin_async();
         boundary.finalize();
         diffusion.add_system_async(target, boundary, status);
-        (void)status.check(comm); scalar.commit(); rhs.commit();
+        (void)status.check(); scalar.commit(); rhs.commit();
     }
 }
 
@@ -444,7 +446,7 @@ void additive_case(const Exec& exec) {
     diffusion.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}});
     source.add_async(target.rhs, status, ts::UniformSource<Real>{4});
     diffusion.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}});
-    (void)status.check(comm); matrix.commit(); rhs.commit();
+    (void)status.check(); matrix.commit(); rhs.commit();
     const auto hv = copy_view(matrix.read_values(exec), exec);
     const auto hb = copy_view(rhs.read(exec), exec);
     matrix.commit(); rhs.commit();
@@ -500,7 +502,7 @@ void residual_case_impl(const Exec& exec) {
     source.add_async(target.rhs,status,ts::UniformSource<Real>{3});
     diffusion.add_residual_async(values,residual.view().component(1),boundary,status,law);
     source.add_async(residual.view().component(1),status,ts::UniformSource<Real>{3});
-    (void)status.check(comm); matrix.commit();rhs.commit();
+    (void)status.check(); matrix.commit();rhs.commit();
     x.copy_from_component_async(values,exec);x.commit();matrix.apply(x,y);
     const auto hb=copy_view(rhs.read(exec),exec),hy=copy_view(y.read(exec),exec);
     rhs.commit();y.commit();
@@ -541,8 +543,8 @@ void matrix_free_case(const Exec& exec) {
     diffusion.add_residual_async(field,residual,boundary,status);
 
     // Pure Neumann residual evaluation must not fabricate a value-boundary anchor.
-    const auto report=status.check(comm);
-    check(!report.has_diffusion_anchor,"pure Neumann contribution acquired a value anchor");
+    const auto report=status.check();
+    check(!report.has_local_diffusion_anchor,"pure Neumann contribution acquired a value anchor");
     const auto host=copy_view(residual,exec);
     for(std::size_t i=0;i<host.extent(0);++i)test::near(host(i),Real{7},Real{0},"constant field is not preserved");
 
@@ -564,7 +566,7 @@ void bsr_slice_case(const Exec& exec) {
     ts::AssemblyStatus<Exec> status(exec);status.begin_async();td::DiffusionOperator<> diffusion(a.plan);
     boundary.finalize();
     diffusion.add_system_async(scalar_target,boundary,status);diffusion.add_system_async(block_target,boundary,status);
-    (void)status.check(comm);scalar.commit();block.commit();b.commit();bb.commit();
+    (void)status.check();scalar.commit();block.commit();b.commit();bb.commit();
     const auto sv=copy_view(scalar.read_values(exec),exec);
     const auto bv=copy_view(block.read_blocks(exec),exec);
     const auto sb=copy_view(b.read(exec),exec),br=copy_view(bb.read(exec),exec);
@@ -620,12 +622,12 @@ void rejected(const Exec& exec) {
         else if constexpr (Which == 5) {
             Kokkos::View<Real*, Space> d("D", static_cast<std::size_t>(f.host.n_cells)); Kokkos::deep_copy(exec, d, Real{1});
             op.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{d}});
-            (void)status.check(comm); matrix.commit(); rhs.commit();
+            (void)status.check(); matrix.commit(); rhs.commit();
         } else op.add_system_async(target, boundary, status);
         if constexpr (Which == 3)
             ts::SourceOperator<Exec, Real>(a.mesh.view(), exec).add_async(target.rhs, status,
                 ts::UniformSource<Real>{std::numeric_limits<Real>::quiet_NaN()});
-        if constexpr (Which != 5) { (void)status.check(comm); matrix.commit(); rhs.commit(); }
+        if constexpr (Which != 5) { (void)status.check(); matrix.commit(); rhs.commit(); }
     }
     check(false, "invalid system unexpectedly accepted");
 }

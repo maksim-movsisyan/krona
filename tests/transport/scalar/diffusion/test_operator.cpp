@@ -191,11 +191,11 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
     const td::DiffusionOperator op(a.plan);
     NativeSystem<Storage> system(f, exec);
     ts::AssemblyStatus<Exec> status(exec);
-    status.begin_async(); op.add_system_async(system.view(), boundary, status, law, correction, time); (void)status.check(comm);
+    status.begin_async(); op.add_system_async(system.view(), boundary, status, law, correction, time); (void)status.check();
     const auto coefficients = snapshot(system.view().values, exec), rhs = snapshot(system.view().rhs, exec);
     Kokkos::View<Storage*, Space> residual("residual", m.sizes.n_own);
     Kokkos::deep_copy(exec, residual, Storage{0});
-    status.begin_async(); op.add_residual_async(phi, residual, boundary, status, law, correction, time); (void)status.check(comm);
+    status.begin_async(); op.add_residual_async(phi, residual, boundary, status, law, correction, time); (void)status.check();
 
     // Compare the direct residual with an independent b-A*phi row evaluation.
     const auto result = snapshot(residual, exec);
@@ -211,9 +211,9 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
 
     // The correction-only update must reproduce the complete RHS without changing the matrix.
     system.reset(exec);
-    status.begin_async(); op.add_system_async(system.view(), boundary, status, law, time); (void)status.check(comm);
+    status.begin_async(); op.add_system_async(system.view(), boundary, status, law, time); (void)status.check();
     const auto base_coefficients = snapshot(system.view().values, exec);
-    status.begin_async(); op.add_correction_async(system.view().rhs, boundary, status, law, correction, time); (void)status.check(comm);
+    status.begin_async(); op.add_correction_async(system.view().rhs, boundary, status, law, correction, time); (void)status.check();
     const auto corrected_rhs = snapshot(system.view().rhs, exec);
     for (std::size_t k = 0; k < system.columns.size(); ++k)
         test::near(static_cast<double>(base_coefficients(k)), static_cast<double>(coefficients(k)), 0., "correction changed matrix coefficients");
@@ -275,8 +275,8 @@ void custom_correction(const Exec& exec)
     Kokkos::deep_copy(exec, field, Real{2}); Kokkos::deep_copy(exec, first, Real{0}); Kokkos::deep_copy(exec, second, Real{0});
     const td::DiffusionOperator op(a.plan); ts::AssemblyStatus<Exec> status(exec);
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
-    status.begin_async(); op.add_residual_async(field, first, boundary, status, law); (void)status.check(comm);
-    status.begin_async(); op.add_residual_async(field, second, boundary, status, law, ZeroProjection{static_cast<std::size_t>(f.host.n_cells)}); (void)status.check(comm);
+    status.begin_async(); op.add_residual_async(field, first, boundary, status, law); (void)status.check();
+    status.begin_async(); op.add_residual_async(field, second, boundary, status, law, ZeroProjection{static_cast<std::size_t>(f.host.n_cells)}); (void)status.check();
     const auto x = snapshot(first, exec), y = snapshot(second, exec);
     for (std::size_t i = 0; i < x.extent(0); ++i) test::near(x(i), y(i), Real{0}, "custom correction without a gradients member");
 }
@@ -299,7 +299,7 @@ void rejection(const Exec& exec, std::string_view which)
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{which == "bad_coefficient" ? Real{-1} : Real{2}}};
     ts::AssemblyStatus<Exec> status(exec); status.begin_async();
     td::DiffusionOperator(a.plan).add_residual_async(field, residual, boundary, status, law, correction);
-    (void)status.check(comm); check(false, "invalid diffusion input was accepted");
+    (void)status.check(); check(false, "invalid diffusion input was accepted");
 }
 
 /// @brief Rejects auxiliary metrics inconsistent with mesh geometry.

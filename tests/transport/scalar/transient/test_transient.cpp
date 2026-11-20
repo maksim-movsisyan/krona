@@ -1,6 +1,7 @@
 #include "common/test_support.hpp"
 
 #include <krona/transport/scalar/transient/operator.hpp>
+#include <krona/mpi/collectives.hpp>
 #include "test_helpers.hpp"
 
 #include <array>
@@ -53,8 +54,8 @@ void additive(const Exec& exec)
         status.begin_async();
         op.add_system_async(ts::SystemView{values, rhs, entries}, status, derivative, tt::CellMass{mass}, h);
         op.add_residual_async(phi, residual, status, derivative, tt::CellMass{mass}, h);
-        const auto report = status.check(mpi::CommView::world());
-        check(!report.has_diffusion_anchor, "A temporal diagonal is not a diffusion boundary anchor");
+        const auto report = status.check();
+        check(!report.has_local_diffusion_anchor, "A temporal diagonal is not a diffusion boundary anchor");
     });
 
     // Compare additive coefficient changes and residuals while checking off-diagonal sentinels.
@@ -93,7 +94,7 @@ void conservation(const Exec& exec)
         status.begin_async();
         op.add_residual_async(current, residual, status, nt::Bdf2{}.coefficients(0.3, 0.2),
             tt::DensityVolumeMass{volumes, density}, h);
-        static_cast<void>(status.check(mpi::CommView::world()));
+        static_cast<void>(status.check());
     });
     const auto r = host_copy(residual);
     for (std::size_t i = 0; i < 2; ++i) test::near(r(i), 0.0, 1.e-12, "Conserve integrated quantity for changing mass");
@@ -120,7 +121,7 @@ void strided(const Exec& exec)
         status.begin_async();
         op.add_system_async(ts::SystemView{slice, b, entries}, status, nt::BackwardEuler{}.coefficients(0.5),
             tt::DensityVolumeMass{volumes, 2.f}, tt::time_history(tt::TimeLevel{tt::UniformMass{3.f}, old}));
-        static_cast<void>(status.check(mpi::CommView::world()));
+        static_cast<void>(status.check());
     });
     const auto a = host_copy(blocks);
     const auto r = host_copy(rhs);
@@ -159,7 +160,7 @@ double decay(const Exec& exec, int steps, bool bdf, bool variable = false)
         else
             op.add_system_async(ts::SystemView{a, b, entries}, status, nt::BackwardEuler{}.coefficients(dt),
                 tt::UniformMass{1.0}, tt::time_history(newest));
-        static_cast<void>(status.check(mpi::CommView::world()));
+        static_cast<void>(status.check());
         const double next = host_copy(b)(0)/host_copy(a)(0);
         Kokkos::deep_copy(exec, value, next);
 
@@ -195,7 +196,7 @@ void empty(const Exec& exec)
     const auto h = tt::time_history(tt::TimeLevel{tt::UniformMass{1.0}, values});
     op.add_system_async(ts::SystemView{values, values, entries}, status, nt::BackwardEuler{}.coefficients(1.0), tt::UniformMass{1.0}, h);
     op.add_residual_async(values, values, status, nt::BackwardEuler{}.coefficients(1.0), tt::UniformMass{1.0}, h);
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
 }
 
 
@@ -221,7 +222,7 @@ void mass_precision(const Exec& exec)
     status.begin_async();
     op.add_system_async(ts::SystemView{values, rhs, entries}, status, derivative, mass, history);
     op.add_residual_async(current, residual, status, derivative, mass, history);
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     const auto hv = host_copy(volumes);
     const auto hd = host_copy(density);
     const auto a = host_copy(values);
@@ -241,7 +242,7 @@ void mass_precision(const Exec& exec)
     const auto scalar_history = tt::time_history(tt::TimeLevel{scalar_mass, old});
     status.begin_async();
     op.add_system_async(ts::SystemView{values, rhs, entries}, status, derivative, scalar_mass, scalar_history);
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     const auto scalar_a = host_copy(values);
     for (std::size_t i = 0; i < 3; ++i) {
         const double expected = static_cast<double>(hv(i))*static_cast<double>(1.e20f);
@@ -266,7 +267,7 @@ void precision_selection(const Exec& exec)
     status.begin_async();
     op.add_system_async(ts::SystemView{values, rhs, entries}, status,
         nt::BackwardEuler{}.coefficients(1.f), tt::DensityVolumeMass{volumes, density}, history);
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     const auto a = host_copy(values);
     test::equal(a(0), 1048576.f, "Operator Real selects mass multiplication precision");
 }
@@ -295,7 +296,7 @@ void custom_mass(const Exec& exec)
     op.add_system_async(ts::SystemView{values, rhs, entries}, status,
         nt::BackwardEuler{}.coefficients(1.0), CustomMass{},
         tt::time_history(tt::TimeLevel{CustomMass{}, old}));
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     const auto a = host_copy(values);
     const auto b = host_copy(rhs);
     test::equal(a(0), 2.0, "Custom mass current layer");
@@ -304,7 +305,7 @@ void custom_mass(const Exec& exec)
     test::equal(b(1), 12.0, "Custom mass history layer index");
 }
 
-/// @brief Checks empty local ownership and untouched tails containing deliberately invalid inputs.
+/// @brief Checks empty ownership, untouched tails and completion of a rank-local batch.
 void empty_rank(const Exec& exec)
 {
     const auto comm = mpi::CommView::world();
@@ -330,13 +331,21 @@ void empty_rank(const Exec& exec)
         nt::BackwardEuler{}.coefficients(1.0), mass, history);
     op.add_residual_async(current, residual, status,
         nt::BackwardEuler{}.coefficients(1.0), mass, history);
-    static_cast<void>(status.check(comm));
+    static_cast<void>(status.check());
     const auto b = host_copy(backing);
     const auto r = host_copy(residual);
     test::equal(b(1), 7.0, "RHS tail untouched");
     test::equal(r(1), 7.0, "Residual tail untouched");
     test::equal(b(0), owned == 0 ? 0.0 : 24.0, "Local empty/owned RHS");
     test::equal(r(0), owned == 0 ? 0.0 : 8.0, "Local empty/owned residual");
+
+    // Only rank zero checks this batch. Its peers go straight to the barrier.
+    if (comm.rank() == 0) {
+        status.begin_async();
+        const auto report = status.check();
+        check(!report.has_local_diffusion_anchor, "An empty batch contains no diffusion anchors");
+    }
+    mpi::barrier(comm);
 }
 
 /// @brief Triggers an invalid assembly input, access state or unrepresentable destination update.
@@ -352,7 +361,7 @@ void rejection(const Exec& exec, std::string_view name)
     const auto mass = tt::UniformMass{name == "bad_mass" ? -1.0 : 1.0};
     const auto history = tt::time_history(tt::TimeLevel{tt::UniformMass{1.0}, old});
     op.add_system_async(ts::SystemView{a, b, entries}, status, derivative, mass, history);
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     check(false, "Expected rejection");
 }
 
@@ -387,7 +396,7 @@ void invalid_product(const Exec& exec)
     op.add_system_async(ts::SystemView{values, rhs, entries}, status,
         nt::BackwardEuler{}.coefficients(1.0), mass,
         tt::time_history(tt::TimeLevel{tt::UniformMass{1.0}, old}));
-    static_cast<void>(status.check(mpi::CommView::world()));
+    static_cast<void>(status.check());
     check(false, "Negative mass factors must fail even if their product is positive");
 }
 

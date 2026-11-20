@@ -38,7 +38,7 @@ Each owned row receives `+a_f` on its diagonal and `-a_f` in the neighbour colum
 | `linalg::FaceAssemblyPlan<Exec>` | Builds and owns the shared cell-neighbour graph and face-to-native-entry maps. Reuse it across equations. |
 | `scalar::SystemView` | Describes writable rank-one coefficient/RHS slices and their matching entry map. |
 | `scalar::SourceOperator<Exec, Real>` | Adds `source(cell) * volume(cell)` to an owned output prefix. |
-| `scalar::AssemblyStatus<Exec>` | Collects device errors for one additive batch; checks them collectively. |
+| `scalar::AssemblyStatus<Exec>` | Collects and checks device errors for one local additive batch. |
 
 `Real` controls diffusion arithmetic; destination views control coefficient/output storage. Field storage, algebra `Scalar` and preconditioner `PrecScalar` are selected separately by the application. Native KRONA CSR/BSR matrices support `float` and `double`, subject to Trilinos instantiation support.
 
@@ -56,6 +56,7 @@ The examples assume active MPI/Kokkos and an already prepared `mesh::host::MeshP
 #include <krona/fields/field_storage.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
+#include <krona/transport/scalar/source/operator.hpp>
 
 using namespace krona;
 namespace ts = transport::scalar;
@@ -137,7 +138,7 @@ Kokkos::deep_copy(exec, target.rhs, SolverReal{0});
 status.begin_async();
 diffusion.add_system_async(target, boundary, status, law);
 sources.add_async(target.rhs, status, source);
-const auto report = status.check(comm);
+(void)status.check();
 matrix.commit();
 rhs.commit();
 
@@ -155,7 +156,9 @@ if (solved.converged) {
 }
 ```
 
-All contributions are **additive**. Initialize once for a fresh equation, then add all required terms before `check()` and commit. `make_system_view()` opens native ReadWrite access; it neither clears nor commits. `check()` completes diagnostics but does not close algebra access. `report.has_diffusion_anchor` reports whether this batch encountered an anchoring boundary contribution; it is not a whole-system solvability test. The operators do not impose a whole-system anchor/diagonal policy. For pure steady diffusion, a gradient/flux-only (Neumann) problem needs a reference or nullspace treatment; this example assumes suitable Dirichlet/Robin constraints. A global anchor does not prove that every disconnected component is constrained. Temporal, reaction or coupled terms may change the system's solvability conditions.
+All contributions are **additive**. Initialize once for a fresh equation, then add all required terms before `check()` and commit. `make_system_view()` opens native read-write access. Use `commit()` on the matrix and RHS after checking diagnostics.
+
+The report from `check()` sets `has_local_diffusion_anchor` when a diffusive boundary flux on this rank has a positive owner coefficient. If the caller needs to know whether any rank has an anchor, reduce the flag with `mpi::allreduce<mpi::Reduction::logical_or>` on the solver communicator. Pure steady diffusion with only gradient/flux (Neumann) conditions needs a reference or nullspace treatment. The example assumes suitable Dirichlet/Robin constraints. Each disconnected component must be considered separately when checking solvability. Temporal, reaction or coupled terms may change those conditions.
 
 The example copies the result into the application's owned prefix only on convergence. On nonconvergence it leaves the field unchanged. Ghost and boundary slots are separate: publish them through the halo/boundary pipeline when later consumers need them. Assembling diffusion uses the condition objects directly; the initial field does not need prefilled boundary slots. Reuse the graph, matrix and vectors across solves, and choose explicitly when coefficients/RHS need rebuilding.
 
@@ -173,7 +176,7 @@ const auto equation = ts::make_system_view(blocks, block_rhs, assembly, exec, 1)
 status.begin_async();
 diffusion.add_system_async(equation, boundary, status, law);
 sources.add_async(equation.rhs, status, source);
-(void)status.check(comm);
+(void)status.check();
 blocks.commit();
 block_rhs.commit();
 // Only equation/component 1 has been assembled. Fill the other equations before solving.
@@ -199,7 +202,7 @@ Kokkos::deep_copy(exec, residual, Real{0});
 status.begin_async();
 diffusion.add_residual_async(q, residual, boundary, status, law);
 sources.add_async(residual, status, source);
-(void)status.check(comm);
+(void)status.check();
 ```
 
 `add_residual_async()` adds `b_boundary - A_diffusion * q`; sources are separate. Input needs at least `n_cells` entries, including current real ghosts. Output needs at least `n_own`; only its owned prefix is changed. Extended boundary samples are not read: boundary fluxes come directly from the manager's conditions. Consequently boundary-value filling is unnecessary for this operation itself.
@@ -271,7 +274,7 @@ const auto correction = grad::GradientCorrection{
 status.begin_async();
 diffusion.add_system_async(target, boundary, status, law, correction);
 // Or: diffusion.add_residual_async(q, residual, boundary, status, law, correction);
-(void)status.check(comm);
+(void)status.check();
 matrix.commit();
 rhs.commit();
 ```
@@ -297,7 +300,7 @@ const auto b = Kokkos::subview(rhs.overwrite(exec), Kokkos::ALL(), 0);
 Kokkos::deep_copy(exec, b, base_rhs); // Saved zero-correction RHS, including sources.
 status.begin_async();
 diffusion.add_correction_async(b, boundary, status, law, correction);
-(void)status.check(comm);
+(void)status.check();
 rhs.commit();
 // Solve with the existing committed matrix, then update gradients externally.
 ```
@@ -312,7 +315,7 @@ A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-cont
 
 ## Diagnostics, ownership and asynchrony
 
-`AssemblyStatus` owns a small device flag array and a host mirror. Use **one `begin_async()` → contributions → `check(comm)` batch** on the same execution instance. Flags persist across contributions: a later valid contribution cannot erase an earlier error. Host precondition failures use `mpi::require`; diffusion validation/submission is protected by `mpi::guarded`. Detected kernel errors terminate collectively during `check()`. Checks cover bad coefficients, sources, boundary relations, corrections and nonfinite/unrepresentable additions. A failed batch is not rolled back.
+`AssemblyStatus` owns a small device flag array and a host mirror. Use **one `begin_async()` → contributions → `check()` batch** on the same execution instance. Flags persist across contributions. A kernel error detected by any rank in `check()` aborts the MPI job through `mpi::require`. Checks cover bad coefficients, sources, boundary relations, corrections and nonfinite or unrepresentable additions. Some entries may already have been updated when an error is detected.
 
 `balance(field, boundary, law, source[, correction], time)` is an optional blocking collective diagnostic. It returns global `source_integral`, `outward_boundary_flux` and `defect = outward_boundary_flux - source_integral`. It integrates owned sources and physical boundary fluxes; inner fluxes are not summed. Only owned field values are needed, plus any correction/coefficient inputs. It is a global conservation check, not a residual norm or a proof of local convergence. Pass the same law/source/correction/time as the equation being checked.
 
@@ -323,12 +326,12 @@ A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-cont
 | `make_system_view()` | Local native access acquisition; may synchronize native host/device data. Does not commit. |
 | `AssemblyStatus::begin_async()` | Queues flag reset; no collective. Does not clear equation arrays. |
 | `add_system_async()`, `add_residual_async()`, `add_correction_async()`, `SourceOperator::add_async()` | Queue local kernels; no fence, halo exchange or MPI collective. |
-| `AssemblyStatus::check(comm)` | Copies flags to host, fences the execution instance and performs an MPI all-reduce. Does not commit algebra wrappers. |
+| `AssemblyStatus::check()` | Copies the local flags to host, fences the execution instance and checks the flags. |
 | Matrix/vector `commit()` | Completes pending native access on its recorded instance and closes the access batch; no MPI collective. |
 | `linalg::Solver::solve(rhs, x)` | Blocking collective linear solve; operates on committed algebra objects. Does not publish application fields. |
 | `balance()` | Blocking reductions followed by an MPI all-reduce. |
 
-All ranks participate in collective calls in the same order, including empty ranks. Order producers and consumers on the plan's execution instance; synchronize work on other instances before consuming its data. Avoid concurrent writes by separate assembly batches. Keep buffers live until queued work completes. Destroying a pending `AssemblyStatus` fences its instance but does **not** perform the collective error check.
+All ranks participate in collective calls such as `balance()` and `solve()` in the same order, including empty ranks. Order producers and consumers on the plan's execution instance. Synchronize work on other instances before consuming its data. Keep buffers live until queued work completes, and use `check()` explicitly to validate a batch. The destructor only waits for pending work.
 
 Plans/operators store mesh/auxiliary descriptors and a non-owning communicator; they do not allocate field, face-work, matrix or vector arrays. Keep the underlying mesh/auxiliary owners and communicator alive and stable. Host storage must also remain alive when device storage borrows it on CPU. The plan does not require host metadata. Boundary layouts and algebra plans have their own setup requirements; do not replace those with a diffusion plan.
 

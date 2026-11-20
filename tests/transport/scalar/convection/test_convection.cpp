@@ -5,6 +5,8 @@
 #include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/transport/scalar/assembly.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
+#include <krona/transport/scalar/source/operator.hpp>
+#include <krona/mpi/collectives.hpp>
 #include <krona/linalg/bsr_matrix.hpp>
 #include <krona/linalg/solver.hpp>
 #include <krona/fields/field_storage.hpp>
@@ -195,7 +197,7 @@ void upwind(const Exec& exec)
         Kokkos::deep_copy(exec, target.values, 0.0); Kokkos::deep_copy(exec, target.rhs, 0.0);
         boundary.finalize();
         status.begin_async(); convection.add_system_async(target, boundary, status, VelocityFlux{velocity});
-        (void)status.check(comm); matrix.commit(); rhs.commit();
+        (void)status.check(); matrix.commit(); rhs.commit();
         const auto values = snapshot(matrix.read_values(exec), exec); matrix.commit();
         const auto b = snapshot(Kokkos::subview(rhs.read(exec), Kokkos::ALL(), 0), exec); rhs.commit();
         for (std::size_t i = 0; i < diagonal.extent(0); ++i) {
@@ -213,7 +215,7 @@ void upwind(const Exec& exec)
         Kokkos::View<double*, Space> residual("upwind residual", f.host.n_own);
         Kokkos::deep_copy(exec, residual, 0.0);
         status.begin_async(); convection.add_residual_async(input.values.view().component(1), residual, boundary, status, VelocityFlux{velocity});
-        (void)status.check(comm);
+        (void)status.check();
         compare_system_residual(matrix, rhs, input.values.view().component(1), residual, exec);
     }
 }
@@ -246,7 +248,7 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         boundary.finalize();
         convection.add_system_async(plain, boundary, status, VelocityFlux{velocity});
         convection.add_system_async(target, boundary, status, VelocityFlux{velocity}, reconstruction);
-        (void)status.check(comm); base.commit(); base_rhs.commit(); matrix.commit(); rhs.commit();
+        (void)status.check(); base.commit(); base_rhs.commit(); matrix.commit(); rhs.commit();
 
         // Reconstruction changes only the explicit RHS; compare all implicit coefficients directly.
         const auto a0 = snapshot(base.read_values(exec), exec); base.commit();
@@ -255,7 +257,7 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         Kokkos::View<double*,Space> residual("affine residual", f.host.n_own);
         Kokkos::deep_copy(exec, residual, 0.0); status.begin_async();
         convection.add_residual_async(input.values.view().component(1), residual, boundary, status, VelocityFlux{velocity}, reconstruction);
-        (void)status.check(comm);
+        (void)status.check();
         compare_system_residual(matrix, rhs, input.values.view().component(1), residual, exec, tolerance);
         const auto h = snapshot(residual, exec);
         for (LocalIndex i = 0; i < f.host.n_own; ++i)
@@ -267,7 +269,7 @@ void affine_scheme(const Exec& exec, Scheme scheme)
         Kokkos::deep_copy(exec, corrected, 17.0);
         const auto prefix = Kokkos::subview(corrected, std::pair<std::size_t,std::size_t>{0,static_cast<std::size_t>(f.host.n_own)});
         Kokkos::deep_copy(exec, prefix, Kokkos::subview(base_rhs.read(exec), Kokkos::ALL(), 0)); base_rhs.commit();
-        status.begin_async(); convection.add_correction_async(prefix, boundary, status, VelocityFlux{velocity}, reconstruction); (void)status.check(comm);
+        status.begin_async(); convection.add_correction_async(prefix, boundary, status, VelocityFlux{velocity}, reconstruction); (void)status.check();
         const auto hc = snapshot(corrected, exec);
         const auto hb = snapshot(Kokkos::subview(rhs.read(exec), Kokkos::ALL(), 0), exec); rhs.commit();
         for (std::size_t i = 0; i < hb.extent(0); ++i) near(hc(i), hb(i), tolerance, "Correction-only RHS differs from full assembly");
@@ -305,7 +307,7 @@ void limiting(const Exec& exec)
     boundary.finalize();
     convection.add_residual_async(input.values.view().component(1),plain,boundary,status,VelocityFlux{});
     convection.add_residual_async(input.values.view().component(1),limited,boundary,status,VelocityFlux{},reconstruction);
-    (void)status.check(comm);
+    (void)status.check();
     const auto hp=snapshot(plain,exec),hl=snapshot(limited,exec);
     for(std::size_t i=0;i<hp.extent(0);++i)near(hp(i),hl(i),0.0,"Zero limiter did not recover upwind without gradient reads");
 }
@@ -333,7 +335,7 @@ void zero_flux(const Exec& exec)
     convection.add_system_async(target,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     convection.add_residual_async(field,out,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     convection.add_correction_async(out,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
-    (void)status.check(comm);matrix.commit();rhs.commit();
+    (void)status.check();matrix.commit();rhs.commit();
     const auto h=snapshot(out,exec);for(std::size_t i=0;i<h.extent(0);++i)near(h(i),7.0,0.0,"Zero flux read unused data or modified residual");
 }
 
@@ -369,10 +371,10 @@ void inflow(const Exec& exec)
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
     boundary.finalize();
     convection.add_system_async(target,boundary,status,TimedFlux{},cv::NoReconstruction{},TimedInflow{},Real{2});
-    (void)status.check(comm);matrix.commit();rhs.commit();
+    (void)status.check();matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("custom inflow residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
     convection.add_residual_async(input.values.view().component(1),residual,boundary,status,TimedFlux{},cv::NoReconstruction{},TimedInflow{},Real{2});
-    (void)status.check(comm);compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
+    (void)status.check();compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
     const auto hb=snapshot(Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0),exec);rhs.commit();
     if(f.host.n_own>0&&f.first==0)near(hb(0),12.0,0.0,"Time-dependent inflow callback was not used");
 }
@@ -407,11 +409,11 @@ void face_inputs(const Exec& exec)
         Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
         boundary.finalize();
         convection.add_system_async(target,boundary,status,flux,cv::NoReconstruction{},cv::FixedValueInflow{});
-        (void)status.check(comm);matrix.commit();rhs.commit();
+        (void)status.check();matrix.commit();rhs.commit();
         Kokkos::View<double*,Space> residual("face input residual",f.host.n_own);
         Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
         convection.add_residual_async(input.values.view().component(1),residual,boundary,status,flux,cv::NoReconstruction{},cv::FixedValueInflow{});
-        (void)status.check(comm);compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
+        (void)status.check();compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
         const auto hb=snapshot(Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0),exec);rhs.commit();
         for(std::size_t i=0;i<hb.extent(0);++i){
             const bool inlet=velocity>0 ? f.first+static_cast<int>(i)==0 : f.first+static_cast<int>(i)+1==f.total;
@@ -443,13 +445,13 @@ void profile_system(const Attached& a,Boundary& boundary,const Inflow& inflows,F
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
     boundary.finalize();
     convection.add_system_async(target,boundary,status,flux,cv::NoReconstruction{},inflows,time);
-    (void)status.check(comm);matrix.commit();rhs.commit();
+    (void)status.check();matrix.commit();rhs.commit();
     const auto b=snapshot(Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0),exec);rhs.commit();
     for(std::size_t i=0;i<expected.size();++i)near(b(i),expected[i],2e-11,"Boundary profile selected the wrong patch, index, stride or callback");
     Kokkos::View<double*,Space> field("profile field",a.mesh.view().sizes.n_cells),residual("profile residual",3);
     Kokkos::deep_copy(exec,field,3.0);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
     convection.add_residual_async(field,residual,boundary,status,flux,cv::NoReconstruction{},inflows,time);
-    (void)status.check(comm);compare_system_residual(matrix,rhs,field,residual,exec);
+    (void)status.check();compare_system_residual(matrix,rhs,field,residual,exec);
 }
 
 /// @brief Checks patch-local indexing, strides and updates to borrowed inflow arrays.
@@ -524,9 +526,9 @@ void divergent(const Exec& exec)
     Kokkos::View<double*,Space> field("constant",f.host.n_cells),out("divergent residual",f.host.n_own);
     Kokkos::deep_copy(exec,field,3.0);Kokkos::deep_copy(exec,out,0.0);status.begin_async();
     boundary.finalize();
-    convection.add_residual_async(field,out,boundary,status,DivergentFlux{});(void)status.check(comm);
+    convection.add_residual_async(field,out,boundary,status,DivergentFlux{});(void)status.check();
     const auto h=snapshot(out,exec);for(std::size_t i=0;i<h.extent(0);++i)near(h(i),-3.0,1e-12,"Conservative transport incorrectly removed phi*div(mass flux)");
-    Kokkos::deep_copy(exec,out,0.0);status.begin_async();convection.add_residual_async(field,out,boundary,status,VelocityFlux{3});(void)status.check(comm);
+    Kokkos::deep_copy(exec,out,0.0);status.begin_async();convection.add_residual_async(field,out,boundary,status,VelocityFlux{3});(void)status.check();
     const auto hc=snapshot(out,exec);for(std::size_t i=0;i<hc.extent(0);++i)near(hc(i),0.0,0.0,"Constant field changed under divergence-free mass flux");
 }
 
@@ -543,9 +545,9 @@ void bsr(const Exec& exec)
     Kokkos::deep_copy(exec,matrix.overwrite_blocks(exec),0.0);Kokkos::deep_copy(exec,rhs.overwrite(exec),0.0);
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec,1);
     boundary.finalize();
-    status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3},reconstruction);(void)status.check(comm);matrix.commit();rhs.commit();
+    status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3},reconstruction);(void)status.check();matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("bsr residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
-    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{3},reconstruction);(void)status.check(comm);
+    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{3},reconstruction);(void)status.check();
     compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec,3e-6,1);
     const auto values=snapshot(matrix.read_blocks(exec),exec);matrix.commit();
     for(std::size_t i=0;i<values.extent(0);++i)for(int r=0;r<3;++r)for(int c=0;c<3;++c)
@@ -563,7 +565,7 @@ void additive(const Exec& exec)
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,4.0);Kokkos::deep_copy(exec,target.rhs,5.0);
     boundary.finalize();
-    status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3});convection.add_system_async(target,boundary,status,VelocityFlux{3});(void)status.check(comm);
+    status.begin_async();convection.add_system_async(target,boundary,status,VelocityFlux{3});convection.add_system_async(target,boundary,status,VelocityFlux{3});(void)status.check();
     matrix.commit();rhs.commit();const auto v=snapshot(matrix.read_values(exec),exec);matrix.commit();
     const auto d=snapshot(a.assembly.entry_map().diagonal,exec);
     for(std::size_t i=0;i<d.extent(0);++i)near(v(d(i)),10.0,0.0,"Convection cleared an existing coefficient or miscounted duplicate faces");
@@ -631,9 +633,9 @@ void quadratic_case(const Exec& exec)
         const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
         Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
         boundary.finalize();
-        convection.add_system_async(target,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check(comm);matrix.commit();rhs.commit();
+        convection.add_system_async(target,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check();matrix.commit();rhs.commit();
         Kokkos::View<double*,Space> residual("quadratic residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
-        convection.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check(comm);
+        convection.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction);(void)status.check();
         compare_system_residual(matrix,rhs,phi,residual,exec);
         const auto h=snapshot(residual,exec);
         for(std::size_t i=0;i<h.extent(0);++i)near(h(i),-2*static_cast<double>(velocity)*(static_cast<double>(i)+0.5),2e-11,"Quadratic cell-average advection is not exact");
@@ -667,7 +669,10 @@ void frozen_system(const Exec& exec)
     diffusion.add_system_async(target,boundary,status,law);
     convection.add_system_async(target,boundary,status,VelocityFlux{});
     source.add_async(target.rhs,status,ts::UniformSource<Real>{1});
-    const auto report=status.check(comm);check(report.has_diffusion_anchor,"Convection lost the preceding diffusion anchor");matrix.commit();rhs.commit();
+    const auto report = status.check();
+    const bool has_anchor = mpi::allreduce<mpi::Reduction::logical_or>(comm, report.has_local_diffusion_anchor);
+    check(has_anchor, "Convection lost the preceding diffusion anchor");
+    matrix.commit(); rhs.commit();
     const auto revision=matrix.revision();
     Kokkos::View<double*,Space> base_rhs("base combined RHS",f.host.n_own);
     Kokkos::deep_copy(exec,base_rhs,Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0));rhs.commit();
@@ -682,7 +687,7 @@ void frozen_system(const Exec& exec)
                 KOKKOS_LAMBDA(LocalIndex cell){gradients(static_cast<std::size_t>(cell),0)=1;});
         }
         const auto b=Kokkos::subview(rhs.overwrite(exec),Kokkos::ALL(),0);Kokkos::deep_copy(exec,b,base_rhs);
-        status.begin_async();convection.add_correction_async(b,boundary,status,VelocityFlux{},reconstruction);(void)status.check(comm);rhs.commit();
+        status.begin_async();convection.add_correction_async(b,boundary,status,VelocityFlux{},reconstruction);(void)status.check();rhs.commit();
         x.copy_from_component(input.values.view().component(0),exec);x.commit();
         check(linear_solver.solve(rhs,x).converged,"Combined convection-diffusion solve failed");
         x.copy_to_component(input.values.view().component(0),exec);x.commit();
@@ -693,7 +698,7 @@ void frozen_system(const Exec& exec)
     Kokkos::View<double*,Space> residual("composed residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
     diffusion.add_residual_async(input.values.view().component(0),residual,boundary,status,law);
     convection.add_residual_async(input.values.view().component(0),residual,boundary,status,VelocityFlux{},reconstruction);
-    source.add_async(residual,status,ts::UniformSource<Real>{1});(void)status.check(comm);
+    source.add_async(residual,status,ts::UniformSource<Real>{1});(void)status.check();
     const auto r=snapshot(residual,exec);for(std::size_t i=0;i<r.extent(0);++i)near(r(i),0.0,5e-10,"Combined convection-diffusion/source residual is nonzero");
 }
 
@@ -719,9 +724,9 @@ void distributed_case(const Exec& exec,bool empty_last=false,bool globally_empty
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);status.begin_async();
     boundary.finalize();
-    convection.add_system_async(target,boundary,status,VelocityFlux{},reconstruction,cv::FixedValueInflow{});(void)status.check(comm);matrix.commit();rhs.commit();
+    convection.add_system_async(target,boundary,status,VelocityFlux{},reconstruction,cv::FixedValueInflow{});(void)status.check();matrix.commit();rhs.commit();
     Kokkos::View<double*,Space> residual("distributed convection residual",f.host.n_own);Kokkos::deep_copy(exec,residual,0.0);status.begin_async();
-    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{},reconstruction,cv::FixedValueInflow{});(void)status.check(comm);
+    convection.add_residual_async(input.values.view().component(1),residual,boundary,status,VelocityFlux{},reconstruction,cv::FixedValueInflow{});(void)status.check();
     compare_system_residual(matrix,rhs,input.values.view().component(1),residual,exec);
     const auto h=snapshot(residual,exec);double local=0,global=0;
     for(std::size_t i=0;i<h.extent(0);++i){near(h(i),-2.0,2e-11,"Incorrect interface donor or stale reconstruction ghosts");local+=h(i);}
@@ -791,11 +796,11 @@ void rejection(const Exec& exec,Reject which)
         cv::ConvectionOperator<Exec,double> wide(wide_plan);
         linalg::CsrMatrix<float,Exec> small(a.assembly.pattern());linalg::Vector<float,Exec> small_rhs(small.distribution());
         const auto t=ts::make_system_view(small,small_rhs,a.assembly,exec);Kokkos::deep_copy(exec,t.values,0.0F);Kokkos::deep_copy(exec,t.rhs,0.0F);
-        wide.add_system_async(t,boundary,status,cv::UniformMassFlux<double>{Kokkos::norm_min_v<double>});(void)status.check(comm);small.commit();small_rhs.commit();
+        wide.add_system_async(t,boundary,status,cv::UniformMassFlux<double>{Kokkos::norm_min_v<double>});(void)status.check();small.commit();small_rhs.commit();
     }else if(which==Reject::Batch){ts::SourceOperator source(a.mesh.view(),exec);source.add_async(target.rhs,status,ts::UniformSource<Real>{Kokkos::quiet_NaN_v<Real>});convection.add_system_async(target,boundary,status,VelocityFlux{});}
     else if(which==Reject::Time)convection.add_system_async(target,boundary,status,VelocityFlux{},cv::NoReconstruction{},cv::FixedValueInflow{},Kokkos::quiet_NaN_v<Real>);
     else convection.add_system_async(target,boundary,status,VelocityFlux{});
-    (void)status.check(comm);matrix.commit();rhs.commit();
+    (void)status.check();matrix.commit();rhs.commit();
     check(false,"Invalid convection input was accepted");
 }
 #define CONVECTION_REJECT_CASE(name,reason) void name(const Exec& exec){rejection(exec,Reject::reason);}

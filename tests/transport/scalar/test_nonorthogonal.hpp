@@ -96,7 +96,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     Kokkos::deep_copy(exec,residual,Real{7});Kokkos::deep_copy(exec,uncorrected,Real{0});
     status.begin_async();diffusion.add_residual_async(phi,residual,boundary,status,law,correction);
     diffusion.add_residual_async(phi,uncorrected,boundary,status,law);
-    (void)status.check(comm);
+    (void)status.check();
     const auto hr=copy_view(residual,exec),hu=copy_view(uncorrected,exec);
     double local_error=0;
     for(std::size_t i=0;i<hr.extent(0);++i)test::near(hr(i),7.0,tolerance,"corrected affine residual or untouched tail");
@@ -113,7 +113,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);
     Kokkos::deep_copy(exec,baseline.values,0.0);Kokkos::deep_copy(exec,baseline.rhs,0.0);
     status.begin_async();diffusion.add_system_async(target,boundary,status,law,correction);
-    diffusion.add_system_async(baseline,boundary,status,law);(void)status.check(comm);
+    diffusion.add_system_async(baseline,boundary,status,law);(void)status.check();
     matrix.commit();rhs.commit();base.commit();base_rhs.commit();
     const auto av=copy_view(matrix.read_values(exec),exec),bv=copy_view(base.read_values(exec),exec);matrix.commit();base.commit();
     for(std::size_t k=0;k<av.extent(0);++k)test::near(av(k),bv(k),0.0,"explicit correction modified matrix coefficients");
@@ -124,7 +124,7 @@ void corrected_case(const Exec& exec,bool mixed=false,bool skew=true)
     // A correction-only call may update the RHS while leaving the frozen matrix revision unchanged.
     const auto revision=base.revision();
     Kokkos::View<Real*,Space> extra("correction only",f.host.n_own);Kokkos::deep_copy(exec,extra,Real{0});
-    status.begin_async();diffusion.add_correction_async(extra,boundary,status,law,correction);(void)status.check(comm);
+    status.begin_async();diffusion.add_correction_async(extra,boundary,status,law,correction);(void)status.check();
     const auto delta=copy_view(extra,exec);const auto bb=copy_view(base_rhs.read(exec),exec);base_rhs.commit();
     check(base.revision()==revision,"correction-only call touched matrix revision");
     for(LocalIndex i=0;i<f.host.n_own;++i)test::near(bb(i,0)+delta(i),b(i,0),tolerance,"correction-only RHS disagrees with complete assembly");
@@ -171,7 +171,7 @@ void corrected_weights(const Exec& exec)
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);
     Kokkos::View<Real*,Space> output("weighted correction",f.host.n_own);Kokkos::deep_copy(exec,output,Real{0});
     boundary.finalize();
-    status.begin_async();diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
+    status.begin_async();diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check();
     std::vector<double> expected(static_cast<std::size_t>(f.host.n_own),0.0);bool non_midpoint=false;
     for(LocalIndex face=0;face<f.host.n_inner_faces;++face) {
         const auto k=static_cast<std::size_t>(face);const auto p=f.host.face_owner[k],n=f.host.face_neigh[k];
@@ -193,7 +193,7 @@ void corrected_weights(const Exec& exec)
     const auto scalar=ts::make_system_view(matrix,rhs,a.assembly,exec);const auto block=ts::make_system_view(blocks,block_rhs,a.assembly,exec,1);
     Kokkos::deep_copy(exec,scalar.values,4.0);Kokkos::deep_copy(exec,scalar.rhs,7.0);
     status.begin_async();diffusion.add_system_async(scalar,boundary,status,law,correction);
-    diffusion.add_system_async(block,boundary,status,law,correction);(void)status.check(comm);
+    diffusion.add_system_async(block,boundary,status,law,correction);(void)status.check();
     matrix.commit();rhs.commit();blocks.commit();block_rhs.commit();
     const auto sv=copy_view(matrix.read_values(exec),exec);const auto bv=copy_view(blocks.read_blocks(exec),exec);
     const auto sb=copy_view(rhs.read(exec),exec),bb=copy_view(block_rhs.read(exec),exec);
@@ -227,7 +227,7 @@ void corrected_empty(const Exec& exec)
         td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
         boundary.finalize();
         diffusion.add_residual_async(field.view().component(0),output,boundary,status,law,correction);
-        diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
+        diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check();
         const auto h=copy_view(output,exec);for(std::size_t i=0;i<h.extent(0);++i)test::near(h(i),Real{5},Real{0},"empty/zero correction modified a target");
         check(solve_field(a,field.view().component(0),boundary,settings(),law,ts::UniformSource<Real>{0},correction).converged,"corrected empty solve failed");
     }
@@ -256,7 +256,7 @@ void corrected_iterations(const Exec& exec)
     const auto target=ts::make_system_view(matrix,rhs,a.assembly,exec);
     Kokkos::deep_copy(exec,target.values,0.0);Kokkos::deep_copy(exec,target.rhs,0.0);
     boundary.finalize();
-    status.begin_async();diffusion.add_system_async(target,boundary,status,law);(void)status.check(comm);matrix.commit();rhs.commit();
+    status.begin_async();diffusion.add_system_async(target,boundary,status,law);(void)status.check();matrix.commit();rhs.commit();
     const auto revision=matrix.revision();
     Kokkos::View<double*,Space> base_rhs("frozen RHS",f.host.n_own);
     Kokkos::deep_copy(exec,base_rhs,Kokkos::subview(rhs.read(exec),Kokkos::ALL(),0));rhs.commit();
@@ -270,7 +270,7 @@ void corrected_iterations(const Exec& exec)
         gradient.apply_async(field.view(),gradients.view());gradient_halo.exchange();
         const auto b=Kokkos::subview(rhs.overwrite(exec),Kokkos::ALL(),0);
         Kokkos::deep_copy(exec,b,base_rhs);status.begin_async();
-        diffusion.add_correction_async(b,boundary,status,law,correction);(void)status.check(comm);rhs.commit();
+        diffusion.add_correction_async(b,boundary,status,law,correction);(void)status.check();rhs.commit();
         x.copy_from_component_async(phi,exec);x.commit();check(linear.solve(rhs,x).converged,"nonorthogonal outer linear solve failed");
         x.copy_to_component_async(phi,exec);x.commit();
         const auto h=field.create_host_buffer();Kokkos::deep_copy(exec,h,field.view().kokkos_view());exec.fence("outer error ready");
@@ -312,6 +312,6 @@ void rejected_correction(const Exec& exec)
     td::DiffusionOperator<> diffusion(a.plan);ts::AssemblyStatus<Exec> status(exec);status.begin_async();
     const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{1}};
     boundary.finalize();
-    diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check(comm);
+    diffusion.add_correction_async(output,boundary,status,law,correction);(void)status.check();
     check(false,"invalid correction unexpectedly accepted");
 }

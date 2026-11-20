@@ -171,10 +171,10 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
     // Reverse flow so both physical boundaries act as inflow and outflow in turn.
     for(const Real velocity : {Real{3},Real{-3}}){
         system.reset(exec);
-        status.begin_async(); op.add_system_async(system.view(),boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check(comm);
+        status.begin_async(); op.add_system_async(system.view(),boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check();
         const auto coefficients=snapshot(system.view().values,exec); const auto rhs=snapshot(system.view().rhs,exec);
         Kokkos::View<Storage*,Space> residual("residual",m.sizes.n_own); Kokkos::deep_copy(exec,residual,Storage{0});
-        status.begin_async(); op.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check(comm);
+        status.begin_async(); op.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check();
 
         // Evaluate b-A*phi independently from stored rows and compare with the direct residual.
         const auto actual=snapshot(residual,exec); const auto field=snapshot(phi,exec);
@@ -188,8 +188,8 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
             test::near(static_cast<double>(actual(row)),action,tolerance,"matrix-free versus b-A*phi");
         }
         system.reset(exec);
-        status.begin_async(); op.add_system_async(system.view(),boundary,status,VelocityFlux{velocity},cv::NoReconstruction{},cv::FixedValueInflow{},time); (void)status.check(comm);
-        status.begin_async(); op.add_correction_async(system.view().rhs,boundary,status,VelocityFlux{velocity},reconstruction,time); (void)status.check(comm);
+        status.begin_async(); op.add_system_async(system.view(),boundary,status,VelocityFlux{velocity},cv::NoReconstruction{},cv::FixedValueInflow{},time); (void)status.check();
+        status.begin_async(); op.add_correction_async(system.view().rhs,boundary,status,VelocityFlux{velocity},reconstruction,time); (void)status.check();
 
         // A correction-only RHS update must reproduce full assembly without changing coefficients.
         const auto updated=snapshot(system.view().rhs,exec); const auto fixed=snapshot(system.view().values,exec);
@@ -206,8 +206,8 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
             mesh::device::AuxGeometryStorage<Exec> geometry(f.geometry,exec);
             df::DiffusionPlan<Exec> dp(m,a.connectivity.view(),geometry.view(),comm,exec,{true,1e-6}); df::DiffusionOperator diffusion(dp);
             const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
-            status.begin_async(); diffusion.add_system_async(system.view(),boundary,status,law,time); (void)status.check(comm);
-            status.begin_async(); diffusion.add_residual_async(phi,residual,boundary,status,law,time); (void)status.check(comm);
+            status.begin_async(); diffusion.add_system_async(system.view(),boundary,status,law,time); (void)status.check();
+            status.begin_async(); diffusion.add_residual_async(phi,residual,boundary,status,law,time); (void)status.check();
             const auto combined=snapshot(residual,exec); const auto av=snapshot(system.view().values,exec); const auto bv=snapshot(system.view().rhs,exec);
             for(std::size_t row=0;row<system.owned;++row){
                 double action=static_cast<double>(bv(row));
@@ -276,16 +276,16 @@ void patch_values(const Exec&exec){
     }
     boundary.finalize(); cv::ConvectionPlan<Exec> plan(a.mesh.view(),a.connectivity.view(),comm,exec); cv::ConvectionOperator op(plan);
     NativeSystem<double> system(f,exec); ts::AssemblyStatus<Exec> status(exec);
-    status.begin_async(); op.add_system_async(system.view(),boundary,status,InwardFlux{}); (void)status.check(comm);
+    status.begin_async(); op.add_system_async(system.view(),boundary,status,InwardFlux{}); (void)status.check();
     const auto rhs=snapshot(system.view().rhs,exec);
     for(std::size_t i=0;i<system.owned;++i){const double expected=(comm.rank()==0&&i==0?5.:0.)+(comm.rank()+1==comm.size()&&i==2?50.:0.);test::near(rhs(i),expected,1e-12,"strided patch profile");}
 
     // Updating the borrowed profile needs no new registration.
     Kokkos::deep_copy(exec,Kokkos::subview(backing[0],Kokkos::ALL(),1),6.f); system.reset(exec);
-    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check(comm);
+    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
     const auto updated=snapshot(system.view().rhs,exec);if(comm.rank()==0)test::near(updated(0),12.,1e-12,"borrowed profile refresh");
     boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});boundary.finalize();system.reset(exec);
-    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{},cv::NoReconstruction{},CustomInflow{},Real{2});(void)status.check(comm);
+    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{},cv::NoReconstruction{},CustomInflow{},Real{2});(void)status.check();
     const auto custom=snapshot(system.view().rhs,exec);
     for(std::size_t i=0;i<system.owned;++i){const double expected=((comm.rank()==0&&i==0)||(comm.rank()+1==comm.size()&&i==2))?12.:0.;test::near(custom(i),expected,1e-12,"custom inflow callback");}
 }
@@ -302,7 +302,7 @@ void unlabelled(const Exec&exec){
     Kokkos::View<double*,Space>profile("unlabelled",range.end-range.begin);Kokkos::deep_copy(exec,profile,9.);
     boundary.set_unlabelled(bc::fixed_value<Real>(boundary::profile::patch_values(range,profile)));boundary.finalize();
     cv::ConvectionPlan<Exec>plan(a.mesh.view(),a.connectivity.view(),comm,exec);cv::ConvectionOperator op(plan);NativeSystem<double>system(f,exec);ts::AssemblyStatus<Exec>status(exec);
-    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check(comm);
+    status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
     const auto rhs=snapshot(system.view().rhs,exec);
     for(std::size_t i=0;i<system.owned;++i){const double expected=(comm.rank()==0&&i==0?4.:0.)+(comm.rank()+1==comm.size()&&i==2?18.:0.);test::near(rhs(i),expected,1e-12,"unlabelled boundary provider");}
 }
@@ -322,12 +322,12 @@ void unused_inputs(const Exec&exec){
     Kokkos::deep_copy(exec,phi,Kokkos::quiet_NaN_v<double>);Kokkos::deep_copy(exec,residual,7.);
     status.begin_async();op.add_system_async(system.view(),boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     op.add_residual_async(phi,residual,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
-    op.add_correction_async(residual,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});(void)status.check(comm);
+    op.add_correction_async(residual,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});(void)status.check();
     const auto untouched=snapshot(residual,exec);for(std::size_t i=0;i<system.owned;++i)test::near(untouched(i),7.,0.,"zero flux evaluated unused inputs");
 
     // For a positive velocity the right boundary is outflow: its NaN profile must stay unread.
     boundary.set(0,Profile{AffineValue{false}});boundary.finalize();
-    status.begin_async();op.add_system_async(system.view(),boundary,status,VelocityFlux{1});(void)status.check(comm);
+    status.begin_async();op.add_system_async(system.view(),boundary,status,VelocityFlux{1});(void)status.check();
 }
 
 /// @brief Triggers one invalid plan or boundary input for the diagnostic wrapper.
@@ -339,7 +339,7 @@ void reject(const Exec&exec,std::string_view which){
     boundary.set(0,Profile{AffineValue{which=="bad_profile"}});boundary.set(1,Profile{AffineValue{which=="bad_profile"}});
     if(which=="missing_inflow"){boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});}
     boundary.finalize();cv::ConvectionPlan<Exec>plan(m,a.connectivity.view(),comm,exec);cv::ConvectionOperator op(plan);NativeSystem<double>system(f,exec);ts::AssemblyStatus<Exec>status(exec);status.begin_async();
-    op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check(comm);
+    op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
 }
 
 /// @brief Rejects inflow without a value provider for gradient/flux boundary conditions.

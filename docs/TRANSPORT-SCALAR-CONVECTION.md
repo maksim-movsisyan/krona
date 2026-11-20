@@ -109,7 +109,7 @@ Kokkos::deep_copy(exec, residual, Real{0});
 
 status.begin_async();
 convection.add_residual_async(q, residual, boundary, status, flux);
-(void)status.check(comm);
+(void)status.check();
 ```
 
 `q` must cover all real cells, including current MPI ghosts. Output must cover the owned prefix; its tail is untouched. Both may be strided rank-one component views. Input and output storage must not overlap, including partial/strided aliases. The runtime catches an identical starting pointer, not every possible overlap.
@@ -133,7 +133,7 @@ Kokkos::deep_copy(exec, target.rhs, SolverReal{0});
 status.begin_async();
 convection.add_system_async(target, boundary, status, flux);
 // Add diffusion, transient terms and sources to this same initialized target.
-(void)status.check(comm);
+(void)status.check();
 matrix.commit();
 rhs.commit();
 
@@ -187,7 +187,7 @@ profiled_boundary.finalize();
 
 status.begin_async();
 convection.add_residual_async(q, residual, profiled_boundary, status, flux);
-(void)status.check(comm);
+(void)status.check();
 ```
 
 Entry `k` supplies local face `range.begin + k`. The extent must equal the **local** patch size, including zero on ranks without its faces. This is neither global patch order nor cell/boundary-slot order. Const and strided views work; their scalar type is converted to `Real`. Register each distinct profiled condition type in the manager's template parameters. For unlabelled faces, use `catalog().unlabelled()` and `set_unlabelled()`.
@@ -232,7 +232,7 @@ const auto reconstruction = cv::make_reconstruction(profiles);
 
 status.begin_async();
 convection.add_residual_async(q, residual, boundary, status, flux, reconstruction);
-(void)status.check(comm);
+(void)status.check();
 ```
 
 Use `make_reconstruction(profiles, component)` to select one variable from a pack. The profile returns a correction to the transported scalar's base value, so the selected reconstruction component must refer to that same scalar.
@@ -257,7 +257,7 @@ const auto b = Kokkos::subview(rhs.overwrite(exec), Kokkos::ALL(), 0);
 Kokkos::deep_copy(exec, b, base_rhs);
 status.begin_async();
 convection.add_correction_async(b, boundary, status, flux, reconstruction);
-(void)status.check(comm);
+(void)status.check();
 rhs.commit();
 // Solve with the existing committed matrix; publish the updated field externally.
 ```
@@ -273,12 +273,12 @@ This gives the same RHS as full reconstructed assembly with those inputs. It inc
 | BC `set()` / `finalize()` | Local host metadata/provider validation; no field upload or collective. |
 | `status.begin_async()` | Enqueues diagnostic reset; does not clear equation arrays. |
 | `add_system_async()`, `add_residual_async()`, `add_correction_async()` | Enqueue local kernels; no fence, halo exchange, collective or algebra commit. |
-| `status.check(comm)` | Waits for its execution instance and performs collective diagnostic reduction. Does not commit algebra access. |
+| `status.check()` | Waits for its execution instance and checks the flags on this rank. |
 
 The first two contribution methods default to `NoReconstruction{}`, `FixedValueInflow{}` and `time = 0`. Pass preceding policy arguments explicitly to supply time. `add_correction_async()` requires a reconstruction and has no inflow argument.
 
-Use `begin_async()` once per batch and `check(comm)` once after all contributions. Every participating rank must call the collective check, including empty ranks. The status and operators must use the same execution instance. Complete producers on other instances before submission; keep borrowed storage valid until consumers finish. The status destructor waits if a batch remains pending, but does not replace an explicit collective check.
+Use `begin_async()` once per local batch and `check()` once after all contributions. An error detected by any rank aborts the MPI job through `mpi::require`. The status and operators must use the same execution instance. Complete producers on other instances before submission and keep borrowed storage valid until consumers finish. The status destructor waits if a batch remains pending. Call `check()` explicitly to validate the batch.
 
-Invalid host contracts use `mpi::require`/`mpi::guarded`. Device diagnostics reject nonfinite mass fluxes, used inflow values, increments and invalid additions. A nonzero flux used in matrix assembly must also stay finite and nonzero when converted to the matrix scalar type. Zero flux skips scalar/reconstruction/inflow evaluation. Failed batches are not rolled back. `has_diffusion_anchor` is a diffusion report; convection does not set it.
+Invalid host contracts use `mpi::require`/`mpi::guarded`. Device diagnostics reject nonfinite mass fluxes, used inflow values, increments and invalid additions. A nonzero flux used in matrix assembly must also stay finite and nonzero when converted to the matrix scalar type. Zero flux skips scalar/reconstruction/inflow evaluation. Failed batches are not rolled back. `has_local_diffusion_anchor` is a diffusion report; convection does not set it.
 
 Plans/operators allocate no field, graph, matrix or face-work buffers. Row kernels capture only the arrays they use. `SystemView` borrows existing equation storage; `FaceAssemblyPlan` separately owns its shared graph/entry maps. `AssemblyStatus` allocates small diagnostic buffers. `FaceMassFlux` stores its view by value (managed views retain storage); reconstruction packs and `PatchValues` borrow their backing buffers. Custom providers follow the ownership of their members.

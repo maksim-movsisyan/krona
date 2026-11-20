@@ -19,7 +19,7 @@
 #include <krona/transport/scalar/assembly.hpp>
 #include <krona/transport/scalar/convection/operator.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
-#include <krona/transport/scalar/source.hpp>
+#include <krona/transport/scalar/source/operator.hpp>
 #include <krona/transport/scalar/transient/operator.hpp>
 
 #include <algorithm>
@@ -316,7 +316,7 @@ int solve(const Options& options, mpi::CommView comm) {
             if (convection) convection->add_system_async(target, boundary, status, flux, cv::NoReconstruction{}, cv::FixedValueInflow{}, next);
             if (diffusion) diffusion->add_system_async(target, boundary, status, law, next);
             sources.add_async(target.rhs, status, source);
-            (void)status.check(comm);
+            (void)status.check();
             if (corrections) Kokkos::deep_copy(exec, base_rhs, target.rhs);
         }
         matrix.commit();
@@ -376,7 +376,7 @@ int solve(const Options& options, mpi::CommView comm) {
                 std::fprintf(stderr, "  step=%d outer=%d linear=%d\n", step + 1, outer + 1, solved.iterations);
         }
         if (gradients_needed) boundary_status.check();
-        if (corrections) (void)status.check(comm);
+        if (corrections) (void)status.check();
         if (bdf2) Kokkos::deep_copy(exec, q_nm1, q_n);
         if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
         time = next;

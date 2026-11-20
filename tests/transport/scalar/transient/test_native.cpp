@@ -37,7 +37,7 @@ void native(const Exec& exec)
     Kokkos::deep_copy(exec, cv, 0.0); Kokkos::deep_copy(exec, cr, 0.0);
     status.begin_async();
     op.add_system_async(ts::SystemView{cv, cr, entries}, status, nt::BackwardEuler{}.coefficients(0.5), tt::UniformMass{2.0}, history);
-    static_cast<void>(status.check(comm)); csr.commit(); csr_rhs.commit();
+    static_cast<void>(status.check()); csr.commit(); csr_rhs.commit();
     const auto ca = host_copy(cv);
     const auto cb = host_copy(cr);
     for (std::size_t i = 0; i < 2; ++i) {
@@ -57,7 +57,7 @@ void native(const Exec& exec)
     const Rhs rb(br.data()+br.stride(0), Kokkos::LayoutStride(2, 3*br.stride(0)));
     status.begin_async();
     op.add_system_async(ts::SystemView{bs, rb, entries}, status, nt::BackwardEuler{}.coefficients(0.5), tt::UniformMass{2.0}, history);
-    static_cast<void>(status.check(comm)); bsr.commit(); bsr_rhs.commit();
+    static_cast<void>(status.check()); bsr.commit(); bsr_rhs.commit();
     const auto ba = host_copy(blocks);
     const auto bb = host_copy(br);
     for (std::size_t i = 0; i < 2; ++i) {
