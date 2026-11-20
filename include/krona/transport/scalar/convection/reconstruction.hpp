@@ -3,25 +3,30 @@
 #include <krona/numerics/reconstruction/face_profiles.hpp>
 #include <krona/transport/scalar/convection/types.hpp>
 
+#include <type_traits>
+
 namespace krona::transport::scalar::convection {
 
 /// @brief Adapts a component of a face profile to deferred scalar upwind corrections.
-/// @tparam Profiles Bound interior and physical-face formulas with their shared value provider.
+/// @tparam Profiles Typically numerics::reconstruction::FaceProfiles, which holds the stencil,
+/// cell values and the formulas for inner and boundary faces.
 template <class Profiles>
 struct Reconstruction {
-    Profiles profiles;
-    std::size_t component = 0;
+    Profiles profiles;         ///< Prepared face formulas and the fields they read.
+    std::size_t component = 0; ///< Index of the scalar being transported in the value pack.
 
     /// @brief Returns the increment on the upwind side chosen by the mass flux.
     /// @tparam Real Arithmetic type used by the transport kernel.
+    /// @param context Inner-face index and geometry.
+    /// @param from_owner True when the donor is the owner of the face.
     template <class Real>
     KOKKOS_INLINE_FUNCTION Real interior(const InteriorFaceContext<Real>& context, bool from_owner) const {
-        return profiles.template inner_increment<Real>(static_cast<std::size_t>(context.face), from_owner,
-                                                       component);
+        return profiles.template inner_increment<Real>(static_cast<std::size_t>(context.face), from_owner, component);
     }
 
-    /// @brief Returns the interior increment at a physical outflow face.
+    /// @brief Returns the increment from the adjacent cell centre to an outflow face.
     /// @tparam Real Arithmetic type used by the transport kernel.
+    /// @param context Boundary face for which to evaluate the increment.
     template <class Real>
     KOKKOS_INLINE_FUNCTION Real boundary(const boundary::FaceContext<Real>& context) const {
         return profiles.template boundary_increment<Real>(static_cast<std::size_t>(context.face), component);
@@ -38,19 +43,31 @@ auto make_reconstruction(Profiles profiles, std::size_t component = 0) {
 }
 
 namespace detail {
+/// @brief Selects kernels that evaluate a high-order increment.
+/// @tparam R Reconstruction policy passed to convection.
 template <class R>
 inline constexpr bool reconstructed = !std::is_same_v<R, NoReconstruction>;
 
+/// @brief Custom reconstruction policies manage their own input checks.
+/// @tparam Exec Execution space used by the operator.
+/// @tparam R Reconstruction policy with no built-in field checks.
 template <class Exec, class R>
-void validate_reconstruction(const R&, std::size_t) {}
+void validate_reconstruction(const R&, std::size_t, bool) {}
 
+/// @brief Checks the component and the views needed by the face formulas before launch.
+/// @tparam Exec Execution space that will read the reconstruction inputs.
+/// @tparam Profiles Bound face formulas and their cell values.
+/// @param reconstruction Adapter supplying the scalar's face increments.
+/// @param cells Number of owned and ghost cells expected by convection.
+/// @param with_boundary Whether to also check the boundary formula's inputs.
 template <class Exec, class Profiles>
-void validate_reconstruction(const Reconstruction<Profiles>& reconstruction, std::size_t cells) {
+void validate_reconstruction(const Reconstruction<Profiles>& reconstruction, std::size_t cells,
+                             bool with_boundary) {
     using Values = decltype(reconstruction.profiles.values);
     mpi::require(reconstruction.component < Values::components,
                  "Scalar convection: invalid reconstruction component");
     reconstruction.profiles.template validate<Exec>(
-        cells, cells, true, "Scalar convection: reconstruction input extent is too short");
+        cells, cells, with_boundary, "Scalar convection: reconstruction input extent is too short");
 }
 
 } // namespace detail

@@ -114,7 +114,29 @@ convection.add_residual_async(q, residual, boundary, status, flux);
 
 `q` must cover all real cells, including current MPI ghosts. Output must cover the owned prefix; its tail is untouched. Both may be strided rank-one component views. Input and output storage must not overlap, including partial/strided aliases. The runtime catches an identical starting pointer, not every possible overlap.
 
-The operator and its standard reconstruction adapter do not read extended boundary-field slots. Boundary values are sampled from the conditions. An external gradient/limiter algorithm may still require filled boundary slots.
+The base scalar loop reads cell centres and samples prescribed inflow directly from the boundary conditions. Reconstruction formulas and external gradient or limiter preparation can have their own sample requirements.
+
+## Overlap with halo exchange
+
+Use `add_inner_*_async` and `add_boundary_*_async` to split a full contribution. The inner calls accept a half-open `cv::FaceRange{begin, end}`. With grouped faces, `[0, n_internal_faces)` connects owned cells and `[n_internal_faces, n_inner_faces)` connects owned cells to MPI ghosts. Use `{}` for all inner faces or `{begin, -1}` to select through the last inner face. An empty interval adds nothing.
+
+```cpp
+const cv::FaceRange owned_faces{0, m.sizes.n_internal_faces};
+const cv::FaceRange interface_faces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+
+status.begin_async();
+halo_exchange.start();
+convection.add_inner_residual_async(q, residual, status, owned_faces, flux, reconstruction);
+convection.add_boundary_residual_async(q, residual, boundary, status, flux, reconstruction);
+halo_exchange.finish_async();
+convection.add_inner_residual_async(q, residual, status, interface_faces, flux, reconstruction);
+(void)status.check();
+halo_exchange.wait();
+```
+
+The example uses the same execution instance for halo unpacking and convection. Register and exchange all ghost data read by the selected faces, including gradients or factors required by the reconstruction. The early calls must only read data that are already ready. In particular, a custom stencil on a face between owned cells can still sample ghosts. The base scalar view for a boundary-only residual can be an owned prefix. Its reconstruction and flux providers still need the inputs their formulas read.
+
+The same split is available for system assembly and correction-only updates. Use disjoint inner ranges and submit the physical patches once per contribution. A full call scans each owned cell's face list once. Splitting the inner work scans those lists for each nonempty range.
 
 ## Assemble and solve
 
@@ -272,7 +294,7 @@ This gives the same RHS as full reconstructed assembly with those inputs. It inc
 | Operator construction | Copies descriptors; no kernel submission or synchronization. |
 | BC `set()` / `finalize()` | Local host metadata/provider validation; no field upload or collective. |
 | `status.begin_async()` | Enqueues diagnostic reset; does not clear equation arrays. |
-| `add_system_async()`, `add_residual_async()`, `add_correction_async()` | Enqueue local kernels; no fence, halo exchange, collective or algebra commit. |
+| Full, inner and boundary `add_*_async()` methods | Enqueue local kernels without a fence, halo exchange, collective or algebra commit. |
 | `status.check()` | Waits for its execution instance and checks the flags on this rank. |
 
 The first two contribution methods default to `NoReconstruction{}`, `FixedValueInflow{}` and `time = 0`. Pass preceding policy arguments explicitly to supply time. `add_correction_async()` requires a reconstruction and has no inflow argument.

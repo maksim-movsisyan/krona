@@ -6,6 +6,7 @@
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mesh/device/aux_storage.hpp>
 #include <krona/fields/field_storage.hpp>
+#include <krona/halo/exchange.hpp>
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -330,7 +331,105 @@ void unused_inputs(const Exec&exec){
     status.begin_async();op.add_system_async(system.view(),boundary,status,VelocityFlux{1});(void)status.check();
 }
 
-/// @brief Triggers one invalid plan or boundary input for the diagnostic wrapper.
+/// @brief Compares all three split operations with their full counterparts across a real halo exchange.
+void split_ranges(const Exec& exec)
+{
+    const auto comm = mpi::CommView::world();
+    const auto f = bar(comm);
+    Attached a(f, exec);
+    const auto m = a.mesh.view();
+    const auto rows = static_cast<std::size_t>(m.sizes.n_own);
+    boundary::BoundaryLayout<Exec> layout(f.host, m, exec);
+    Boundary boundary(layout);
+    boundary.set(0, Profile{AffineValue{}});
+    boundary.set(1, Profile{AffineValue{}});
+    boundary.finalize();
+
+    fields::FieldStorage<Real, 4, Exec> inputs("split convection inputs", static_cast<std::size_t>(m.sizes.n_cells),
+                                               fields::FieldLocation::Custom, exec);
+    const auto q = inputs.view();
+    const auto field = q.component(0);
+    const auto owned_field = Kokkos::subview(field, std::pair<std::size_t, std::size_t>{0, rows});
+    const auto gradients = rec::gradients(fields::pack(q.component(1)), fields::pack(q.component(2)),
+                                         fields::pack(q.component(3)));
+    const rec::StencilData<Space, Real> stencil(m, a.connectivity.view());
+    const auto reconstruction = cv::make_reconstruction(
+        rec::face_profiles(stencil, fields::pack(field), rec::Linear{gradients}));
+    halo::Exchange<Real, Exec> halo(m, a.mesh.halo_plan(), comm, 95, exec, halo::Transfer::HostStaged);
+    halo.add_field(q);
+    halo.prepare();
+
+    NativeSystem<double> split(f, exec), full(f, exec);
+    Kokkos::View<double*, Space> split_residual("split residual", rows), full_residual("full residual", rows);
+    Kokkos::View<double*, Space> split_correction("split correction", rows), full_correction("full correction", rows);
+    const cv::ConvectionOperator op(cv::ConvectionPlan<Exec>{m, a.connectivity.view(), comm, exec});
+    const cv::FaceRange local{0, m.sizes.n_internal_faces};
+    const cv::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+    constexpr Real time = Real(0.25);
+    constexpr cv::FixedValueInflow inflow{};
+    ts::AssemblyStatus<Exec> status(exec);
+
+    for (const VelocityFlux flux : {VelocityFlux{3}, VelocityFlux{-3}}) {
+        Kokkos::parallel_for("test/prepare_split_convection", Kokkos::RangePolicy<Exec>(exec, 0, m.sizes.n_cells),
+            KOKKOS_LAMBDA(int cell) {
+                const auto i = static_cast<std::size_t>(cell);
+                if (cell >= m.sizes.n_own) {
+                    // Owned-face and boundary submissions must finish without reading these ghosts.
+                    for (int c = 0; c < 4; ++c)
+                        q(i, c) = Kokkos::quiet_NaN_v<Real>;
+                    return;
+                }
+                const auto x = static_cast<Real>(m.geometry.cell_centroid_x(i));
+                q(i, 0) = Real{2} + x * x + time;
+                q(i, 1) = Real{2} * x;
+                q(i, 2) = q(i, 3) = Real{0};
+            });
+        split.reset(exec);
+        full.reset(exec);
+        Kokkos::deep_copy(exec, split_residual, 0.);
+        Kokkos::deep_copy(exec, full_residual, 0.);
+        Kokkos::deep_copy(exec, split_correction, 0.);
+        Kokkos::deep_copy(exec, full_correction, 0.);
+
+        status.begin_async();
+        halo.start();
+        op.add_inner_system_async(split.view(), status, local, flux, reconstruction, time);
+        op.add_inner_residual_async(field, split_residual, status, local, flux, reconstruction, time);
+        op.add_inner_correction_async(split_correction, status, local, flux, reconstruction, time);
+        op.add_boundary_system_async(split.view(), boundary, status, flux, reconstruction, inflow, time);
+        op.add_boundary_residual_async(owned_field, split_residual, boundary, status, flux, reconstruction, inflow,
+                                       time);
+        op.add_boundary_correction_async(split_correction, boundary, status, flux, reconstruction, time);
+        op.add_inner_residual_async(field, split_residual, status, {0, 0}, flux, reconstruction, time);
+
+        halo.finish_async();
+        op.add_inner_system_async(split.view(), status, interfaces, flux, reconstruction, time);
+        op.add_inner_residual_async(field, split_residual, status, interfaces, flux, reconstruction, time);
+        op.add_inner_correction_async(split_correction, status, {interfaces.begin, -1}, flux, reconstruction, time);
+        (void)status.check();
+        halo.wait();
+
+        status.begin_async();
+        op.add_system_async(full.view(), boundary, status, flux, reconstruction, inflow, time);
+        op.add_residual_async(field, full_residual, boundary, status, flux, reconstruction, inflow, time);
+        op.add_correction_async(full_correction, boundary, status, flux, reconstruction, time);
+        (void)status.check();
+
+        const double tolerance = std::max(2.e-11, 400. * static_cast<double>(Kokkos::epsilon_v<Real>));
+        const auto compare = [&](auto actual, auto expected, std::string_view label) {
+            const auto actual_host = snapshot(actual, exec);
+            const auto expected_host = snapshot(expected, exec);
+            for (std::size_t i = 0; i < actual_host.extent(0); ++i)
+                test::near(actual_host(i), expected_host(i), tolerance, label);
+        };
+        compare(split.view().values, full.view().values, "split convection matrix");
+        compare(split.view().rhs, full.view().rhs, "split convection RHS");
+        compare(split_residual, full_residual, "split convection residual");
+        compare(split_correction, full_correction, "split convection correction");
+    }
+}
+
+/// @brief Triggers one invalid plan, range or boundary input for the diagnostic wrapper.
 void reject(const Exec&exec,std::string_view which){
     const auto comm=mpi::CommView::world();const auto f=bar(comm);Attached a(f,exec);auto m=a.mesh.view();
     if(which=="null_comm"){cv::ConvectionPlan<Exec> p(m,a.connectivity.view(),mpi::CommView{MPI_COMM_NULL},exec);return;}
@@ -339,7 +438,11 @@ void reject(const Exec&exec,std::string_view which){
     boundary.set(0,Profile{AffineValue{which=="bad_profile"}});boundary.set(1,Profile{AffineValue{which=="bad_profile"}});
     if(which=="missing_inflow"){boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});}
     boundary.finalize();cv::ConvectionPlan<Exec>plan(m,a.connectivity.view(),comm,exec);cv::ConvectionOperator op(plan);NativeSystem<double>system(f,exec);ts::AssemblyStatus<Exec>status(exec);status.begin_async();
-    op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
+    if (which == "invalid_range")
+        op.add_inner_system_async(system.view(), status, {0, m.sizes.n_inner_faces + 1}, InwardFlux{});
+    else
+        op.add_system_async(system.view(),boundary,status,InwardFlux{});
+    (void)status.check();
 }
 
 /// @brief Rejects inflow without a value provider for gradient/flux boundary conditions.
@@ -353,10 +456,13 @@ void null_comm(const Exec&e){reject(e,"null_comm");}
 
 /// @brief Rejects a convection plan missing required face connectivity.
 void missing_faces(const Exec&e){reject(e,"missing_faces");}
+
+/// @brief Rejects an inner range that extends into physical boundary faces.
+void invalid_range(const Exec& exec) { reject(exec, "invalid_range"); }
 } // namespace
 
 /// @brief Runs native convection cases or an individually selected expected failure.
 int main(int argc,char**argv){
-    const std::array cases{test::Case{"upwind",upwind},test::Case{"linear",linear},test::Case{"tvd",tvd},test::Case{"muscl",muscl},test::Case{"float_storage",float_storage},test::Case{"duplicate",duplicate},test::Case{"empty_rank",empty_rank},test::Case{"empty",empty},test::Case{"minimal",minimal},test::Case{"patch_values",patch_values},test::Case{"unlabelled",unlabelled},test::Case{"unused_inputs",unused_inputs},test::Case{"missing_inflow",missing_inflow},test::Case{"bad_profile",bad_profile},test::Case{"null_comm",null_comm},test::Case{"missing_faces",missing_faces}};
+    const std::array cases{test::Case{"upwind",upwind},test::Case{"linear",linear},test::Case{"tvd",tvd},test::Case{"muscl",muscl},test::Case{"float_storage",float_storage},test::Case{"duplicate",duplicate},test::Case{"empty_rank",empty_rank},test::Case{"empty",empty},test::Case{"minimal",minimal},test::Case{"patch_values",patch_values},test::Case{"unlabelled",unlabelled},test::Case{"unused_inputs",unused_inputs},test::Case{"split_ranges",split_ranges},test::Case{"missing_inflow",missing_inflow},test::Case{"bad_profile",bad_profile},test::Case{"null_comm",null_comm},test::Case{"missing_faces",missing_faces},test::Case{"invalid_range",invalid_range}};
     return test::run(argc,argv,"convection.core",cases);
 }
