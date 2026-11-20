@@ -13,17 +13,15 @@ template <class Space, class Coefficients, class Real>
 struct PrepareLeastSquares {
     StencilData<Space> stencil;
     Coefficients coefficients;
-
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell, std::size_t& bad) const {
         const std::size_t i = static_cast<std::size_t>(cell);
-        const auto& conn = stencil.connectivity;
-        const auto begin = conn.cell_faces_offsets(i), end = conn.cell_faces_offsets(i + 1);
+        const auto begin = stencil.cell_faces_offsets(i), end = stencil.cell_faces_offsets(i + 1);
 
         // Find a length scale for this stencil so squaring a very large or small displacement is safer.
         Real scale = 0;
         for (auto k = begin; k < end; ++k) {
             Real d[3];
-            stencil.displacement(cell, conn.cell_faces(k), d);
+            stencil.displacement(cell, stencil.cell_faces(k), d);
             for (int axis = 0; axis < 3; ++axis) {
                 if (!Kokkos::isfinite(d[axis])) {
                     ++bad;
@@ -43,7 +41,7 @@ struct PrepareLeastSquares {
         Real a[9]{};
         for (auto k = begin; k < end; ++k) {
             Real d[3];
-            stencil.displacement(cell, conn.cell_faces(k), d);
+            stencil.displacement(cell, stencil.cell_faces(k), d);
             for (auto& value : d)
                 value /= scale;
             const Real r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -68,7 +66,7 @@ struct PrepareLeastSquares {
         // so the kernel needs no temporary array sized by the number of faces.
         for (auto k = begin; k < end; ++k) {
             Real d[3];
-            stencil.displacement(cell, conn.cell_faces(k), d);
+            stencil.displacement(cell, stencil.cell_faces(k), d);
             for (auto& value : d)
                 value /= scale;
             const Real r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -101,14 +99,13 @@ struct LeastSquaresFaceKernel {
     Batch<T, N, Space> fields;
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
-        const std::size_t i = static_cast<std::size_t>(cell);
-        const auto& conn = stencil.connectivity;
+        const auto i = static_cast<std::size_t>(cell);
         CellAccumulator<T, N, Space, Real> sum(fields, i);
 
         // Keep the same CSR order as preparation. Each slot already has the vector
         // that maps phi_sample - phi_cell to its contribution to the gradient.
-        for (auto k = conn.cell_faces_offsets(i); k < conn.cell_faces_offsets(i + 1); ++k) {
-            const auto sample = stencil.sample(cell, conn.cell_faces(k));
+        for (auto k = stencil.cell_faces_offsets(i); k < stencil.cell_faces_offsets(i + 1); ++k) {
+            const auto sample = stencil.sample(cell, stencil.cell_faces(k));
             const Real x = static_cast<Real>(coefficients(k, 0));
             const Real y = static_cast<Real>(coefficients(k, 1));
             const Real z = static_cast<Real>(coefficients(k, 2));

@@ -31,9 +31,9 @@ struct GreenGaussFaceKernel {
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
         const std::size_t f = static_cast<std::size_t>(face);
-        const auto owner = stencil.mesh.connectivity.face_owner(f);
-        const auto neigh = stencil.mesh.connectivity.face_neigh(f);
-        const bool boundary = face >= stencil.mesh.sizes.n_inner_faces;
+        const auto owner = stencil.face_owner(f);
+        const auto neigh = stencil.face_neigh(f);
+        const bool boundary = face >= stencil.n_inner_faces;
 
         // A ghost can supply a sample, but only cells in the requested owned range get a result.
         const bool write_owner = owner >= range.begin && owner < range.end;
@@ -51,14 +51,14 @@ struct GreenGaussFaceKernel {
 
         // Read volumes only for owned cells whose gradients are updated.
         const Real owner_factor =
-            write_owner ? alpha / static_cast<Real>(stencil.mesh.geometry.cell_volume(i)) : Real{0};
+            write_owner ? alpha / static_cast<Real>(stencil.cell_volume(i)) : Real{0};
         const Real neigh_factor =
-            write_neigh ? w / static_cast<Real>(stencil.mesh.geometry.cell_volume(j)) : Real{0};
+            write_neigh ? w / static_cast<Real>(stencil.cell_volume(j)) : Real{0};
 
-        const Real area = static_cast<Real>(stencil.mesh.geometry.face_area(f));
-        const Real sx = area * static_cast<Real>(stencil.mesh.geometry.face_normal_x(f));
-        const Real sy = area * static_cast<Real>(stencil.mesh.geometry.face_normal_y(f));
-        const Real sz = area * static_cast<Real>(stencil.mesh.geometry.face_normal_z(f));
+        const Real area = static_cast<Real>(stencil.face_area(f));
+        const Real sx = area * static_cast<Real>(stencil.face_normal_x(f));
+        const Real sy = area * static_cast<Real>(stencil.face_normal_y(f));
+        const Real sz = area * static_cast<Real>(stencil.face_normal_z(f));
 
         // Both sides use phi_sample - phi_owner. On the neighbour side, reversing the
         // normal and using phi_owner - phi_neighbour cancel the two sign changes.

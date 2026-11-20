@@ -40,7 +40,8 @@ class GradientOperator {
     /// @param exec Instance used for setup and all later gradient kernels.
     GradientOperator(mesh_view_type mesh_view, connectivity_view_type connectivity,
                      geometry_view_type geometry, Options options, Exec exec = {})
-        : stencil_{mesh_view, connectivity, geometry, options}, exec_(exec) {
+        : stencil_{mesh_view, connectivity, geometry, options}, exec_(exec),
+          n_own_(mesh_view.sizes.n_own), n_faces_(mesh_view.sizes.n_faces) {
         mpi::guarded([&] {
             input_size_ = detail::validate_descriptors(mesh_view, connectivity, geometry, options);
             execution::complete(exec, [&]() {
@@ -57,7 +58,7 @@ class GradientOperator {
                         Kokkos::view_alloc(exec_, Kokkos::WithoutInitializing, "gradient/ls_coefficients"),
                         count);
                     Kokkos::parallel_reduce(
-                        "gradient/prepare_least_squares", policy_type(exec_, 0, mesh_view.sizes.n_own),
+                        "gradient/prepare_least_squares", policy_type(exec_, 0, n_own_),
                         detail::PrepareLeastSquares<memory_space, coefficients_type, double>{stencil_,
                                                                                              coefficients_},
                         bad);
@@ -167,6 +168,7 @@ class GradientOperator {
   private:
     detail::StencilData<memory_space> stencil_;
     Exec exec_;
+    LocalIndex n_own_, n_faces_;        ///< Counts used on the host for output checks and launch bounds.
     coefficients_type coefficients_;
     std::size_t input_size_ = 0;
 
@@ -190,7 +192,7 @@ class GradientOperator {
         accessible_component<View>();
         static_assert(std::is_same_v<typename View::value_type, T>,
                       "Gradient output must be mutable and match input precision");
-        mpi::require(view.extent(0) >= static_cast<std::size_t>(stencil_.mesh.sizes.n_own),
+        mpi::require(view.extent(0) >= static_cast<std::size_t>(n_own_),
                      "Gradient: output must contain all owned cells");
         const auto descriptor = fields::descriptor_from_view(view);
         return {descriptor.data, descriptor.stride};
@@ -198,8 +200,8 @@ class GradientOperator {
 
     CellRange resolve(CellRange range) const {
         if (range.end == -1)
-            range.end = stencil_.mesh.sizes.n_own;
-        mpi::require(range.begin >= 0 && range.begin <= range.end && range.end <= stencil_.mesh.sizes.n_own,
+            range.end = n_own_;
+        mpi::require(range.begin >= 0 && range.begin <= range.end && range.end <= n_own_,
                      "Gradient: range must be an owned-cell interval");
         return range;
     }
@@ -227,8 +229,7 @@ class GradientOperator {
                 // Both launches use the same instance and execute in order.
                 Kokkos::parallel_for("gradient/clear_owned", policy,
                                      detail::ClearKernel<T, N, memory_space>{batch});
-                Kokkos::parallel_for(
-                    "gradient/green_gauss_face", policy_type(exec_, 0, stencil_.mesh.sizes.n_faces),
+                Kokkos::parallel_for("gradient/green_gauss_face", policy_type(exec_, 0, n_faces_),
                     detail::GreenGaussFaceKernel<memory_space, T, N, Accumulator>{stencil_, batch, range});
                 break;
             }
