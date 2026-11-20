@@ -5,16 +5,21 @@
 
 namespace krona::transport::properties {
 
-/// @brief Dynamic viscosity, not kinematic viscosity. Does not inspect the state.
+/// @brief Returns a fixed dynamic viscosity at every state.
+/// @tparam Parameter Floating-point type used to store the configured viscosity.
 template<class Parameter = ComputeReal>
 struct ConstantViscosity {
-    Parameter value = 0;
+    Parameter value = 0; ///< Dynamic viscosity mu in Pa s in SI.
 
+    /// @brief Requires the configured viscosity to be finite and nonnegative on the host.
     void validate() const noexcept {
         mpi::require(detail::nonnegative(value),
             "Transport properties: constant dynamic viscosity must be finite and nonnegative");
     }
 
+    /// @brief Returns the configured viscosity converted to the requested precision.
+    /// @tparam Real Floating-point type of the returned value.
+    /// @tparam State Any state type. This law uses only the stored coefficient.
     template<class Real = ComputeReal, class State>
     KOKKOS_INLINE_FUNCTION Real evaluate(const State&) const {
         static_assert(std::is_floating_point_v<Real>);
@@ -23,13 +28,16 @@ struct ConstantViscosity {
 };
 template<class P> ConstantViscosity(P) -> ConstantViscosity<P>;
 
-/// @brief Sutherland gas viscosity. Absolute temperatures; no implicit clipping or validity range.
+/// @brief Evaluates a gas's dynamic viscosity as a function of absolute temperature using Sutherland's law.
+/// The caller selects a temperature range appropriate to the fitted parameters.
+/// @tparam Parameter Floating-point type of the three stored parameters.
 template<class Parameter = ComputeReal>
 struct SutherlandViscosity {
-    Parameter reference_viscosity = 0;
-    Parameter reference_temperature = 0;
-    Parameter sutherland_temperature = 0;
+    Parameter reference_viscosity = 0;     ///< Dynamic viscosity at the reference temperature.
+    Parameter reference_temperature = 0;   ///< Absolute reference temperature in K in SI.
+    Parameter sutherland_temperature = 0;  ///< Sutherland fit constant in the same units as temperature.
 
+    /// @brief Checks the configured reference viscosity, reference temperature and fit constant on the host.
     void validate() const noexcept {
         mpi::require(detail::positive(reference_viscosity) &&
                      detail::positive(reference_temperature) &&
@@ -37,6 +45,10 @@ struct SutherlandViscosity {
             "Transport properties: Sutherland requires finite mu_ref>0, T_ref>0 and S>=0");
     }
 
+    /// @brief Returns dynamic viscosity, or NaN for a nonfinite or nonpositive temperature.
+    /// @tparam Real Floating-point type used for evaluation and the result.
+    /// @tparam State Type with a temperature member convertible to Real.
+    /// @param state Supplies the local absolute temperature.
     template<class Real = ComputeReal, class State>
     KOKKOS_INLINE_FUNCTION Real evaluate(const State& state) const {
         static_assert(std::is_floating_point_v<Real>);
