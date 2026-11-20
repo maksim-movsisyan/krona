@@ -292,13 +292,13 @@ void corrected_iterations(const Exec& exec)
     test::near(diffusion.balance(phi,boundary,law,ts::UniformSource<Real>{0},correction).defect,0.0,1e-7,"corrected rebuilt balance");
 }
 
-/// @brief Triggers missing/inconsistent metrics, invalid gradients or correction-dependent relations.
+/// @brief Triggers invalid cached metrics, invalid gradients or correction-dependent relations.
 template<int Which>
 void rejected_correction(const Exec& exec)
 {
     const auto comm=mpi::CommView::world();auto f=skew_grid(comm);
-    if constexpr(Which==0){f.geometry.active_mask=mesh::AuxGeomType::FaceNormalDistance|mesh::AuxGeomType::FaceAreaOverNormalDistance|mesh::AuxGeomType::FaceInterpolationWeights;}
-    if constexpr(Which==1){f.geometry.active_mask=mesh::AuxGeomType::FaceNormalDistance|mesh::AuxGeomType::FaceAreaOverNormalDistance|mesh::AuxGeomType::FaceNonOrthogonalityVector;f.geometry.face_interp_weight.clear();}
+    if constexpr (Which == 0) f.geometry.face_non_ortho_x.pop_back();
+    if constexpr (Which == 1) f.geometry.face_interp_weight[0] = GeometryReal{-1};
     if constexpr(Which==3)f.geometry.face_non_ortho_x[0]+=GeometryReal{1};
     Attached a(f,comm,exec,td::DiffusionOptions{false,1e-6});
     krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);

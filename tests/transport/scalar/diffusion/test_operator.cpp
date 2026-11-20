@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace { 
@@ -165,7 +167,8 @@ struct NativeSystem {
 
 /// @brief Compares native assembly, direct residuals, correction-only updates and global balance.
 template<class Storage = double>
-void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = false, bool duplicate = false)
+void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = false, bool duplicate = false,
+              bool use_cache = true)
 {
     const auto comm = mpi::CommView::world();
     auto f = skew ? skew_grid(comm) : bar(comm, duplicate, false, empty);
@@ -188,7 +191,9 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
     });
     const auto correction = gr::GradientCorrection{gr::cell_gradients(g, 1)};
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
-    const td::DiffusionOperator op(a.plan);
+    const td::DiffusionPlan plan(m, a.connectivity.view(),
+        use_cache ? a.geometry.view() : mesh::device::AuxGeometryView<Space>{}, comm, exec, {!skew, 1e-6});
+    const td::DiffusionOperator op(plan);
     NativeSystem<Storage> system(f, exec);
     ts::AssemblyStatus<Exec> status(exec);
     status.begin_async(); op.add_system_async(system.view(), boundary, status, law, correction, time); (void)status.check();
@@ -281,13 +286,86 @@ void custom_correction(const Exec& exec)
     for (std::size_t i = 0; i < x.extent(0); ++i) test::near(x(i), y(i), Real{0}, "custom correction without a gradients member");
 }
 
+/// @brief Exercises uncached metrics in matrix, residual, correction and balance paths.
+void uncached(const Exec& exec)
+{
+    run_case(exec, true, true, false, false, false);
+    run_case<float>(exec, true, true, false, false, false);
+    run_case(exec, false, false, true, false, false);
+}
+
+/// @brief Checks geometric gradient weights and harmonic coefficients with and without cached metrics.
+void weights(const Exec& exec)
+{
+    const auto comm = mpi::CommView::world();
+    const auto f = skew_grid(comm);
+    Attached a(f, comm, exec, false);
+    boundary::BoundaryLayout<Exec> layout(f.host, a.mesh.view(), exec);
+    Boundary boundary(layout);
+    for (std::size_t patch = 0; patch < f.host.patches.size(); ++patch)
+        boundary.set(static_cast<mesh::PatchId>(patch), bc::NormalGradient<Real>{0});
+    boundary.finalize();
+    const auto count = static_cast<std::size_t>(f.host.n_cells);
+    Kokkos::View<Real*, Space> gamma("cell coefficients", count), gx("gx", count), gy("gy", count), gz("gz", count);
+    Kokkos::parallel_for("test/diffusion_weight_inputs", Kokkos::RangePolicy<Exec>(exec, 0, f.host.n_cells),
+        KOKKOS_LAMBDA(int i) {
+            gamma(i) = Real{1} + static_cast<Real>(i);
+            gx(i) = static_cast<Real>(i);
+            gy(i) = Real{2} * gx(i);
+            gz(i) = Real{-3} * gx(i);
+        });
+    const auto law = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{gamma}};
+    const auto correction = gr::GradientCorrection{gr::cell_gradients(gx, gy, gz)};
+    const auto assemble = [&](mesh::device::AuxGeometryView<Space> geometry) {
+        const td::DiffusionPlan plan(a.mesh.view(), a.connectivity.view(), geometry, comm, exec, {false, 1.e-6});
+        const td::DiffusionOperator op(plan);
+        NativeSystem<double> system(f, exec);
+        ts::AssemblyStatus<Exec> status(exec);
+        status.begin_async();
+        op.add_system_async(system.view(), boundary, status, law, correction);
+        (void)status.check();
+        return std::pair{snapshot(system.view().values, exec), snapshot(system.view().rhs, exec)};
+    };
+
+    const auto [matrix, rhs] = assemble(a.geometry.view());
+    const auto [direct_matrix, direct_rhs] = assemble({});
+    const mesh::device::AuxGeometryStorage<Exec> partial(
+        f.geometry, mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceInterpolationWeights, exec);
+    const auto [partial_matrix, partial_rhs] = assemble(partial.view());
+    const double tolerance = std::max(2.e-11, 400.0 * static_cast<double>(Kokkos::epsilon_v<Real>));
+    for (std::size_t k = 0; k < matrix.extent(0); ++k) {
+        test::near(direct_matrix(k), matrix(k), tolerance, "uncached matrix");
+        test::near(partial_matrix(k), matrix(k), tolerance, "partially cached matrix");
+    }
+    for (std::size_t i = 0; i < rhs.extent(0); ++i) {
+        test::near(direct_rhs(i), rhs(i), tolerance, "uncached RHS");
+        test::near(partial_rhs(i), rhs(i), tolerance, "partially cached RHS");
+
+        // Zero normal gradient leaves only the interior correction in the assembled RHS.
+        double expected = 0;
+        for (auto k = f.connectivity.cell_faces_offsets[i]; k < f.connectivity.cell_faces_offsets[i + 1]; ++k) {
+            const auto face = static_cast<std::size_t>(f.connectivity.cell_faces[k]);
+            if (face >= static_cast<std::size_t>(f.host.n_inner_faces)) continue;
+            const auto owner = static_cast<double>(f.host.face_owner[face]);
+            const auto neighbour = static_cast<double>(f.host.face_neigh[face]);
+            const double w = f.geometry.face_interp_weight[face];
+            const double material = 1.0 / ((1.0 - w) / (1.0 + owner) + w / (1.0 + neighbour));
+            const double projection = f.geometry.face_non_ortho_x[face] + 2.0*f.geometry.face_non_ortho_y[face] -
+                                      3.0*f.geometry.face_non_ortho_z[face];
+            const double sign = f.host.face_owner[face] == static_cast<LocalIndex>(i) ? 1.0 : -1.0;
+            const double gradient = w*owner + (1.0 - w)*neighbour;
+            expected += sign * material * gradient * projection;
+        }
+        test::near(direct_rhs(i), expected, tolerance, "gradient and material use the geometric weight");
+    }
+}
+
 /// @brief Triggers invalid geometry, correction data, communicator or boundary/coefficient values.
 void rejection(const Exec& exec, std::string_view which)
 {
     const auto comm = mpi::CommView::world(); auto f = skew_grid(comm);
     if (which == "stale_metric") f.geometry.face_normal_dist[0] *= GeometryReal{2};
-    if (which == "missing_weights") f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance |
-        mesh::AuxGeomType::FaceAreaOverNormalDistance | mesh::AuxGeomType::FaceNonOrthogonalityVector;
+    if (which == "stale_weight") f.geometry.face_interp_weight[0] = GeometryReal{-1};
     Attached a(f, which == "null_comm" ? mpi::CommView{} : comm, exec, false);
     boundary::BoundaryLayout<Exec> layout(f.host, a.mesh.view(), exec); Boundary boundary(layout); configure(boundary, f, false);
     if (which == "bad_profile") { boundary.set(0, ProfileValue{ValueProfile{true}}); boundary.finalize(); }
@@ -305,8 +383,8 @@ void rejection(const Exec& exec, std::string_view which)
 /// @brief Rejects auxiliary metrics inconsistent with mesh geometry.
 void stale_metric(const Exec& e) { rejection(e, "stale_metric"); }
 
-/// @brief Rejects a corrected plan missing interpolation weights.
-void missing_weights(const Exec& e) { rejection(e, "missing_weights"); }
+/// @brief Rejects a supplied interpolation weight inconsistent with the face geometry.
+void stale_weight(const Exec& e) { rejection(e, "stale_weight"); }
 
 /// @brief Rejects a diffusion plan with a null communicator.
 void null_comm(const Exec& e) { rejection(e, "null_comm"); }
@@ -329,9 +407,13 @@ int main(int argc, char** argv)
 {
     const std::array cases{test::Case{"orthogonal", orthogonal}, test::Case{"nonorthogonal", nonorthogonal},
         test::Case{"mixed_profiles", mixed_profiles}, test::Case{"float_storage", float_storage}, test::Case{"empty", empty}, test::Case{"duplicate", duplicate},
-        test::Case{"custom_correction", custom_correction}};
-    const std::array rejected{test::Case{"stale_metric", stale_metric}, test::Case{"missing_weights", missing_weights}, test::Case{"null_comm", null_comm},
+        test::Case{"custom_correction", custom_correction}, test::Case{"uncached", uncached}};
+    const std::array rejected{test::Case{"stale_metric", stale_metric}, test::Case{"stale_weight", stale_weight}, test::Case{"null_comm", null_comm},
         test::Case{"short_gradient", short_gradient}, test::Case{"nan_gradient", nan_gradient}, test::Case{"bad_coefficient", bad_coefficient}, test::Case{"bad_profile", bad_profile}};
     if (argc == 2) for (const auto& c : rejected) if (c.name == argv[1]) return test::run(argc, argv, "transport.diffusion", rejected);
+    if (argc == 2 && std::string_view(argv[1]) == "weights") {
+        const std::array selected{test::Case{"weights", weights}};
+        return test::run(argc, argv, "transport.diffusion", selected);
+    }
     return test::run(argc, argv, "transport.diffusion", cases);
 }

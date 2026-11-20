@@ -75,14 +75,10 @@ const auto m = device_mesh.view();
 
 const auto host_conn = mesh::host::build_aux_connectivity(
     host, mesh::AuxConnType::CellFaces);
-const auto host_geom = mesh::host::build_aux_geometry(host,
-    mesh::AuxGeomType::FaceNormalDistance |
-    mesh::AuxGeomType::FaceAreaOverNormalDistance);
 mesh::device::AuxConnectivityStorage<Exec> conn(host_conn, exec);
-mesh::device::AuxGeometryStorage<Exec> geom(host_geom, exec);
 
 td::DiffusionPlan<Exec, Real> plan(
-    m, conn.view(), geom.view(), comm, exec);
+    m, conn.view(), {}, comm, exec); // Compute derived metrics as needed.
 td::DiffusionOperator<Exec, Real> diffusion(plan);
 ts::SourceOperator<Exec, Real> sources(m, exec);
 ts::AssemblyStatus<Exec> status(exec);
@@ -103,7 +99,9 @@ This example assigns `phi = 300` on labelled patches and zero normal gradient on
 
 The boundary manager must reference the same mesh arrays as the diffusion plan; matching counts alone are insufficient. Diffusion contributions and `balance()` accept a final `time` argument, defaulting to `0`, for time-dependent providers/conditions. This argument does not advance a time integrator.
 
-The plan accepts only device mesh/auxiliary views, a non-null communicator, an execution instance and options. It borrows these descriptors and has no host-mesh argument. Their partition/local numbering must match the communicator; device descriptors do not contain rank metadata, so that agreement is a caller contract. The plan requires grouped face intervals, `FaceCells`, `FaceGeometry`, `CellGeometry`, complete owned `CellFaces`, `FaceNormalDistance` and `FaceAreaOverNormalDistance`. Cell centres include real MPI ghosts; owned volumes must be finite and positive. Cached distances/area ratios must match the attached geometry.
+The plan needs grouped face intervals, `FaceCells`, `FaceGeometry`, `CellGeometry` and complete owned `CellFaces`. The cell centres include real MPI ghosts, and owned volumes must be finite and positive. Match the communicator to the partition described by these borrowed views.
+
+Each derived metric can be cached independently. Pass an empty auxiliary view to compute all of them from the mesh, or attach any combination of `FaceNormalDistance`, `FaceAreaOverNormalDistance`, `FaceInterpolationWeights` and `FaceNonOrthogonalityVector`. The plan checks attached caches against primary geometry. Without a cache, interior kernels derive the same metric from the cell centres, face centroid, normal and area as needed. Both cache and fallback can introduce floating-point rounding. Physical boundary kernels use the geometry computed in the boundary context.
 
 `DiffusionOptions` defaults to `{require_orthogonal = true, orthogonality_tolerance = 1e-6}`. Orthogonality is checked for centre-to-centre inner segments and centre-to-face boundary segments: tangential length must not exceed `tolerance * normal_distance`. Tolerance must be finite and in `[0, 1)`. Setting `require_orthogonal = false` permits skew geometry; **it does not enable a correction**. Attached interpolation weights/nonorthogonality vectors are also checked for consistency. Rebuild/revalidate after changing mesh geometry or numbering.
 
@@ -217,11 +215,11 @@ Pass `transport::IsotropicDiffusion{provider}`. Although the standalone constitu
 | --- | --- |
 | `UniformCoefficient<Real>{gamma}` | Constant face coefficient; default is `1`. |
 | `FaceCoefficient{values}` | Rank-one array indexed by local face ID; at least `n_faces` entries. |
-| `InterpolatedCellCoefficient{values}` | Cell coefficients including real ghosts, at least `n_cells` entries. Requires `FaceInterpolationWeights` when inner faces exist. Default interpolation is harmonic; `ArithmeticCoefficient` can be selected explicitly. Boundary faces use the owner coefficient. |
+| `InterpolatedCellCoefficient{values}` | Cell coefficients including real ghosts, at least `n_cells` entries. Uses the geometric face weight, supplied by the cache or computed from the projected distances. The default is harmonic. Select `ArithmeticCoefficient` for a weighted arithmetic mean. Boundary faces use the owner coefficient. |
 | `OwnerCellCoefficient{values}` | Exterior-only owner extrapolation. This operator rejects it if any inner faces exist. |
 | Custom callable | Device-callable `operator()(const Context&) const` returning the face coefficient. Storage/accessibility and parameter validation are the application's responsibility. |
 
-Inner contexts provide `face`, `owner`, `neighbour`, face coordinates `x/y/z`, unit normal `nx/ny/nz`, `distance`, `area`, `time` and `owner_weight`. Orientation stays owner-to-neighbour even while assembling the neighbour row. Boundary contexts are `boundary::FaceContext<Real>`: owner-outward geometry, boundary/extended indices and tangential offset `tx/ty/tz`; they have no `neighbour` member. A custom provider must compile for both context types and produce consistent shared-face values across ranks. Do not assume `owner_weight` is available unless the auxiliary weights were attached.
+Inner contexts provide `face`, `owner`, `neighbour`, face coordinates `x/y/z`, unit normal `nx/ny/nz`, `distance`, `area`, `time` and `owner_weight`. Orientation stays owner-to-neighbour even while assembling the neighbour row. Boundary contexts are `boundary::FaceContext<Real>`: owner-outward geometry, boundary/extended indices and tangential offset `tx/ty/tz`; they have no `neighbour` member. A custom provider must compile for both context types and produce consistent shared-face values across ranks. The geometry weight can be outside `[0, 1]` on an unusual face whose plane falls outside the cell-centre segment. Built-in cell coefficient interpolation requires the weight to lie in that interval. Custom providers define their own admissible domain.
 
 For example, a spatially varying coefficient needs no coefficient array. Define the provider at namespace scope:
 
@@ -262,9 +260,8 @@ profiled.finalize();
 
 To enable corrected diffusion:
 
-1. Build auxiliary geometry with `FaceNonOrthogonalityVector` and `FaceInterpolationWeights` in addition to the two normal metrics above.
-2. Construct the plan with `DiffusionOptions{false, 1e-6}` for a nonorthogonal mesh.
-3. Supply current gradients for owned **and real ghost** cells.
+1. Construct the plan with `DiffusionOptions{false, 1e-6}` for a nonorthogonal mesh.
+2. Supply current gradients for owned **and real ghost** cells.
 
 ```cpp
 // gx, gy, gz are ready rank-one cell-gradient views, each with n_cells entries.
@@ -281,7 +278,7 @@ rhs.commit();
 
 This example **adds** a corrected contribution; use it instead of an uncorrected assembly, or clear the target before rebuilding. It does not replace an earlier contribution.
 
-`numerics::gradient::GradientCorrection` interpolates inner gradients using the actual owner weight, not an assumed midpoint. With `d = x_N - x_O`, `h = d · n`:
+`numerics::gradient::GradientCorrection` uses the same geometric owner weight as cell coefficient interpolation. For inner faces, let `d = x_N - x_O` and `h = d · n`.
 
 $$
 \mathbf T_f=A_f(\mathbf n-\mathbf d/h),\qquad
@@ -311,7 +308,7 @@ rhs.commit();
 
 A custom gradient provider returns three indexable values from `gradients(cell)`. If it exposes `validate<Exec>(count)`, diffusion calls that host validator; otherwise it checks declared `memory_space` and `size()` metadata when available. Providers without metadata retain those caller contracts.
 
-A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-context call operator. It need not store a member named `gradients`. If that member exists, its metadata is validated; otherwise an optional `correction.validate<Exec>(count)` is called. Nonzero correction types still require the auxiliary nonorthogonality vectors and, when inner faces exist, interpolation weights. Use `grad::NoCorrection{}` to select the zero-correction path without those requirements.
+A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-context call operator. It need not store a member named `gradients`. If that member exists, its metadata is validated; otherwise an optional `correction.validate<Exec>(count)` is called. The interior callback receives the geometric owner weight. Use `grad::NoCorrection{}` to run the two-point scheme without projecting gradients.
 
 ## Diagnostics, ownership and asynchrony
 

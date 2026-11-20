@@ -24,10 +24,10 @@ foreach(ranks IN ITEMS 2 3)
             "$<TARGET_FILE:krona_test_scalar_diffusion>" ${MPIEXEC_POSTFLAGS})
     set_tests_properties("transport.scalar.mpi${ranks}" PROPERTIES TIMEOUT 180 PROCESSORS "${ranks}" RUN_SERIAL TRUE)
 endforeach()
-set(cases correction_no_vectors correction_no_weights correction_nan correction_stale correction_short correction_slope pending pure_neumann bad_coefficient bad_source bad_metric missing_weights nonorthogonal bad_boundary bad_batch in_place wrong_graph)
-set(expected "correction requires attached FaceNonOrthogonalityVector" "correction requires attached FaceInterpolationWeights"
+set(cases correction_short_vector correction_bad_weight correction_nan correction_stale correction_short correction_slope pending pure_neumann bad_coefficient bad_source bad_metric stale_weight nonorthogonal bad_boundary bad_batch in_place wrong_graph)
+set(expected "face_non_ortho_x" "normal metrics"
     "invalid correction data" "normal metrics" "gradient extent is too short" "correction-dependent boundary slope" "assembly pending" "pure Neumann" "coefficient must be finite and positive" "source density must be finite"
-    "normal metrics" "require attached FaceInterpolationWeights" "nonorthogonal geometry" "invalid affine boundary flux"
+    "normal metrics" "normal metrics" "nonorthogonal geometry" "invalid affine boundary flux"
     "coefficient must be finite and positive" "in-place residual" "must share the face assembly graph")
 list(LENGTH cases count)
 math(EXPR last "${count}-1")

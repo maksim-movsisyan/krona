@@ -582,10 +582,7 @@ template<int Which>
 void rejected(const Exec& exec) {
     const auto comm = mpi::CommView::world(); auto f = bar(comm);
     if constexpr (Which == 4) f.geometry.face_area_over_normal_dist[0] *= 2;
-    if constexpr (Which == 5) {
-        f.geometry.active_mask = mesh::AuxGeomType::FaceNormalDistance | mesh::AuxGeomType::FaceAreaOverNormalDistance;
-        f.geometry.face_interp_weight.clear();
-    }
+    if constexpr (Which == 5) f.geometry.face_interp_weight[0] = GeometryReal{-1};
     if constexpr (Which == 6) f.host.face_centroid_y[static_cast<std::size_t>(f.host.n_inner_faces)] = GeometryReal{0.25};
     Attached a(f, comm, exec); krona::boundary::BoundaryLayout<Exec, Real> boundary_layout(f.host, a.mesh.view(), exec);
     Boundary boundary(boundary_layout);
@@ -619,15 +616,11 @@ void rejected(const Exec& exec) {
             (void)invalid;
         } else if constexpr (Which == 2)
             op.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{0}});
-        else if constexpr (Which == 5) {
-            Kokkos::View<Real*, Space> d("D", static_cast<std::size_t>(f.host.n_cells)); Kokkos::deep_copy(exec, d, Real{1});
-            op.add_system_async(target, boundary, status, transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{d}});
-            (void)status.check(); matrix.commit(); rhs.commit();
-        } else op.add_system_async(target, boundary, status);
+        else op.add_system_async(target, boundary, status);
         if constexpr (Which == 3)
             ts::SourceOperator<Exec, Real>(a.mesh.view(), exec).add_async(target.rhs, status,
                 ts::UniformSource<Real>{std::numeric_limits<Real>::quiet_NaN()});
-        if constexpr (Which != 5) { (void)status.check(); matrix.commit(); rhs.commit(); }
+        (void)status.check(); matrix.commit(); rhs.commit();
     }
     check(false, "invalid system unexpectedly accepted");
 }
@@ -666,15 +659,15 @@ int main(int argc, char** argv) {
         test::Case{"duplicate_faces", with_tpetra<duplicates>}, test::Case{"strided_float", with_tpetra<strided_float>},
         test::Case{"empty", with_tpetra<empty>}, test::Case{"float_solver", with_tpetra<float_solver>}};
     const std::array negative{ 
-        test::Case{"correction_no_vectors", with_tpetra<rejected_correction<0>>},
-        test::Case{"correction_no_weights", with_tpetra<rejected_correction<1>>},
+        test::Case{"correction_short_vector", with_tpetra<rejected_correction<0>>},
+        test::Case{"correction_bad_weight", with_tpetra<rejected_correction<1>>},
         test::Case{"correction_nan", with_tpetra<rejected_correction<2>>},
         test::Case{"correction_stale", with_tpetra<rejected_correction<3>>},
         test::Case{"correction_short", with_tpetra<rejected_correction<4>>},
         test::Case{"correction_slope", with_tpetra<rejected_correction<5>>},
         test::Case{"pending", with_tpetra<rejected<0>>}, test::Case{"pure_neumann", with_tpetra<rejected<1>>},
         test::Case{"bad_coefficient", with_tpetra<rejected<2>>}, test::Case{"bad_source", with_tpetra<rejected<3>>},
-        test::Case{"bad_metric", with_tpetra<rejected<4>>}, test::Case{"missing_weights", with_tpetra<rejected<5>>},
+        test::Case{"bad_metric", with_tpetra<rejected<4>>}, test::Case{"stale_weight", with_tpetra<rejected<5>>},
         test::Case{"nonorthogonal", with_tpetra<rejected<6>>}, test::Case{"bad_boundary", with_tpetra<rejected<7>>},
         test::Case{"bad_batch", with_tpetra<rejected<8>>}, test::Case{"in_place", with_tpetra<rejected<9>>},
         test::Case{"wrong_graph", with_tpetra<rejected<10>>}};
