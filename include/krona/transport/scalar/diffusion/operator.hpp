@@ -21,6 +21,7 @@ template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class DiffusionOperator {
     using Space = typename Exec::memory_space;
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<LocalIndex>>;
+    using Flags = typename AssemblyStatus<Exec>::flags_type;
 public:
     using execution_space = Exec;
     using memory_space = Space;
@@ -51,24 +52,44 @@ public:
         IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
-            const auto mesh = plan_.mesh_view();
-            const std::size_t rows = static_cast<std::size_t>(mesh.sizes.n_own);
-            scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-            scalar::detail::validate_output<Exec>(target.rhs, rows);
-            mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
-                target.entries.owner_entries.extent(0) == static_cast<std::size_t>(mesh.sizes.n_inner_faces) &&
-                target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(mesh.sizes.n_internal_faces),
-                "Scalar diffusion: incompatible system slice/entry map");
-            const auto& exec = execution_space_instance();
-            const auto flags = status.device_flags(exec);
-            Kokkos::parallel_for("diffusion/add_rows", Policy(exec, 0, mesh.sizes.n_own),
-                detail::AddRows<Space, Real, Target, decltype(law), Correction, decltype(flags)>{stencil_data(), target, law, correction, flags, time});
-            boundary.for_each_patch([&](auto range, const auto& condition) {
-                using C = std::remove_cvref_t<decltype(condition)>;
-                Kokkos::parallel_for("diffusion/add_boundary", Policy(exec, range.begin, range.end),
-                    detail::AddBoundary<Space, Real, Target, C, decltype(law), Correction, decltype(flags)>{
-                        boundary.geometry_view(), target, condition, law, correction, flags, time});
-            });
+            validate_system(target);
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_inner_system(target, flags, all_inner_faces(), law, correction, time);
+            submit_boundary_system(target, boundary, flags, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the matrix and RHS terms from a selected range of inner faces.
+    /// @param faces Half-open local face interval. The default covers all inner faces.
+    /// @param target Writable system slice with the full entry map.
+    /// @param status Open batch using the plan's execution instance.
+    /// @param law Coefficient provider for the selected faces.
+    /// @param correction Optional gradient projection. All data read by the selected faces must be ready.
+    /// @param time Evaluation time passed to the providers.
+    template<class Target, class Coefficient = UniformCoefficient<Real>, class Correction = numerics::gradient::NoCorrection>
+    void add_inner_system_async(Target target, AssemblyStatus<Exec>& status, FaceRange faces = {},
+                                IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+        mpi::guarded([&] {
+            faces = inner_range(faces);
+            validate_providers(law, correction, time);
+            validate_system(target);
+            const auto flags = status.device_flags(execution_space_instance());
+            if (faces.begin == faces.end) return;
+            submit_inner_system(target, flags, faces, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the diagonal and RHS terms from the physical boundary patches.
+    /// Submit once when composing a system from several inner ranges.
+    template<class Target, class Boundary, class Coefficient = UniformCoefficient<Real>,
+        class Correction = numerics::gradient::NoCorrection>
+    void add_boundary_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+        mpi::guarded([&] {
+            validate_inputs(boundary, law, correction, time);
+            validate_system(target);
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_boundary_system(target, boundary, flags, law, correction, time);
         });
     }
 
@@ -92,47 +113,94 @@ public:
         IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
-            const auto mesh = plan_.mesh_view();
-            scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(mesh.sizes.n_cells));
-            scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(mesh.sizes.n_own));
-            mpi::require(mesh.sizes.n_own == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
-                         "Scalar diffusion: in-place residual is unsupported");
-            const auto& exec = execution_space_instance();
-            const auto flags = status.device_flags(exec);
-            Kokkos::parallel_for("diffusion/residual_rows", Policy(exec, 0, mesh.sizes.n_own),
-                detail::ResidualRows<Space, Real, Field, Output, decltype(law), Correction, decltype(flags)>{stencil_data(), field, output, law, correction, flags, time});
-            boundary.for_each_patch([&](auto range, const auto& condition) {
-                using C = std::remove_cvref_t<decltype(condition)>;
-                Kokkos::parallel_for("diffusion/residual_boundary", Policy(exec, range.begin, range.end),
-                    detail::ResidualBoundary<Space, Real, Field, Output, C, decltype(law), Correction, decltype(flags)>{
-                        boundary.geometry_view(), field, output, condition, law, correction, flags, time});
-            });
+            validate_residual(field, output, plan_.mesh_view().sizes.n_cells);
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_inner_residual(field, output, flags, all_inner_faces(), law, correction, time);
+            submit_boundary_residual(field, output, boundary, flags, law, correction, time);
         });
     }
 
-    /// @brief Adds corrected-RHS minus zero-correction RHS; matrix and prescribed base fluxes are untouched.
-    /// Reset output to the frozen base RHS for each outer iteration; do not accumulate old corrections.
-    /// Coefficients/conditions must match that base system, and boundary matrix slopes must not depend on increment.
+    /// @brief Adds the negative outward flux from a selected range of inner faces.
+    /// @param field Local cell view with space for real ghosts. Values read in the selected range must be ready.
+    /// @param output Owned residual entries to increment. Keep them disjoint from the inputs.
+    /// @param status Open batch using the plan's execution instance.
+    /// @param faces Half-open local face interval. The default covers all inner faces.
+    /// @param law Coefficient provider for the selected faces.
+    /// @param correction Optional gradient projection. Provide current gradients for all cells it reads.
+    /// @param time Evaluation time passed to the providers.
+    template<class Field, class Output, class Coefficient = UniformCoefficient<Real>,
+        class Correction = numerics::gradient::NoCorrection>
+    void add_inner_residual_async(Field field, Output output, AssemblyStatus<Exec>& status, FaceRange faces = {},
+        IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+        mpi::guarded([&] {
+            faces = inner_range(faces);
+            validate_providers(law, correction, time);
+            validate_residual(field, output, plan_.mesh_view().sizes.n_cells);
+            const auto flags = status.device_flags(execution_space_instance());
+            if (faces.begin == faces.end) return;
+            submit_inner_residual(field, output, flags, faces, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the negative outward flux from the physical boundary patches.
+    /// The scalar field only needs to cover owned cells. Keep the output disjoint from the inputs.
+    template<class Field, class Output, class Boundary, class Coefficient = UniformCoefficient<Real>,
+        class Correction = numerics::gradient::NoCorrection>
+    void add_boundary_residual_async(Field field, Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+        mpi::guarded([&] {
+            validate_inputs(boundary, law, correction, time);
+            validate_residual(field, output, plan_.mesh_view().sizes.n_own);
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_boundary_residual(field, output, boundary, flags, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the full difference between corrected and base RHS to existing owned entries.
+    /// Start from the frozen base RHS for each outer iteration. Keep the material law, conditions and time consistent
+    /// with that base system. The boundary matrix slope must be independent of the correction.
     template<class Output, class Boundary, class Coefficient, class Correction>
     void add_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
         IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
-            const auto mesh = plan_.mesh_view();
-            scalar::detail::validate_output<Exec>(output, static_cast<std::size_t>(mesh.sizes.n_own));
-            const auto& exec = execution_space_instance();
-            const auto flags = status.device_flags(exec);
-            if constexpr (detail::corrected<Correction>) {
-                Kokkos::parallel_for("diffusion/correction_rows", Policy(exec, 0, mesh.sizes.n_own),
-                    detail::CorrectionRows<Space, Real, Output, decltype(law), Correction, decltype(flags)>{
-                        stencil_data(), output, law, correction, flags, time});
-                boundary.for_each_patch([&](auto range, const auto& condition) {
-                    using C = std::remove_cvref_t<decltype(condition)>;
-                    Kokkos::parallel_for("diffusion/correction_boundary", Policy(exec, range.begin, range.end),
-                        detail::CorrectionBoundary<Space, Real, Output, C, decltype(law), Correction, decltype(flags)>{
-                            boundary.geometry_view(), output, condition, law, correction, flags, time});
-                });
-            }
+            scalar::detail::validate_output<Exec>(output, owned_rows());
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_inner_correction(output, flags, all_inner_faces(), law, correction, time);
+            submit_boundary_correction(output, boundary, flags, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the explicit RHS correction for a selected range of inner faces.
+    /// @param output Owned RHS or residual entries to increment.
+    /// @param status Open batch using the plan's execution instance.
+    /// @param faces Half-open local face interval. Use {} to select all inner faces.
+    /// @param law Coefficient provider matching the frozen base system.
+    /// @param correction Gradient projection using current data for the selected faces.
+    /// @param time Evaluation time passed to the providers.
+    template<class Output, class Coefficient, class Correction>
+    void add_inner_correction_async(Output output, AssemblyStatus<Exec>& status, FaceRange faces,
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
+        mpi::guarded([&] {
+            faces = inner_range(faces);
+            validate_providers(law, correction, time);
+            scalar::detail::validate_output<Exec>(output, owned_rows());
+            const auto flags = status.device_flags(execution_space_instance());
+            if (faces.begin == faces.end) return;
+            submit_inner_correction(output, flags, faces, law, correction, time);
+        });
+    }
+
+    /// @brief Adds the change in the physical boundary RHS due to the explicit correction.
+    /// Submit once per RHS update. Keep the boundary matrix slope fixed.
+    template<class Output, class Boundary, class Coefficient, class Correction>
+    void add_boundary_correction_async(Output output, const Boundary& boundary, AssemblyStatus<Exec>& status,
+        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
+        mpi::guarded([&] {
+            validate_inputs(boundary, law, correction, time);
+            scalar::detail::validate_output<Exec>(output, owned_rows());
+            const auto flags = status.device_flags(execution_space_instance());
+            submit_boundary_correction(output, boundary, flags, law, correction, time);
         });
     }
 
@@ -145,7 +213,7 @@ public:
     template<class Field, class Boundary, class Coefficient, class Source, class Correction>
         requires (!std::is_arithmetic_v<Correction>)
     [[nodiscard]] BalanceResult balance(Field field, const Boundary& boundary,
-        IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const {
+            IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const {
         return mpi::guarded([&]() -> BalanceResult {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();
@@ -177,13 +245,121 @@ private:
     auto stencil_data() const {
         return detail::StencilData<Space>{plan_.mesh_view(), plan_.connectivity_view(), plan_.geometry_view()};
     }
-    template<class Boundary, class Law, class Correction>
-    void validate_inputs(const Boundary& boundary, const Law& law, const Correction& correction, Real time) const
-    {
-        detail::validate_boundary(plan_, boundary);
+    std::size_t owned_rows() const {
+        return static_cast<std::size_t>(plan_.mesh_view().sizes.n_own);
+    }
+
+    FaceRange all_inner_faces() const {
+        return {0, plan_.mesh_view().sizes.n_inner_faces};
+    }
+
+    FaceRange inner_range(FaceRange range) const {
+        const auto count = plan_.mesh_view().sizes.n_inner_faces;
+        if (range.end == -1) range.end = count;
+        mpi::require(range.begin >= 0 && range.end >= range.begin && range.end <= count,
+                     "Scalar diffusion: invalid inner face range");
+        return range;
+    }
+
+    template<class Target>
+    void validate_system(const Target& target) const {
+        const auto sizes = plan_.mesh_view().sizes;
+        const std::size_t rows = static_cast<std::size_t>(sizes.n_own);
+        scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
+        scalar::detail::validate_output<Exec>(target.rhs, rows);
+        mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
+            target.entries.owner_entries.extent(0) == static_cast<std::size_t>(sizes.n_inner_faces) &&
+            target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(sizes.n_internal_faces),
+            "Scalar diffusion: incompatible system slice/entry map");
+    }
+
+    template<class Field, class Output>
+    void validate_residual(const Field& field, const Output& output, LocalIndex input_size) const {
+        scalar::detail::validate_view<Exec>(field, static_cast<std::size_t>(input_size));
+        const auto rows = owned_rows();
+        scalar::detail::validate_output<Exec>(output, rows);
+        mpi::require(rows == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
+                     "Scalar diffusion: in-place residual is unsupported");
+    }
+
+    template<class Law, class Correction>
+    void validate_providers(const Law& law, const Correction& correction, Real time) const {
         mpi::require(std::isfinite(time), "Scalar diffusion: time must be finite");
         detail::validate_coefficient(plan_, law.coefficient);
         detail::validate_correction(plan_, correction);
+    }
+
+    template<class Boundary, class Law, class Correction>
+    void validate_inputs(const Boundary& boundary, const Law& law, const Correction& correction, Real time) const {
+        detail::validate_boundary(plan_, boundary);
+        validate_providers(law, correction, time);
+    }
+
+    template<class Target, class Law, class Correction>
+    void submit_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Law& law,
+                             const Correction& correction, Real time) const {
+        const auto& exec = execution_space_instance();
+        Kokkos::parallel_for("diffusion/add_rows", Policy(exec, 0, plan_.mesh_view().sizes.n_own),
+            detail::AddRows<Space, Real, Target, Law, Correction, Flags>{
+                stencil_data(), target, law, correction, flags, time, faces});
+    }
+
+    template<class Target, class Boundary, class Law, class Correction>
+    void submit_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
+                                const Law& law, const Correction& correction, Real time) const {
+        const auto& exec = execution_space_instance();
+        boundary.for_each_patch([&](auto range, const auto& condition) {
+            using C = std::remove_cvref_t<decltype(condition)>;
+            Kokkos::parallel_for("diffusion/add_boundary", Policy(exec, range.begin, range.end),
+                detail::AddBoundary<Space, Real, Target, C, Law, Correction, Flags>{
+                    boundary.geometry_view(), target, condition, law, correction, flags, time});
+        });
+    }
+
+    template<class Field, class Output, class Law, class Correction>
+    void submit_inner_residual(const Field& field, const Output& output, const Flags& flags, FaceRange faces,
+                               const Law& law, const Correction& correction, Real time) const {
+        const auto& exec = execution_space_instance();
+        Kokkos::parallel_for("diffusion/residual_rows", Policy(exec, 0, plan_.mesh_view().sizes.n_own),
+            detail::ResidualRows<Space, Real, Field, Output, Law, Correction, Flags>{
+                stencil_data(), field, output, law, correction, flags, time, faces});
+    }
+
+    template<class Field, class Output, class Boundary, class Law, class Correction>
+    void submit_boundary_residual(const Field& field, const Output& output, const Boundary& boundary,
+                                  const Flags& flags, const Law& law, const Correction& correction, Real time) const {
+        const auto& exec = execution_space_instance();
+        boundary.for_each_patch([&](auto range, const auto& condition) {
+            using C = std::remove_cvref_t<decltype(condition)>;
+            Kokkos::parallel_for("diffusion/residual_boundary", Policy(exec, range.begin, range.end),
+                detail::ResidualBoundary<Space, Real, Field, Output, C, Law, Correction, Flags>{
+                    boundary.geometry_view(), field, output, condition, law, correction, flags, time});
+        });
+    }
+
+    template<class Output, class Law, class Correction>
+    void submit_inner_correction(const Output& output, const Flags& flags, FaceRange faces, const Law& law,
+                                 const Correction& correction, Real time) const {
+        if constexpr (detail::corrected<Correction>) {
+            const auto& exec = execution_space_instance();
+            Kokkos::parallel_for("diffusion/correction_rows", Policy(exec, 0, plan_.mesh_view().sizes.n_own),
+                detail::CorrectionRows<Space, Real, Output, Law, Correction, Flags>{
+                    stencil_data(), output, law, correction, flags, time, faces});
+        }
+    }
+
+    template<class Output, class Boundary, class Law, class Correction>
+    void submit_boundary_correction(const Output& output, const Boundary& boundary, const Flags& flags,
+                                    const Law& law, const Correction& correction, Real time) const {
+        if constexpr (detail::corrected<Correction>) {
+            const auto& exec = execution_space_instance();
+            boundary.for_each_patch([&](auto range, const auto& condition) {
+                using C = std::remove_cvref_t<decltype(condition)>;
+                Kokkos::parallel_for("diffusion/correction_boundary", Policy(exec, range.begin, range.end),
+                    detail::CorrectionBoundary<Space, Real, Output, C, Law, Correction, Flags>{
+                        boundary.geometry_view(), output, condition, law, correction, flags, time});
+            });
+        }
     }
 };
 

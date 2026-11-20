@@ -3,6 +3,7 @@
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mesh/device/aux_storage.hpp>
 #include <krona/fields/field_storage.hpp>
+#include <krona/halo/exchange.hpp>
 
 #include <algorithm>
 #include <array>
@@ -294,6 +295,91 @@ void uncached(const Exec& exec)
     run_case(exec, false, false, true, false, false);
 }
 
+/// @brief Compares split and full assembly on a skewed mesh while a real halo exchange publishes ghosts.
+void split_ranges(const Exec& exec)
+{
+    const auto comm = mpi::CommView::world();
+    const auto f = skew_grid(comm);
+    Attached a(f, comm, exec, false);
+    const auto m = a.mesh.view();
+    const auto rows = static_cast<std::size_t>(m.sizes.n_own);
+    boundary::BoundaryLayout<Exec> layout(f.host, m, exec);
+    Boundary boundary(layout);
+    configure(boundary, f, true);
+
+    fields::FieldStorage<Real, 5, Exec> inputs("split diffusion inputs",
+        static_cast<std::size_t>(m.sizes.n_cells), fields::FieldLocation::Custom, exec);
+    const auto q = inputs.view();
+    constexpr Real time = Real(0.25);
+    Kokkos::parallel_for("test/prepare_split_diffusion", Kokkos::RangePolicy<Exec>(exec, 0, m.sizes.n_cells),
+        KOKKOS_LAMBDA(int cell) {
+            const auto i = static_cast<std::size_t>(cell);
+            if (cell >= m.sizes.n_own) {
+                // The first submissions must never read these values.
+                for (int c = 0; c < 5; ++c) q(i, c) = Kokkos::quiet_NaN_v<Real>;
+                return;
+            }
+            const Real x = static_cast<Real>(m.geometry.cell_centroid_x(i));
+            const Real y = static_cast<Real>(m.geometry.cell_centroid_y(i));
+            const Real z = static_cast<Real>(m.geometry.cell_centroid_z(i));
+            q(i, 0) = affine(x, y, z, time);
+            q(i, 1) = Real{1} + Real(0.1)*x;
+            q(i, 2) = x; q(i, 3) = y; q(i, 4) = z;
+        });
+    const auto field = q.component(0);
+    const auto owned_field = Kokkos::subview(field, std::pair<std::size_t, std::size_t>{0, rows});
+    const auto law = transport::IsotropicDiffusion{transport::InterpolatedCellCoefficient{q.component(1)}};
+    const auto correction = gr::GradientCorrection{gr::cell_gradients(q.component(2), q.component(3), q.component(4))};
+    halo::Exchange<Real, Exec> halo(m, a.mesh.halo_plan(), comm, 94, exec, halo::Transfer::HostStaged);
+    halo.add_field(q);
+    halo.prepare();
+
+    NativeSystem<double> split(f, exec), full(f, exec);
+    Kokkos::View<double*, Space> split_residual("split residual", rows), full_residual("full residual", rows);
+    Kokkos::View<double*, Space> split_correction("split correction", rows), full_correction("full correction", rows);
+    Kokkos::deep_copy(exec, split_residual, 0.);
+    Kokkos::deep_copy(exec, full_residual, 0.);
+    Kokkos::deep_copy(exec, split_correction, 0.);
+    Kokkos::deep_copy(exec, full_correction, 0.);
+
+    const td::DiffusionOperator op(a.plan);
+    const td::FaceRange local{0, m.sizes.n_internal_faces};
+    const td::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+    ts::AssemblyStatus<Exec> status(exec);
+    status.begin_async();
+    halo.start();
+    op.add_inner_system_async(split.view(), status, local, law, correction, time);
+    op.add_inner_residual_async(field, split_residual, status, local, law, correction, time);
+    op.add_inner_correction_async(split_correction, status, local, law, correction, time);
+    op.add_boundary_system_async(split.view(), boundary, status, law, correction, time);
+    op.add_boundary_residual_async(owned_field, split_residual, boundary, status, law, correction, time);
+    op.add_boundary_correction_async(split_correction, boundary, status, law, correction, time);
+
+    halo.finish_async();
+    op.add_inner_system_async(split.view(), status, interfaces, law, correction, time);
+    op.add_inner_residual_async(field, split_residual, status, interfaces, law, correction, time);
+    op.add_inner_correction_async(split_correction, status, {interfaces.begin, -1}, law, correction, time);
+    (void)status.check();
+    halo.wait();
+
+    status.begin_async();
+    op.add_system_async(full.view(), boundary, status, law, correction, time);
+    op.add_residual_async(field, full_residual, boundary, status, law, correction, time);
+    op.add_correction_async(full_correction, boundary, status, law, correction, time);
+    (void)status.check();
+
+    const double tolerance = std::max(2.e-11, 400. * static_cast<double>(Kokkos::epsilon_v<Real>));
+    const auto compare = [&](auto actual, auto expected, std::string_view label) {
+        const auto a_host = snapshot(actual, exec), e_host = snapshot(expected, exec);
+        for (std::size_t i = 0; i < a_host.extent(0); ++i)
+            test::near(a_host(i), e_host(i), tolerance, label);
+    };
+    compare(split.view().values, full.view().values, "split matrix");
+    compare(split.view().rhs, full.view().rhs, "split RHS");
+    compare(split_residual, full_residual, "split residual");
+    compare(split_correction, full_correction, "split correction");
+}
+
 /// @brief Checks geometric gradient weights and harmonic coefficients with and without cached metrics.
 void weights(const Exec& exec)
 {
@@ -376,7 +462,11 @@ void rejection(const Exec& exec, std::string_view which)
     const auto correction = gr::GradientCorrection{gr::cell_gradients(gx, gy, gz)};
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{which == "bad_coefficient" ? Real{-1} : Real{2}}};
     ts::AssemblyStatus<Exec> status(exec); status.begin_async();
-    td::DiffusionOperator(a.plan).add_residual_async(field, residual, boundary, status, law, correction);
+    const td::DiffusionOperator op(a.plan);
+    if (which == "bad_face_range")
+        op.add_inner_residual_async(field, residual, status, {0, f.host.n_inner_faces + 1}, law, correction);
+    else
+        op.add_residual_async(field, residual, boundary, status, law, correction);
     (void)status.check(); check(false, "invalid diffusion input was accepted");
 }
 
@@ -400,6 +490,9 @@ void bad_coefficient(const Exec& e) { rejection(e, "bad_coefficient"); }
 
 /// @brief Rejects a nonfinite prescribed boundary value.
 void bad_profile(const Exec& e) { rejection(e, "bad_profile"); }
+
+/// @brief Rejects an inner range that extends into the physical boundary faces.
+void bad_face_range(const Exec& e) { rejection(e, "bad_face_range"); }
 } // namespace
 
 /// @brief Runs native diffusion cases or one isolated invalid-input case.
@@ -407,9 +500,11 @@ int main(int argc, char** argv)
 {
     const std::array cases{test::Case{"orthogonal", orthogonal}, test::Case{"nonorthogonal", nonorthogonal},
         test::Case{"mixed_profiles", mixed_profiles}, test::Case{"float_storage", float_storage}, test::Case{"empty", empty}, test::Case{"duplicate", duplicate},
-        test::Case{"custom_correction", custom_correction}, test::Case{"uncached", uncached}};
+        test::Case{"custom_correction", custom_correction}, test::Case{"uncached", uncached},
+        test::Case{"split_ranges", split_ranges}};
     const std::array rejected{test::Case{"stale_metric", stale_metric}, test::Case{"stale_weight", stale_weight}, test::Case{"null_comm", null_comm},
-        test::Case{"short_gradient", short_gradient}, test::Case{"nan_gradient", nan_gradient}, test::Case{"bad_coefficient", bad_coefficient}, test::Case{"bad_profile", bad_profile}};
+        test::Case{"short_gradient", short_gradient}, test::Case{"nan_gradient", nan_gradient}, test::Case{"bad_coefficient", bad_coefficient},
+        test::Case{"bad_profile", bad_profile}, test::Case{"bad_face_range", bad_face_range}};
     if (argc == 2) for (const auto& c : rejected) if (c.name == argv[1]) return test::run(argc, argv, "transport.diffusion", rejected);
     if (argc == 2 && std::string_view(argv[1]) == "weights") {
         const std::array selected{test::Case{"weights", weights}};

@@ -39,7 +39,6 @@ struct StencilData {
     using Metric = mesh::device::detail::MeshArray<GeometryReal, Space, false>;
     using Offset = mesh::device::detail::MeshArray<std::size_t, Space, false>;
 
-    LocalIndex n_inner_faces;
     Index face_owner, face_neigh, faces;
     Offset offsets;
     Metric cell_x, cell_y, cell_z, face_x, face_y, face_z, normal_x, normal_y, normal_z, area;
@@ -49,7 +48,7 @@ struct StencilData {
     /// @brief Captures the arrays needed by interior-face kernels.
     StencilData(mesh::device::MeshView<Space> mesh, mesh::device::AuxConnectivityView<Space> conn,
                 mesh::device::AuxGeometryView<Space> geometry)
-        : n_inner_faces(mesh.sizes.n_inner_faces), face_owner(mesh.connectivity.face_owner),
+        : face_owner(mesh.connectivity.face_owner),
           face_neigh(mesh.connectivity.face_neigh), faces(conn.cell_faces), offsets(conn.cell_faces_offsets),
           cell_x(mesh.geometry.cell_centroid_x), cell_y(mesh.geometry.cell_centroid_y),
           cell_z(mesh.geometry.cell_centroid_z), face_x(mesh.geometry.face_centroid_x),

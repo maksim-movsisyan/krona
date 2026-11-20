@@ -310,6 +310,35 @@ A custom gradient provider returns three indexable values from `gradients(cell)`
 
 A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-context call operator. It need not store a member named `gradients`. If that member exists, its metadata is validated; otherwise an optional `correction.validate<Exec>(count)` is called. The interior callback receives the geometric owner weight. Use `grad::NoCorrection{}` to run the two-point scheme without projecting gradients.
 
+## Split inner faces for halo overlap
+
+The full `add_system_async()`, `add_residual_async()` and `add_correction_async()` calls run one pass over the owned rows for the inner contributions, followed by the physical boundary patches. For split submission, use the corresponding `add_inner_*_async()` for each selected face range and `add_boundary_*_async()` once for the boundary patches.
+
+An inner `FaceRange{begin, end}` is a half-open interval of local face IDs. `FaceRange{}` covers every inner face, `end = -1` extends to `n_inner_faces`, and `begin == end` selects no faces. Use disjoint ranges when adding contributions to the same target.
+
+| Range | Faces |
+|---|---|
+| `[0, n_internal_faces)` | Both adjacent cells are owned on this rank. |
+| `[n_internal_faces, n_inner_faces)` | The neighbour is an MPI ghost cell. |
+
+For example, start with the frozen base RHS and current owned gradients. If the halo exchanger and diffusion plan share the same execution instance, submit the interface range after `finish_async()` queues the ghost writes.
+
+```cpp
+const auto sizes = plan.mesh_view().sizes;
+status.begin_async();
+gradient_halo.start();
+diffusion.add_inner_correction_async(rhs, status, {0, sizes.n_internal_faces}, law, correction, time);
+diffusion.add_boundary_correction_async(rhs, boundary, status, law, correction, time);
+gradient_halo.finish_async();
+diffusion.add_inner_correction_async(
+    rhs, status, {sizes.n_internal_faces, sizes.n_inner_faces}, law, correction, time);
+(void)status.check();
+```
+
+Each submission requires all values actually read by its selected faces, including any inputs read by custom providers. The built-in boundary correction uses the owner gradient. Include the scalar field or a cell coefficient field in the exchange when the chosen operation needs its ghost values. For consumers on a different execution instance, wait for ghost writes before using them.
+
+Both inner submissions traverse the owned cell-to-face lists and filter by face ID before reading a neighbour. Splitting gives MPI an opportunity to progress during the first kernel, at the cost of a second traversal. Contributions are additive, so a split can change floating-point accumulation order.
+
 ## Diagnostics, ownership and asynchrony
 
 `AssemblyStatus` owns a small device flag array and a host mirror. Use **one `begin_async()` → contributions → `check()` batch** on the same execution instance. Flags persist across contributions. A kernel error detected by any rank in `check()` aborts the MPI job through `mpi::require`. Checks cover bad coefficients, sources, boundary relations, corrections and nonfinite or unrepresentable additions. Some entries may already have been updated when an error is detected.
@@ -322,7 +351,7 @@ A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-cont
 | `FaceAssemblyPlan` construction | Blocking and collective; builds numbering, graph and entry maps. |
 | `make_system_view()` | Local native access acquisition; may synchronize native host/device data. Does not commit. |
 | `AssemblyStatus::begin_async()` | Queues flag reset; no collective. Does not clear equation arrays. |
-| `add_system_async()`, `add_residual_async()`, `add_correction_async()`, `SourceOperator::add_async()` | Queue local kernels; no fence, halo exchange or MPI collective. |
+| Full and split diffusion submissions, `SourceOperator::add_async()` | Queue local kernels on the supplied execution instance. |
 | `AssemblyStatus::check()` | Copies the local flags to host, fences the execution instance and checks the flags. |
 | Matrix/vector `commit()` | Completes pending native access on its recorded instance and closes the access batch; no MPI collective. |
 | `linalg::Solver::solve(rhs, x)` | Blocking collective linear solve; operates on committed algebra objects. Does not publish application fields. |

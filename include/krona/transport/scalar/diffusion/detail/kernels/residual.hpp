@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/transport/scalar/diffusion/detail/face_flux.hpp>
+#include <krona/transport/scalar/diffusion/types.hpp>
 #include <krona/boundary/geometry_view.hpp>
 
 namespace krona::transport::scalar::diffusion::detail {
@@ -16,6 +17,7 @@ namespace krona::transport::scalar::diffusion::detail {
 template<class Space, class Real, class Field, class Output, class Law, class Correction, class Flags>
 struct ResidualRows {
     StencilData<Space> data; Field field; Output output; Law law; Correction correction; Flags flags; Real time;
+    FaceRange range;
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
         const std::size_t i = static_cast<std::size_t>(cell);
         const Real own = static_cast<Real>(field(i));
@@ -23,7 +25,8 @@ struct ResidualRows {
         Real residual = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
-            if (face >= data.n_inner_faces) continue;
+            // Filter before loading the neighbour, since its ghost value may still be in flight.
+            if (face < range.begin || face >= range.end) continue;
             const std::size_t f = static_cast<std::size_t>(face);
             const bool owner = data.face_owner(f) == cell;
             const auto other = owner ? data.face_neigh(f) : data.face_owner(f);

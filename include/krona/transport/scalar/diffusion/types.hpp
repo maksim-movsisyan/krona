@@ -1,6 +1,14 @@
 #pragma once
 
+#include <krona/config.hpp>
+
 namespace krona::transport::scalar::diffusion {
+
+/// @brief Half-open interval of local inner faces, including faces at MPI interfaces.
+struct FaceRange {
+    LocalIndex begin = 0;
+    LocalIndex end = -1; ///< Use -1 to select through the last inner face.
+};
 
 /// @brief Geometry checks for a diffusion plan.
 struct DiffusionOptions {

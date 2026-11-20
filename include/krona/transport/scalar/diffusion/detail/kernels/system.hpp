@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/transport/scalar/diffusion/detail/face_flux.hpp>
+#include <krona/transport/scalar/diffusion/types.hpp>
 #include <krona/boundary/geometry_view.hpp>
 
 namespace krona::transport::scalar::diffusion::detail {
@@ -15,13 +16,14 @@ namespace krona::transport::scalar::diffusion::detail {
 template<class Space, class Real, class Target, class Law, class Correction, class Flags>
 struct AddRows {
     StencilData<Space> data; Target target; Law law; Correction correction; Flags flags; Real time;
+    FaceRange range;
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex cell) const {
         const std::size_t i = static_cast<std::size_t>(cell);
         using Value = typename decltype(target.values)::non_const_value_type;
         Real diagonal = 0, explicit_rhs = 0;
         for (auto k = data.offsets(i); k < data.offsets(i+1); ++k) {
             const auto face = data.faces(k);
-            if (face >= data.n_inner_faces) continue;
+            if (face < range.begin || face >= range.end) continue;
             const auto flux = interior_flux<Real>(data, face, law, correction, flags, time);
             const Real a = flux.conductance;
             if (!(a > Real{0})) continue;
