@@ -195,6 +195,7 @@ int solve(const Options& options, mpi::CommView comm) {
         geometry_mask = geometry_mask | AuxGeomType::FaceInterpolationWeights | AuxGeomType::FaceNonOrthogonalityVector;
     if (gradients_needed) 
         geometry_mask = geometry_mask | grad::requirements(config.gradient).geometry;
+    
     const auto host_conn = mesh::host::build_aux_connectivity(host, AuxConnType::CellFaces);
     const auto host_geom = mesh::host::build_aux_geometry(host, geometry_mask);
     const mesh::device::MeshStorage device(host, {}, exec);
@@ -299,6 +300,7 @@ int solve(const Options& options, mpi::CommView comm) {
         const Real next = steady ? Real{0} : static_cast<Real>(step + 1)*dt;
         mpi::require(steady || (std::isfinite(next) && next > time), "Scalar transport: time cannot advance");
         const auto source = make_source(problem, m, next, static_cast<Real>(config.source));
+
         const auto with_time_term = [&](const auto& submit) {
             if (steady) return;
             const tt::TimeLevel accepted_n{mass, q_n};
@@ -313,10 +315,24 @@ int solve(const Options& options, mpi::CommView comm) {
             Kokkos::deep_copy(exec, target.values, SolverReal{0});
             Kokkos::deep_copy(exec, target.rhs, SolverReal{0});
             status.begin_async();
-            with_time_term([&](auto weights, auto history) { temporal.add_system_async(target, status, weights, mass, history); });
-            if (convection) convection->add_system_async(target, boundary, status, flux, cv::NoReconstruction{}, cv::FixedValueInflow{}, next);
-            if (diffusion) diffusion->add_system_async(target, boundary, status, law, next);
+
+            // add time derivatives to matrix and rhs (this driver solve equation for function)
+            with_time_term([&](auto weights, auto history) { 
+                temporal.add_system_async(target, status, weights, mass, history); 
+            });
+
+            // add convection contribution
+            if (convection) 
+                convection->add_system_async(target, boundary, status, flux, cv::NoReconstruction{},
+                                             cv::FixedValueInflow{}, next);
+
+            // add diffusion contribution
+            if (diffusion) 
+                diffusion->add_system_async(target, boundary, status, law, next);
+
+            // add source contribution
             sources.add_async(target.rhs, status, source);
+            
             (void)status.check();
             if (corrections) Kokkos::deep_copy(exec, base_rhs, target.rhs);
         }
@@ -378,6 +394,7 @@ int solve(const Options& options, mpi::CommView comm) {
         }
         if (gradients_needed) boundary_status.check();
         if (corrections) (void)status.check();
+        
         // Accept t^(n+1). Save the old t^n for BDF2 before promoting the candidate to q_n.
         if (bdf2) Kokkos::deep_copy(exec, q_nm1, q_n);
         if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
