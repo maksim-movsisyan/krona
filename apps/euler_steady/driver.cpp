@@ -1,7 +1,6 @@
 #include "driver.hpp"
 #include "cli.hpp"
 #include "config.hpp"
-#include "reconstruction.hpp"
 #include "step.hpp"
 
 #include <krona/boundary/physical/tabulated_config.hpp>
@@ -106,10 +105,12 @@ int solve(const Options& options, mpi::CommView comm) {
     const auto bc_config = ph::read_config(options.boundary, comm);
     const auto output_directory = options.vtu_directory.empty()
         ? config.output_directory : std::filesystem::path{options.vtu_directory};
+
     const auto& controls = config.pseudo_time;
     const Gas gas{compute_value(config.gamma, "Steady Euler: gamma is unrepresentable"),
-                  compute_value(config.gas_constant, "Steady Euler: gas_constant is unrepresentable")};
+                  compute_value(config.gas_constant, "Steady Euler: gas_constant is unrepresentable")};         
     gas.validate();
+
     const Real cfl = compute_value(controls.cfl, "Steady Euler: CFL is unrepresentable");
     const Real relaxation = compute_value(controls.relaxation, "Steady Euler: relaxation is unrepresentable");
     mpi::require(cfl > Real{0} && relaxation > Real{0}, "Steady Euler: CFL or relaxation rounded to zero");
@@ -128,7 +129,7 @@ int solve(const Options& options, mpi::CommView comm) {
     const mesh::device::MeshStorage device(host, {}, exec);
     const mesh::device::AuxConnectivityStorage connectivity(host_connectivity, exec);
     const auto m = device.view();
-    const auto owned = static_cast<std::size_t>(m.sizes.n_own);
+    const std::size_t owned = static_cast<std::size_t>(m.sizes.n_own);
 
     const boundary::BoundaryLayout<Exec, Real> layout(host, m, exec);
     using Model = ph::Compressible<Gas, ph::PerfectGasCharacteristics>;
@@ -144,6 +145,7 @@ int solve(const Options& options, mpi::CommView comm) {
     const auto q_view = q.view();
     const auto primitive = ph::primitive_components(q_view.component(0), q_view.component(1), q_view.component(2),
                                                     q_view.component(3), q_view.component(4));
+                                                    
     // Initialize the extended field. The second-order path fills physical-face samples before reconstruction.
     q.fill_async(exec, StorageReal{0});
     initialize_state(exec, m, conserved, primitive, gas, options.problem, reference);
@@ -225,7 +227,7 @@ int solve(const Options& options, mpi::CommView comm) {
                 converged ? "converged" : "iteration limit reached", updates, initial_norm, norm);
         return converged ? EXIT_SUCCESS : EXIT_FAILURE;
     };
-
+ 
     if (config.reconstruction == ReconstructionOrder::First) {
         const auto reconstruction = eu::Reconstruction{rec::face_profiles(stencil, values, rec::FirstOrder{})};
         return run_iterations(reconstruction, [] {});
@@ -250,9 +252,8 @@ int solve(const Options& options, mpi::CommView comm) {
 
     ph::Status<Exec> boundary_status(exec);
     return run_iterations(reconstruction, [&] {
-        // Ghost primitives are current. Publish physical samples before computing owned slopes.
         boundary_status.begin_async();
-        boundary.for_each_face_async(FillInviscidFaceSamples{primitive, boundary.model(), boundary_status.device_flags(exec)});
+        boundary.apply_async(primitive, boundary_status);
         boundary_status.check();
         gradient.apply_async(q_view, gradients.view());
         if (limit)

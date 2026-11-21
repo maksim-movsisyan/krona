@@ -73,9 +73,10 @@ void add_pseudo_time_diagonal(const Exec& exec, MeshView mesh, mesh::device::Aux
             const Real sound = Kokkos::sqrt(gas.gamma * gas.gas_constant * state.temperature);
             Real acoustic_sum = 0;
             for (auto k = connectivity.cell_faces_offsets(cell); k < connectivity.cell_faces_offsets(cell + 1); ++k) {
-                const auto face = static_cast<std::size_t>(connectivity.cell_faces(k));
+                const std::size_t face = static_cast<std::size_t>(connectivity.cell_faces(k));
                 const ri::Vector<Real> normal{static_cast<Real>(geometry.face_normal_x(face)),
-                    static_cast<Real>(geometry.face_normal_y(face)), static_cast<Real>(geometry.face_normal_z(face))};
+                                              static_cast<Real>(geometry.face_normal_y(face)),
+                                              static_cast<Real>(geometry.face_normal_z(face))};
                 acoustic_sum += static_cast<Real>(geometry.face_area(face)) *
                     (Kokkos::abs(state.velocity.dot(normal)) + sound);
             }

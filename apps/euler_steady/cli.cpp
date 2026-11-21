@@ -108,8 +108,9 @@ void usage(std::FILE* stream) noexcept {
                 case_seen = true;
                 if (value == "custom") result.options.problem = Case::custom;
                 else if (value == "channel") result.options.problem = Case::channel;
+                else if (value == "wedge") result.options.problem = Case::wedge;
                 else {
-                    fail("Invalid case, expected custom or channel", value);
+                    fail("Invalid case, expected custom or channel / wedge", value);
                     return result;
                 }
             }

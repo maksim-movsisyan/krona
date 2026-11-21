@@ -10,9 +10,9 @@ namespace krona::transport::euler {
 /// @tparam Profiles Bound formulas that can evaluate both traces and the physical-face interior trace.
 template <class Profiles>
 struct Reconstruction {
-    Profiles profiles;  ///< Bound cell primitives, stencil and formulas.
-    using inner_formula = decltype(profiles.inner);
-    using boundary_formula = decltype(profiles.boundary);
+    Profiles profiles; ///< Bound cell primitives, stencil and formulas.
+    using inner_formula = decltype(Profiles::inner);
+    using boundary_formula = decltype(Profiles::boundary);
 
     /// @brief Returns the primitive pack shared by both formulas.
     [[nodiscard]] KOKKOS_INLINE_FUNCTION const auto& values() const {

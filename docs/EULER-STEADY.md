@@ -51,8 +51,10 @@ Select one of the two orders in `[euler.numerics]`.
   component's face extrapolation by the local stencil values. The limiter can
   reduce the order locally, for example near extrema or discontinuities.
 
-The wall samples impose the inviscid slip trace. The boundary Riemann solver
-uses an exterior state built from the reconstructed interior trace.
+The app applies the configured boundary conditions to fill the samples used
+by the gradient and limiter. Filling a heat-flux wall requires a heat-flux law,
+which this app does not supply. The boundary Riemann solver uses an exterior
+state built from the reconstructed interior trace.
 The compact Jacobian continues to use cell-centred frozen Rusanov blocks
 on inner faces. On a physical boundary the finite-difference Jacobian
 holds the current reconstruction increment and limiter factors fixed.
