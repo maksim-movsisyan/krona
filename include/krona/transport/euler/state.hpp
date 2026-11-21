@@ -19,9 +19,10 @@ KOKKOS_INLINE_FUNCTION bool state_valid(numerics::riemann::State<R> q) {
         Kokkos::isfinite(u.density)&&Kokkos::isfinite(u.momentum.x)&&Kokkos::isfinite(u.momentum.y)&&
         Kokkos::isfinite(u.momentum.z)&&Kokkos::isfinite(u.total_energy_density);
 }
+// Check pressure, temperature and velocity before calling a potentially expensive EOS.
 template<class R, class StateLaw>
 KOKKOS_INLINE_FUNCTION numerics::riemann::State<R> prepare_state(const StateLaw& law,
-    boundary::physical::Primitive<R, true> primitive) {
+                                                                 boundary::physical::Primitive<R, true> primitive) {
     if (!primitive_valid(primitive)) return {};
     return law(primitive);
 }
@@ -37,24 +38,32 @@ KOKKOS_INLINE_FUNCTION auto primitive(const Kokkos::Array<R,5>& a)
 
 } // namespace detail
 
-/// @brief Additional model-domain guard; finite positive p,T are always checked before this guard.
+/// @brief Default domain guard for an EOS that accepts any finite positive pressure and temperature.
+/// The caller checks those basic conditions before using the guard.
 struct PositivePT {
     template<class EOS,class Primitive>
     KOKKOS_INLINE_FUNCTION bool operator()(const EOS&,const Primitive&) const { return true; }
 };
 
-/// @brief EOS preparation policy. Generic EOS keeps its error policy; Domain must cover its admissible p,T region.
+/// @brief Prepares a Riemann state from pressure, velocity and temperature (StateLaw above).
+/// @tparam EOS Equation of state used to recover density, specific internal energy and sound speed.
+/// @tparam Domain Callable that decides whether to pass a primitive state to this EOS.
+/// Supply a guard if the EOS has a narrower domain than positive pressure and temperature.
 template<class EOS,class Domain=PositivePT>
 struct Thermodynamics {
-    EOS eos;
-    Domain domain{};
+    EOS eos;         ///< Equation of state copied into the kernel.
+    Domain domain{}; ///< Optional extra check before calling the EOS.
+    /// @brief Checks EOS and domain configuration on the host.
     void validate() const {
         eos.validate();
         if constexpr(requires{domain.validate();})domain.validate();
     }
+    /// @brief Converts one primitive state, returning an invalid default state when the guard fails.
+    /// @tparam R Scalar type of the input and resulting state.
+    /// @param q Pressure, Cartesian velocity and absolute temperature.
     template<class R>
     KOKKOS_INLINE_FUNCTION numerics::riemann::State<R> operator()(boundary::physical::Primitive<R,true> q) const {
-        if(!detail::primitive_valid(q)||!domain(eos,q))return {};
+        if(!detail::primitive_valid(q) || !domain(eos,q)) return {};
         return numerics::riemann::from_pT(eos, q.pressure, q.temperature, q.velocity);
     }
 };

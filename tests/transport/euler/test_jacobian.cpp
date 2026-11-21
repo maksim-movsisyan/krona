@@ -105,7 +105,7 @@ void inner_blocks(const Exec& exec, Grid& grid)
     const auto split = grid.host.n_internal_faces;
     op.add_inner_jacobian_async(target, fields.primitive(), status, inner, {0, split});
     op.add_inner_jacobian_async(target, fields.primitive(), status, inner, {split, grid.host.n_inner_faces});
-    (void)status.check(comm);
+    (void)status.check();
     const auto product = matrix_product(matrix, grid, exec);
 
     // Independent finite differences of the frozen Rusanov flux, with native remote-column import.
@@ -184,7 +184,7 @@ void boundary_blocks(const Exec& exec, Grid& grid)
     krona::execution::complete(exec, [&] { Kokkos::deep_copy(exec, gradient.view().kokkos_view(), gradient_host); });
     const rec::StencilData<Space, R> stencil(grid.storage.view(), grid.connectivity.view());
     const auto reconstruction = eu::Reconstruction{rec::face_profiles(
-        stencil, fields.primitive(), rec::Linear{rec::gradient_pack(gradient.view())})};
+        stencil, fields.cell_primitives(grid), rec::Linear{rec::gradient_pack(gradient.view())})};
 
     const auto fill = [&](R step) {
         auto p = fields.pressure.create_host_buffer();
@@ -220,7 +220,7 @@ void boundary_blocks(const Exec& exec, Grid& grid)
     Kokkos::deep_copy(exec, target.blocks, krona::SolverReal{0});
     status.begin_async();
     op.add_jacobian_async(target, reconstruction, boundary, status, ZeroInner{}, closure, time);
-    (void)status.check(comm);
+    (void)status.check();
     const auto product = matrix_product(matrix, grid, exec);
 
     const auto residual = [&](R step) {
@@ -228,7 +228,7 @@ void boundary_blocks(const Exec& exec, Grid& grid)
         fields.zero(exec);
         status.begin_async();
         op.add_boundary_residual_async(reconstruction, fields.output(), boundary, status, closure, time);
-        (void)status.check(comm);
+        (void)status.check();
         return fields.snapshot();
     };
     const R h = static_cast<R>(std::cbrt(std::max(static_cast<double>(Kokkos::epsilon_v<R>),

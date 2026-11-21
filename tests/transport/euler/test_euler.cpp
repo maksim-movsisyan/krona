@@ -1,5 +1,6 @@
 #include <common/test_support.hpp>
 #include "fixture.hpp"
+#include <krona/mpi/collectives.hpp>
 #include <krona/transport/diffusion/isotropic.hpp>
 #include <krona/numerics/riemann/roe.hpp>
 #include <array>
@@ -17,7 +18,7 @@ void uniform_run(const Exec& exec,Solver solver)
     publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()},solver};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);
-    const auto report=status.check(comm);check(report.reconstruction_fallbacks==0,"uniform reconstruction has no fallback");
+    const auto report=status.check();check(report.reconstruction_fallbacks==0,"uniform reconstruction has no fallback");
     const auto result=fields.snapshot();for(std::size_t i=0;i<result.extent(0);++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"uniform flow residual");
 }
 
@@ -31,19 +32,19 @@ void split_additive(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary,true);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto expected=fields.snapshot();fields.zero(exec,A{2});
     status.begin_async();
     for(std::size_t i=0;i<2;++i){
         op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status,{0,grid.host.n_internal_faces},{i,i+1});
         op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{0},{i,i+1});
     }
-    (void)status.check(comm);
+    (void)status.check();
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(result(i,c),expected(i,c)+2.,tolerance(),"split calls preserve existing residual");
 
     // Internal flux cancellation in canonical orientation, independently of physical boundaries.
-    fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
+    fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check();
     const auto inner=fields.snapshot();for(int c=0;c<5;++c)near(inner(0,c)+inner(1,c),0.,tolerance(),"internal conservation");
 }
 
@@ -84,34 +85,37 @@ void affine(const Exec& exec)
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     const auto reconstruction=high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())});
     status.begin_async();op.add_residual_async(reconstruction,fields.output(),boundary,status);
-    check(status.check(comm).reconstruction_fallbacks==0,"affine states admissible");
+    check(status.check().reconstruction_fallbacks==0,"affine states admissible");
     const auto result=fields.snapshot();const eu::Thermodynamics thermodynamics{gas()};
+    // This reference uses the exact affine profile. MIXED rounds stored values and gradients
+    // before reconstruction. Use storage precision for these comparisons only.
+    const double affine_tolerance = std::max(tolerance(), 32.0 * static_cast<double>(Kokkos::epsilon_v<S>));
     for(int i=0;i<2;++i){
         const auto expected=ri::physical_flux(thermodynamics(profile(i,true)),ri::Vector<R>{1,0,0})-
             ri::physical_flux(thermodynamics(profile(i+1.,true)),ri::Vector<R>{1,0,0});
         const std::array<double,5> values{static_cast<double>(expected.mass),static_cast<double>(expected.momentum.x),static_cast<double>(expected.momentum.y),static_cast<double>(expected.momentum.z),static_cast<double>(expected.energy)};
-        for(int c=0;c<5;++c)near(result(static_cast<std::size_t>(i),c),values[static_cast<std::size_t>(c)],tolerance(),"affine face flux residual");
+        for(int c=0;c<5;++c)near(result(static_cast<std::size_t>(i),c),values[static_cast<std::size_t>(c)],affine_tolerance,"affine face flux residual");
     }
     fields.zero(exec);status.begin_async();
-    op.add_residual_async(high_order(grid,fields,ScaledLinear{rec::Linear{rec::gradient_pack(gradients.view())}, R{1}}),fields.output(),boundary,status);(void)status.check(comm);
+    op.add_residual_async(high_order(grid,fields,ScaledLinear{rec::Linear{rec::gradient_pack(gradients.view())}, R{1}}),fields.output(),boundary,status);(void)status.check();
     const auto configured=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(configured(i,c),result(i,c),tolerance(),"boundary scheme inherits configured parameters");
     fields.zero(exec);status.begin_async();
-    op.add_residual_async(reconstruction,fields.output(),boundary,status,eu::EvaluatedExterior<>{});(void)status.check(comm);
+    op.add_residual_async(reconstruction,fields.output(),boundary,status,eu::EvaluatedExterior<>{});(void)status.check();
     const auto evaluated=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
-        near(evaluated(i,c),result(i,c),tolerance(),"boundary re-evaluation from reconstructed inside");
+        near(evaluated(i,c),result(i,c),affine_tolerance,"boundary re-evaluation from reconstructed inside");
 
     // The TVD/Darwish adapter uses the same five-component batch and canonical stencil.
     fields.zero(exec);status.begin_async();
-    op.add_inner_residual_async(high_order(grid,fields,rec::Tvd{rec::gradient_pack(gradients.view())}),fields.output(),status);(void)status.check(comm);
+    op.add_inner_residual_async(high_order(grid,fields,rec::Tvd{rec::gradient_pack(gradients.view())}),fields.output(),status);(void)status.check();
     const auto tvd=fields.snapshot();const auto f=ri::physical_flux(thermodynamics(profile(1.,true)),ri::Vector<R>{1,0,0});
-    near(tvd(0,0),-static_cast<double>(f.mass),tolerance(),"TVD internal face");near(tvd(0,4),-static_cast<double>(f.energy),tolerance(),"TVD batch energy");
-    fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
+    near(tvd(0,0),-static_cast<double>(f.mass),affine_tolerance,"TVD internal face");near(tvd(0,4),-static_cast<double>(f.energy),affine_tolerance,"TVD batch energy");
+    fields.zero(exec);status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check();
     const auto first_order=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,1,Exec> factors("factors",2,krona::fields::FieldLocation::Custom,exec);factors.fill_async(exec,S{0});
     const auto unlimited = high_order(grid, fields, rec::Linear{rec::gradient_pack(gradients.view())});
     const auto limited = eu::Reconstruction{rec::limited(unlimited.profiles, krona::fields::pack(factors.view()))};
-    status.begin_async();op.add_inner_residual_async(limited,fields.output(),status);(void)status.check(comm);
+    status.begin_async();op.add_inner_residual_async(limited,fields.output(),status);(void)status.check();
     const auto result_limited=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(result_limited(i,c),first_order(i,c),tolerance(),"zero external factors select first order");
 }
@@ -123,12 +127,12 @@ void reconstruction_fallback(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);const auto expected=fields.snapshot();fields.zero(exec);
+    status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check();const auto expected=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,15,Exec> gradients("bad_increment",2,krona::fields::FieldLocation::Custom,exec);
     gradients.fill_async(exec,S{0});auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
     h(0,0)=-10.;h(1,0)=10.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
     status.begin_async();op.add_inner_residual_async(high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())}),fields.output(),status);
-    const auto report=status.check(comm);check(report.reconstruction_fallbacks==4,"two bad sides per two row evaluations");
+    const auto report=status.check();check(report.reconstruction_fallbacks==4,"two bad sides per two row evaluations");
     const auto actual=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(actual(i,c),expected(i,c),tolerance(),"whole-side first-order fallback");
 }
 
@@ -141,11 +145,11 @@ void walls(const Exec& exec)
     boundary.set(0,ph::IsothermalWall<R>{R{2}});boundary.set(1,ph::HeatFluxWall<R>{static_cast<R>(0.1)});boundary.set(2,ph::AdiabaticWall<R>{});
     publish_boundary(boundary,fields.physical(),krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<R>{R{1}}});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto result=fields.snapshot();double mass=0,energy=0;for(std::size_t i=0;i<2;++i){mass+=result(i,0);energy+=result(i,4);}
     near(mass,0.,tolerance(),"stationary walls have zero inviscid mass flux");near(energy,0.,tolerance(),"wall heat data do not enter Euler energy flux");
     fields.zero(exec);status.begin_async();
-    op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{});(void)status.check(comm);
+    op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{});(void)status.check();
     const auto evaluated=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(evaluated(i,c),result(i,c),tolerance(),"inviscid wall re-evaluation needs no thermal law");
 }
@@ -157,7 +161,7 @@ void layouts(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"strided component packs");
 }
 
@@ -165,6 +169,16 @@ void layouts(const Exec& exec)
 void distributed(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();check(comm.size()>=2,"distributed test needs at least two ranks");
+    // Only rank zero checks this batch. A collective inside check() would block here.
+    if (comm.rank() == 0) {
+        eu::AssemblyStatus<Exec> local_status(exec);
+        local_status.begin_async();
+        const auto report = local_status.check();
+        check(report.reconstruction_fallbacks == 0 && report.riemann_fallbacks == 0,
+              "status check can complete on one rank");
+    }
+    krona::mpi::barrier(comm);
+
     Grid grid(comm,exec,comm.rank(),1,comm.size());Fields<> fields(grid,exec);fields.initialize(grid,exec);
     const auto own=profile(comm.rank()+0.5,true);
     std::array<double,5> local{static_cast<double>(own.pressure),static_cast<double>(own.velocity.x),0,0,static_cast<double>(own.temperature)};
@@ -180,9 +194,14 @@ void distributed(const Exec& exec)
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary,true);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status,{grid.host.n_internal_faces,grid.host.n_inner_faces});
-    op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto result=fields.snapshot();const eu::Thermodynamics law{gas()};const ri::Hllc<> solver;
-    auto state=[&](int rank){return law(profile(rank+0.5,true));};
+    // Evaluate the reference with exactly the same representable cell values as the kernel.
+    const auto state = [&](int rank) {
+        const auto base = static_cast<std::size_t>(rank) * 5;
+        const auto stored = [&](std::size_t c) { return static_cast<R>(static_cast<S>(gathered[base + c])); };
+        return law(ph::Primitive<R, true>{stored(0), {stored(1), stored(2), stored(3)}, stored(4)});
+    };
     const auto left=comm.rank()==0?solver(law(profile(0.,true)),state(0),ri::Vector<R>{1,0,0}).flux:
         solver(state(comm.rank()-1),state(comm.rank()),ri::Vector<R>{1,0,0}).flux;
     const auto right=comm.rank()+1==comm.size()?ri::physical_flux(state(comm.rank()),ri::Vector<R>{1,0,0}):
@@ -215,7 +234,7 @@ void partition_algebra(const Exec& exec)
     };
     Grid serial(comm,exec,0,3,3);Fields<> whole(serial,exec);initialize(whole,serial);
     const eu::EulerOperator serial_op{serial.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();serial_op.add_inner_residual_async(whole.reconstruction(serial),whole.output(),status);(void)status.check(comm);
+    status.begin_async();serial_op.add_inner_residual_async(whole.reconstruction(serial),whole.output(),status);(void)status.check();
 
     // Compare each synthetic partition against the same rows of one complete system.
     const auto reference=whole.snapshot();
@@ -223,7 +242,7 @@ void partition_algebra(const Exec& exec)
         // Synthetic partitions with explicit ghost values; this checks the algebra without a multi-process runtime.
         Grid piece(comm,exec,part,1,3);Fields<> fields(piece,exec);initialize(fields,piece);
         const eu::EulerOperator op{piece.plan,eu::Thermodynamics{gas()}};
-        status.begin_async();op.add_inner_residual_async(fields.reconstruction(piece),fields.output(),status);(void)status.check(comm);
+        status.begin_async();op.add_inner_residual_async(fields.reconstruction(piece),fields.output(),status);(void)status.check();
         const auto result=fields.snapshot();for(int c=0;c<5;++c)
             near(result(0,c),reference(static_cast<std::size_t>(part),c),tolerance(),"partition-independent subsonic residual");
     }
@@ -246,7 +265,7 @@ void custom_time(const Exec& exec)
     boundary.set(0,TimeBoundary{});boundary.set(1,ph::SupersonicOutlet{});boundary.set(2,ph::Symmetry{});
     publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check();
     const auto result=fields.snapshot();auto external=profile(0.);external.pressure=static_cast<R>(1.2);
     const eu::Thermodynamics law{gas()};const ri::Hllc<> solver;
     const auto f=solver(law(external),law(profile(0.5)),ri::Vector<R>{1,0,0}).flux-ri::physical_flux(law(profile(0.5)),ri::Vector<R>{1,0,0});
@@ -262,7 +281,7 @@ void empty(const Exec& exec)
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
     status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);
-    const auto report=status.check(comm);check(report.reconstruction_fallbacks==0&&report.riemann_fallbacks==0,"empty rank is a no-op");
+    const auto report=status.check();check(report.reconstruction_fallbacks==0&&report.riemann_fallbacks==0,"empty rank is a no-op");
 }
 
 /// @brief Checks that prepared inlet-face values override the stored constant condition.
@@ -274,10 +293,11 @@ void prepared_profile(const Exec& exec)
 
     // A caller-provided profile overrides the already prepared inlet face, without changing the stored condition.
     const auto index=static_cast<std::size_t>(grid.host.n_cells);
-    Kokkos::deep_copy(exec,Kokkos::subview(fields.pressure.view().kokkos_view(),index),static_cast<S>(1.2));
+    const auto inlet_pressure = static_cast<S>(1.2);
+    Kokkos::deep_copy(exec,Kokkos::subview(fields.pressure.view().kokkos_view(),index),inlet_pressure);
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
-    const auto result=fields.snapshot();auto face=profile(0.);face.pressure=static_cast<R>(1.2);const eu::Thermodynamics law{gas()};
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
+    const auto result=fields.snapshot();auto face=profile(0.);face.pressure=static_cast<R>(inlet_pressure);const eu::Thermodynamics law{gas()};
     const auto expected=ri::Hllc<>{}(law(face),law(profile(0.5)),ri::Vector<R>{1,0,0}).flux-ri::physical_flux(law(profile(0.5)),ri::Vector<R>{1,0,0});
     near(result(0,0),static_cast<double>(expected.mass),tolerance(),"prepared inlet profile is consumed");
     near(result(0,4),static_cast<double>(expected.energy),tolerance(),"prepared inlet energy");
@@ -291,7 +311,7 @@ void reject_boundary(const Exec& exec)
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
     Kokkos::deep_copy(exec,Kokkos::subview(fields.temperature.view().kokkos_view(),static_cast<std::size_t>(grid.host.n_cells)),S{0});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);status.begin_async();
-    op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    op.add_boundary_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
 }
 
 /// @brief Checks boundary row mapping for unlabelled physical faces.
@@ -301,7 +321,7 @@ void unlabelled(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);boundary.set_unlabelled(ph::Symmetry{});
     publish_boundary(boundary,fields.physical());const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),0.,tolerance(),"unlabelled patch row map");
 }
 
@@ -327,7 +347,7 @@ void eos_domain(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
     const eu::EulerOperator baseline{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();baseline.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);const auto expected=fields.snapshot();fields.zero(exec);
+    status.begin_async();baseline.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check();const auto expected=fields.snapshot();fields.zero(exec);
     krona::fields::FieldStorage<S,15,Exec> gradients("domain_gradient",2,krona::fields::FieldLocation::Custom,exec);
     auto h=gradients.create_host_buffer();for(std::size_t i=0;i<2;++i)for(int c=0;c<15;++c)h(i,c)=0;
 
@@ -335,7 +355,7 @@ void eos_domain(const Exec& exec)
     h(0,0)=2.;h(1,0)=-2.;krona::execution::complete(exec,[&]{Kokkos::deep_copy(exec,gradients.view().kokkos_view(),h);});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{RestrictedEOS{},PressureDomain{}}};status.begin_async();
     op.add_inner_residual_async(high_order(grid,fields,rec::Linear{rec::gradient_pack(gradients.view())}),fields.output(),status);
-    check(status.check(comm).reconstruction_fallbacks==4,"EOS domain checked before calling restricted EOS");
+    check(status.check().reconstruction_fallbacks==4,"EOS domain checked before calling restricted EOS");
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)near(result(i,c),expected(i,c),tolerance(),"domain fallback");
 }
 
@@ -346,7 +366,7 @@ void geometry(const Exec& exec)
     krona::boundary::BoundaryLayout<Exec,R> boundary_layout(grid.host,grid.storage.view(),exec);
     Boundary boundary(boundary_layout,Model{gas(),{}});open_boundaries(boundary);publish_boundary(boundary,fields.physical());
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()},ri::Rusanov{}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status);(void)status.check();
     const auto result=fields.snapshot();for(std::size_t i=0;i<2;++i)for(int c=0;c<5;++c)
         near(result(i,c),0.,512.*static_cast<double>(Kokkos::epsilon_v<A>),"skew-cell free stream and geometry precision");
 }
@@ -365,7 +385,7 @@ void reject_state(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);fields.pressure.fill_async(exec,S{-1});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);status.begin_async();
-    op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check(comm);
+    op.add_inner_residual_async(fields.reconstruction(grid),fields.output(),status);(void)status.check();
 }
 
 /// @brief Supplies a time-dependent thermal wall profile for mechanical-only Euler checks.
@@ -386,11 +406,11 @@ void profiled_walls(const Exec& exec)
     const auto law=krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<R>{R{1}}};
     publish_boundary(boundary,fields.physical(),law,ph::Corrections<>{},R{2});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check();
 
     // Re-evaluate wall mechanics and compare against the already published exterior states.
     const auto prepared=fields.snapshot();fields.zero(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{},R{2});(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{},R{2});(void)status.check();
     const auto evaluated=fields.snapshot();
     for(std::size_t i=0;i<prepared.extent(0);++i)for(int c=0;c<5;++c)
         near(evaluated(i,c),prepared(i,c),tolerance(),"Profiled mechanical walls bypass thermal flux conversion in Euler");
@@ -414,12 +434,15 @@ void profiled_inlet(const Exec& exec)
     boundary.set(0,inlet);boundary.set(1,ph::SupersonicOutlet{});boundary.set(2,ph::Symmetry{});
     publish_boundary(boundary,fields.physical(),krona::boundary::scalar::NoFluxLaw{},ph::Corrections<>{},R{2});
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);
-    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check(comm);
+    status.begin_async();op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::PreparedExterior{},R{2});(void)status.check();
     auto h=Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{},calls);
     const auto face=layout.catalog().patches()[0].range.begin;
     krona::test::equal(h(face),1,"Prepared inlet consumes face slots without resampling the profile");
     fields.zero(exec);status.begin_async();
-    op.add_residual_async(fields.reconstruction(grid),fields.output(),boundary,status,eu::EvaluatedExterior<>{},R{2});(void)status.check(comm);
+    const auto cell_only = eu::Reconstruction{rec::face_profiles(
+        rec::StencilData<Space, R>{grid.storage.view(), grid.connectivity.view()},
+        fields.cell_primitives(grid), rec::FirstOrder{})};
+    op.add_residual_async(cell_only,fields.output(),boundary,status,eu::EvaluatedExterior<>{},R{2});(void)status.check();
     Kokkos::deep_copy(h,calls);krona::test::equal(h(face),2,"Evaluated inlet samples its parameter once at the requested time");
 }
 

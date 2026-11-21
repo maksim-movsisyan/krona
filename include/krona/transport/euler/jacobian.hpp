@@ -4,24 +4,35 @@
 
 namespace krona::transport::euler {
 
-/// @brief Borrowed writable native blocks and face-to-entry maps for the same graph.
+/// @brief Borrows the writable matrix blocks and the locations where face contributions go.
+/// @tparam Blocks Rank-three native view indexed by entry, row variable and column variable.
+/// @tparam Entries Device map produced by the face assembly plan for those blocks.
 template<class Blocks, class Entries>
 struct JacobianView {
-    Blocks blocks;
-    Entries entries;
+    Blocks blocks;   ///< Writable 5x5 blocks; assembly increments their existing coefficients.
+    Entries entries; ///< Diagonal entries and off-diagonal entries for each face side.
 };
 
-/// @brief Flux-density derivatives in the conservative variable order.
+/// @brief Derivatives of the oriented flux per unit area in conservative variable order.
+/// @tparam R Scalar type of the derivative entries.
 template<class R>
 struct FaceJacobians {
-    numerics::riemann::Matrix5<R> left, right;
+    numerics::riemann::Matrix5<R> left;  ///< Derivative with respect to owner state.
+    numerics::riemann::Matrix5<R> right; ///< Derivative with respect to neighbour state.
 };
 
-/// @brief First-order Rusanov linearization with the face's signal speed held fixed.
+/// @brief Approximates the inner-face Jacobian using the two cell-centre states.
+/// Treats the Rusanov signal speed as constant while differentiating.
+/// @tparam EOS Provides the thermodynamic derivatives for the physical flux Jacobian.
 template<class EOS>
 struct FrozenRusanov {
     EOS eos;
 
+    /// @brief Returns the two Jacobian blocks for a face with owner-to-neighbour normal.
+    /// @tparam R Scalar used for the states and derivatives.
+    /// @param left State at the owner centre.
+    /// @param right State at the neighbour centre.
+    /// @param unit_normal Unit normal from owner to neighbour.
     template<class R>
     KOKKOS_INLINE_FUNCTION FaceJacobians<R> operator()(numerics::riemann::State<R> left,
         numerics::riemann::State<R> right, numerics::riemann::Vector<R> unit_normal) const {

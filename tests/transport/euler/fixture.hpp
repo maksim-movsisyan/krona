@@ -125,6 +125,16 @@ struct Fields {
 
     // Adapters borrow primitive inputs; conservative outputs contain owned rows only.
     auto primitive()const{return eu::primitive_fields(pressure.view(),velocity.view(),temperature.view());}
+    /// @brief Borrows only the real-cell prefix, including MPI ghosts but excluding face slots.
+    auto cell_primitives(const Grid& grid) const {
+        const std::pair cells{std::size_t{0}, static_cast<std::size_t>(grid.host.n_cells)};
+        return eu::primitive_components(
+            Kokkos::subview(pressure.view().component(0), cells),
+            Kokkos::subview(velocity.view().component(0), cells),
+            Kokkos::subview(velocity.view().component(1), cells),
+            Kokkos::subview(velocity.view().component(2), cells),
+            Kokkos::subview(temperature.view().component(0), cells));
+    }
     auto physical(){return ph::primitive_views(pressure.view(),velocity.view(),temperature.view());}
     auto output(){return eu::conservative_fields(mass.view(),momentum.view(),energy.view());}
     auto reconstruction(const Grid& grid)const{

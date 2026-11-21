@@ -21,7 +21,7 @@ $$
 
 The Riemann solver receives a unit normal and returns flux **per unit area**. Euler multiplies by area once and performs **no volume division**. On an inner face the owner receives `-A*F`, an owned neighbour receives `+A*F`; ghost output rows are never written.
 
-Primitive storage covers real cells, including MPI ghosts. Boundary/full calls additionally require one physical-face slot per boundary face:
+Primitive storage covers real cells, including MPI ghosts. When the closure consumes prepared boundary values, the pack also includes one slot per boundary face:
 
 ```cpp
 extended_index = n_cells + face - n_inner_faces;
@@ -104,7 +104,7 @@ boundary_status.check();
 r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(first_order, output, boundary, status, eu::PreparedExterior{}, time);
-const auto report = status.check(comm); // Completes kernels and checks all ranks.
+const auto report = status.check(); // Completes kernels and checks this rank.
 ```
 
 No heat-flux law is needed for this slip-wall example.
@@ -150,7 +150,7 @@ reconstruction_halo.exchange(); // Gradients and factors for real MPI ghosts.
 r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(high_order, output, boundary, status, eu::EvaluatedExterior<>{}, time);
-const auto high_order_report = status.check(comm);
+const auto high_order_report = status.check();
 ```
 
 Gradient input/output use the same storage scalar. `g` contains derivatives of `p,u,v,w,T`, in that order; it does not contain gradients of conservative variables. Default least squares needs a nondegenerate 3-D stencil. This configuration needs no auxiliary diffusion geometry.
@@ -170,7 +170,7 @@ Keep the sampled fields, stencil, and prescribed boundary inputs current for the
 
 ## Physical faces and exterior states
 
-Two states enter the boundary Riemann problem: the reconstructed **interior trace** and a temporary **exterior state**. Euler does not allocate/store exterior ghost cells. Fill physical-face primitive slots before a full/boundary call; they also provide gradient/limiter samples.
+Two states enter the boundary Riemann problem: the reconstructed **interior trace** and a temporary **exterior state**. The exterior state is local to the flux calculation. Physical-face primitive slots hold prepared boundary samples for closures and can also provide gradient or limiter samples.
 
 | Closure | Exterior-state construction |
 | --- | --- |
@@ -178,7 +178,7 @@ Two states enter the boundary Riemann problem: the reconstructed **interior trac
 | `EvaluatedExterior<>{}` | Re-evaluates the physical condition from the reconstructed interior trace. Mechanical walls/symmetry keep their inviscid mirror treatment. It accepts optional law/correction members for coupled/custom conditions. |
 | Custom closure | Device-callable `(context, typed_condition, inside, prepared_face, model) -> physical::Primitive<Real,true>`. Must compile for all manager alternatives and return an admissible exterior state. |
 
-`EvaluatedExterior` changes the closure calculation; it does not write face slots or remove the API's extended-storage requirement. Keep the face preparation step. A prepared inlet/outlet face profile may be overwritten by application code after `boundary.apply_async()` and consumed by `PreparedExterior`; re-evaluation generally derives the state from the condition instead.
+`EvaluatedExterior` can work with a cell-only pack when the reconstruction fits in that pack. Prepare face slots separately if the gradient or limiter requires them. With `PreparedExterior`, the application may overwrite a prepared inlet or outlet profile after `boundary.apply_async()` and Euler will use those stored values.
 
 Wall temperature/heat-flux data describe thermal/viscous traces; they do not add conduction to this inviscid operator. Stationary mechanical walls have no inviscid mass/energy flux. If `boundary.apply_async()` must fill a `HeatFluxWall`, supply its thermal flux law there, even though the Euler mechanical mirror bypasses that thermal law. Use the same evaluation time for preparation and residual calls.
 
@@ -200,7 +200,7 @@ For each evaluated side:
 2. An inadmissible reconstructed primitive/EOS state falls back to the **whole base side state**, not selected components. Boundary interior traces have the same fallback.
 3. An invalid exterior state is an error. The chosen Riemann solver may separately use its own fallback; a failed result is an error.
 
-`eu::AssemblyStatus` is separate from scalar transport status. `check(comm)` returns global `reconstruction_fallbacks` and `riemann_fallbacks`, and terminates on invalid cell/exterior states, rejected fluxes, invalid Jacobian contributions or nonfinite/unrepresentable residual additions. Counters count evaluations, **not unique faces**: owned/owned faces are evaluated from both rows, and each side can fall back.
+`eu::AssemblyStatus` is separate from scalar transport status. `check()` returns this rank's `reconstruction_fallbacks` and `riemann_fallbacks`, and terminates on invalid cell/exterior states, rejected fluxes, invalid Jacobian contributions or nonfinite/unrepresentable residual additions. Reduce the two counters explicitly if a global report is needed. Counters count evaluations, **not unique faces**: owned/owned faces are evaluated from both rows, and each side can fall back.
 
 ## Split calls and range contracts
 
@@ -214,12 +214,12 @@ euler.add_inner_residual_async(high_order, output, status,
     {m.sizes.n_internal_faces, m.sizes.n_inner_faces}); // MPI interfaces.
 euler.add_boundary_residual_async(high_order, output, boundary, status,
     eu::EvaluatedExterior<>{}, time);
-(void)status.check(comm);
+(void)status.check();
 ```
 
 `FaceRange` is half-open; default end `-1` selects all inner faces (owned/owned plus owned/ghost). `CellRange` is a half-open owned-row interval; default end selects `n_own`. It restricts output rows, not which neighbour/stencil values they may read. Output storage must still cover all owned rows. Unselected output/tail entries are untouched. Split ranges must not overlap unless repeated addition is intended. Readiness must cover the **complete selected reconstruction stencil**, including wider samples; an owned/owned face does not automatically guarantee an entirely owned stencil.
 
-Inner-only validation requires primitive storage for all real cells. Full/boundary validation requires extended storage even with first-order or evaluated closure. Required gradient/factor/Hessian/moment providers cover at least real cells when they expose sizes; custom indices and wider-stencil coverage remain caller contracts. Inputs and residual components must not overlap, including partial/strided aliases. Checks catch duplicate residual starting pointers and some exact input/output aliases, not arbitrary memory overlap.
+Inner-only validation requires primitive storage for all real cells. Full and boundary calls require extended storage for `PreparedExterior`, custom closures and custom boundary Jacobians. The reconstruction can also require face samples for a wider stencil. Required gradient/factor/Hessian/moment providers cover at least real cells when they expose sizes; custom indices and wider-stencil coverage remain caller contracts. Inputs and residual components must not overlap, including partial/strided aliases. Checks catch duplicate residual starting pointers and some exact input/output aliases, not arbitrary memory overlap.
 
 ## Compact implicit assembly
 
@@ -245,7 +245,7 @@ r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
 euler.add_residual_async(first_order, output, boundary, status, closure, time);
 euler.add_jacobian_async(target, first_order, boundary, status, inner, closure, time);
-(void)status.check(comm);
+(void)status.check();
 
 linalg::copy_from_fields_async(rhs, output, exec);
 matrix.commit();
@@ -268,7 +268,7 @@ Supply any device-callable `linearization(left, right, unit_normal)` returning `
 
 ### Physical boundaries
 
-Use the same reconstruction, numerical flux, closure and time for the residual and boundary linearization. The default `FiniteDifferenceBoundary` differentiates the complete numerical boundary flux in the five primitive components of the interior trace, then applies the analytic $\partial W_{\mathrm{cell}}/\partial U_{\mathrm{cell}}$ at the owner cell. The reconstruction increment and prepared face slots are held fixed. A smooth branch uses central differences. A valid one-sided stencil is used when a probe leaves the admissible state or boundary domain. Near a change of characteristic or Riemann branch, the result is a local numerical slope. Probes are evaluated on the same device execution space as the residual.
+Use the same reconstruction, numerical flux, closure and time for the residual and boundary linearization. The default `FiniteDifferenceBoundary` differentiates the complete numerical boundary flux in the five primitive components of the interior trace, then applies the analytic $\partial W_{\mathrm{cell}}/\partial U_{\mathrm{cell}}$ at the owner cell. The reconstruction increment and any prepared face values supplied to the closure are held fixed. A smooth branch uses central differences. A valid one-sided stencil is used when a probe leaves the admissible state or boundary domain. Near a change of characteristic or Riemann branch, the result is a local numerical slope. Probes are evaluated on the same device execution space as the residual.
 
 With `EvaluatedExterior`, the characteristic outlet/inlet and mirror responses to the interior trace are included. Each flux evaluation uses the original condition with the same face context and time. A profile provider should return the same prescribed values throughout these evaluations. With `PreparedExterior`, a published inlet/outlet face state stays fixed throughout the derivative. Use `EvaluatedExterior` for coupled boundary states whose response is needed in the matrix.
 
@@ -291,8 +291,8 @@ Reconstruction/component packs borrow data pointers; field owners must outlive w
 | `FaceAssemblyPlan`, BSR construction | Collective and blocking. The native view adapter can synchronize native storage access. |
 | `halo.exchange()` | Blocking convenience exchange; explicit ownership remains with the application. |
 | `status.begin_async()` | Queues diagnostic reset; does not clear residuals. |
-| `status.check(comm)` | Copies diagnostics to host, fences its instance and performs an MPI all-reduce. |
+| `status.check()` | Copies diagnostics to host, fences its instance and checks the flags on this rank. |
 
-Use the same execution instance for status and contributions. Order producers/consumers on that instance; synchronize other instances and external MPI before use. All ranks, including empty ranks, enter collective checks in the same order. Complete valid field/boundary/model setup before submission; a failed batch is not rolled back. A pending status destructor fences but does not perform the collective error check.
+Use the same execution instance for status and contributions. Order producers/consumers on that instance; synchronize other instances and external MPI before use. Complete valid field/boundary/model setup before submission; a failed batch is not rolled back. A pending status destructor fences but leaves error reporting to `check()`.
 
 After successful completion, a time integrator may update conservative **densities**, for example `U_new = U_old + dt * R / V` for explicit Euler. **Do not add conservative residual components directly to `p,u,v,w,T`.** Recover velocity and specific internal energy from the updated `rho, rho*u, rho*E`, invert the EOS for `p,T`, then repeat primitive publication/boundary/reconstruction preparation for the next stage. Time-step choice, conservative-state admissibility and all updates remain application responsibilities.

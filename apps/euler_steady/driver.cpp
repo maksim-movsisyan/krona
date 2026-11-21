@@ -195,7 +195,7 @@ int solve(const Options& options, mpi::CommView comm) {
             if (detailed)
                 std::fprintf(stderr, "KRONA euler_steady: iteration %d, spatial residual %.9e\n", updates, norm);
             if (converged || updates == controls.maximum_iterations) {
-                (void)status.check(comm);
+                (void)status.check();
                 break;
             }
 
@@ -204,7 +204,7 @@ int solve(const Options& options, mpi::CommView comm) {
             Kokkos::deep_copy(exec, target.blocks, SolverReal{0});
             euler.add_jacobian_async(target, reconstruction, boundary, status, inner_jacobian, closure);
             add_pseudo_time_diagonal(exec, m, connectivity.view(), target, primitive, gas, cfl);
-            (void)status.check(comm);
+            (void)status.check();
             matrix.commit();
 
             increment.fill(SolverReal{0}, exec);

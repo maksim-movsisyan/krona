@@ -5,18 +5,30 @@
 
 namespace krona::transport::euler {
 
-/// @brief Primitive order: p,u,v,w,T. All arguments are rank-one Kokkos views.
+/// @brief Borrows rank-one Kokkos views in pressure, Cartesian velocity and temperature order.
+/// @tparam P View of pressure.
+/// @tparam U View of x velocity.
+/// @tparam V View of y velocity.
+/// @tparam W View of z velocity.
+/// @tparam T View of temperature.
 template<class P,class U,class V,class W,class T>
 auto primitive_components(P p,U u,V v,W w,T t)
 { return fields::pack(p,u,v,w,t); }
 
+/// @brief Builds a primitive pack from one pressure field, one vector field and one temperature field.
+/// @tparam P Single-component pressure FieldView.
+/// @tparam U Three-component Cartesian velocity FieldView.
+/// @tparam T Single-component temperature FieldView.
 template<class P,class U,class T>
 auto primitive_fields(P p,U velocity,T t) {
     static_assert(P::components==1 && U::components==3 && T::components==1);
     return primitive_components(p.component(0),velocity.component(0),velocity.component(1),velocity.component(2),t.component(0));
 }
 
-/// @brief Conservative/residual order: rho,rho*u,rho*v,rho*w,rho*E.
+/// @brief Borrows the five components of a conservative state or residual, in mass/momentum/energy order.
+/// @tparam D Single-component mass FieldView.
+/// @tparam M Three-component momentum FieldView.
+/// @tparam E Single-component total energy FieldView.
 template<class D,class M,class E>
 auto conservative_fields(D density,M momentum,E energy) {
     static_assert(D::components==1 && M::components==3 && E::components==1);
@@ -24,6 +36,7 @@ auto conservative_fields(D density,M momentum,E energy) {
 }
 
 namespace detail {
+
 template<class Pack, std::size_t... C>
 auto component_pointers(const Pack& pack, std::index_sequence<C...>)
 { return std::array<const void*, sizeof...(C)>{static_cast<const void*>(pack.template component<C>().data())...}; }
@@ -60,6 +73,7 @@ void validate_pack(const Pack& pack,std::size_t count) {
             mpi::require(count==0 || (view.pointer && view.stride>0),"Euler: invalid component storage");
 }
 
+// Check starting addresses. The caller is responsible for overlapping subviews with other start addresses.
 template<class Input,class Output>
 void reject_exact_alias(const Input& input,const Output& output) {
     if constexpr(requires{input.template component<0>();output.template component<0>();}) {
@@ -73,5 +87,7 @@ void reject_exact_alias(const Input& input,const Output& output) {
             mpi::require(!a.pointer || !b.pointer || static_cast<const void*>(a.pointer)!=static_cast<const void*>(b.pointer),
                 "Euler: input/output alias is unsupported");
 }
+
 } // namespace detail
+
 } // namespace krona::transport::euler
