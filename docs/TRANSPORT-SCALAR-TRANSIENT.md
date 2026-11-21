@@ -63,7 +63,13 @@ struct CapacityMass {
 
 ### Accepted history
 
-`TimeLevel{mass, field}` describes one accepted layer. `field` is a rank-one scalar view, including a strided field component. `time_history()` combines these descriptors **newest first**:
+`TimeLevel{mass, field}` pairs an accepted scalar field with the mass from that same time. `field` can be a strided rank-one component. The following indices describe a step while it is being solved.
+
+| Time | Meaning | How it reaches the operator |
+| --- | --- | --- |
+| `t_(n+1)` | New step being solved | Pass its mass separately. A residual evaluation also takes a candidate scalar at this time. |
+| `t_n` | Last accepted step | First argument to `time_history()`. |
+| `t_(n-1)` | Accepted step before `t_n` | Second argument to `time_history()` for BDF2. |
 
 ```cpp
 const auto history = tt::time_history(
@@ -71,7 +77,7 @@ const auto history = tt::time_history(
     tt::TimeLevel{mass_nm1, q_nm1});  // Accepted state at t_(n-1).
 ```
 
-Current mass and the candidate field are passed separately. Each historical mass must belong to its own historical field. With changing density, use independent density/mass snapshots, for example `DensityVolumeMass{volumes, rho_n}` and `DensityVolumeMass{volumes, rho_nm1}`. Binding both layers to an array later overwritten with current density loses the old masses.
+With changing density, use independent density or mass snapshots, for example `DensityVolumeMass{volumes, rho_n}` and `DensityVolumeMass{volumes, rho_nm1}`. Binding both layers to an array later overwritten with the new density loses the old masses.
 
 **`time_history()` makes no snapshots or array copies.** It stores the supplied descriptors by value. Keep accepted layers unchanged throughout assembly, the solve and any nonlinear/reconstruction outer iterations. Rotate them only when the full time step is accepted. All layers must use the same owned-cell ordering; changed numbering requires external history remapping.
 
@@ -83,7 +89,7 @@ Current mass and the candidate field are passed separately. Each historical mass
 | `Bdf2{}.coefficients(dt)` | Two layers: `n`, `n-1` | `[3/2, -2, 1/2] / dt`; equal adjacent steps only. |
 | `Bdf2{}.coefficients(dt, previous_dt)` | Two layers: `n`, `n-1` | Variable-step BDF2; `previous_dt = t_n - t_(n-1)`. |
 
-`weights[0]` multiplies the proposed current state at `t_(n+1)`, `weights[1]` the newest accepted state at `t_n`, and so on. Here `dt = t_(n+1) - t_n`. Steps must be finite and positive, with representable coefficients/step ratio.
+`weights[0]` multiplies `(M*phi)_(n+1)` at the time being solved. `weights[1]` multiplies the first accepted history entry `(M*phi)_n`, and so on. Here `dt = t_(n+1) - t_n`. Steps must be finite and positive, with representable coefficients and step ratio.
 
 BDF2 has no automatic startup: use Backward Euler for the first step, then BDF2 once two accepted layers are available. Step selection, admissible step ratios, error control and acceptance are application decisions.
 
@@ -133,13 +139,13 @@ for (int step = 0; step < 10; ++step) {
     Kokkos::deep_copy(exec, target.rhs, SolverReal{0});
     status.begin_async();
 
-    const auto newest = tt::TimeLevel{mass, q_n};
+    const auto accepted_n = tt::TimeLevel{mass, q_n};
     if (step == 0)
         temporal.add_system_async(target, status, nt::BackwardEuler{}.coefficients(dt),
-            mass, tt::time_history(newest));
+            mass, tt::time_history(accepted_n));
     else
         temporal.add_system_async(target, status, nt::Bdf2{}.coefficients(dt, previous_dt),
-            mass, tt::time_history(newest, tt::TimeLevel{mass, q_nm1}));
+            mass, tt::time_history(accepted_n, tt::TimeLevel{mass, q_nm1}));
     sources.add_async(target.rhs, status, ts::UniformSource<Real>{1});
     // Add any spatial contributions for this equation here.
     (void)status.check();
@@ -190,6 +196,17 @@ r_i^{\mathrm{time}}=\frac{M_i^n\phi_i^n-M_i^{n+1}\phi_i^{n+1}}{\Delta t}.
 $$
 
 Add diffusion, convection and source residuals into the same initialized output to assess the full equation. Use identical weights, mass snapshots and accepted history when comparing against `b - A*phi` from assembly. This path needs no matrix or algebra graph.
+
+## Assemble a correction equation
+
+For `phi^(n+1) = phi_iterate + delta_phi`, the time term adds `w[0]*M^(n+1)` to the correction matrix diagonal. Its RHS contribution is the time residual at `phi_iterate`. With an initialized system and an open assembly batch, use:
+
+```cpp
+temporal.add_system_async(target, status, derivative, mass, history, /*add_rhs=*/false);
+temporal.add_residual_async(phi_iterate, target.rhs, status, derivative, mass, history);
+```
+
+With `add_rhs=false`, the matrix pass uses only the leading weight and the new-time mass. The history type still matches the derivative, and its data are read by the residual pass. Omitting the flag assembles both the diagonal and the history term for a solve in the field itself.
 
 ## Storage contracts and custom integration
 

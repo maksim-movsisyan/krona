@@ -6,14 +6,15 @@
 
 namespace krona::transport::scalar::diffusion::detail {
 
-/// @brief One iteration owns one row. Correction RHS is added only in the corrected instantiation.
+/// @brief Adds inner-face matrix entries and optionally the explicit correction for one owned row.
+/// @tparam AddRhs Include the explicit nonorthogonal correction in the RHS.
 /// @tparam Space Kokkos memory space of the input and output views.
 /// @tparam Real Floating-point type used for the face fluxes.
 /// @tparam Target System slice with native entries and writable matrix/RHS views.
 /// @tparam Law Diffusion law containing the face coefficient provider.
 /// @tparam Correction Policy supplying the gradient correction or NoCorrection.
 /// @tparam Flags Writable device view of assembly diagnostics.
-template<class Space, class Real, class Target, class Law, class Correction, class Flags>
+template<bool AddRhs, class Space, class Real, class Target, class Law, class Correction, class Flags>
 struct AddRows {
     StencilData<Space> data; Target target; Law law; Correction correction; Flags flags; Real time;
     FaceRange range;
@@ -36,14 +37,17 @@ struct AddRows {
             // The shared conductance adds to the diagonal and subtracts from the opposite cell entry.
             add_checked(target.values, entry, -a, flags);
             diagonal += a;
-            if constexpr (corrected<Correction>) explicit_rhs += owner ? -flux.constant : flux.constant;
+            if constexpr (AddRhs && corrected<Correction>)
+                explicit_rhs += owner ? -flux.constant : flux.constant;
         }
         add_checked(target.values, target.entries.diagonal(i), diagonal, flags);
-        if constexpr (corrected<Correction>) add_checked(target.rhs, i, explicit_rhs, flags);
+        if constexpr (AddRhs && corrected<Correction>)
+            add_checked(target.rhs, i, explicit_rhs, flags);
     }
 };
 
-/// @brief Adds a boundary face contribution to the owner diagonal and RHS.
+/// @brief Adds a boundary face contribution to the owner diagonal and optionally to the RHS.
+/// @tparam AddRhs Include the known boundary flux term in the RHS.
 /// @tparam Space Kokkos memory space of the input and output views.
 /// @tparam Real Floating-point type used for the face fluxes.
 /// @tparam Target System slice with native entries and writable matrix/RHS views.
@@ -51,7 +55,7 @@ struct AddRows {
 /// @tparam Law Diffusion law containing the face coefficient provider.
 /// @tparam Correction Policy supplying the gradient correction or NoCorrection.
 /// @tparam Flags Writable device view of assembly diagnostics.
-template<class Space, class Real, class Target, class Condition, class Law, class Correction, class Flags>
+template<bool AddRhs, class Space, class Real, class Target, class Condition, class Law, class Correction, class Flags>
 struct AddBoundary {
     boundary::GeometryView<Space> geometry; Target target; Condition condition; Law law;
     Correction correction; Flags flags; Real time;
@@ -64,7 +68,8 @@ struct AddBoundary {
         }
         const std::size_t i = static_cast<std::size_t>(c.owner);
         atomic_add_checked(target.values, target.entries.diagonal(i), flux.owner, flags);
-        atomic_add_checked(target.rhs, i, -flux.constant, flags);
+        if constexpr (AddRhs)
+            atomic_add_checked(target.rhs, i, -flux.constant, flags);
     }
 };
 

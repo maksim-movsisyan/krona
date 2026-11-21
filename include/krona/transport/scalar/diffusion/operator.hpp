@@ -31,10 +31,11 @@ public:
     explicit DiffusionOperator(plan_type plan) : plan_(std::move(plan)) {}
 
     /// @brief Adds A_diff and b_boundary into an initialized SystemView. No zeroing, fence, MPI, or commit.
+    /// @param add_rhs Include the known boundary term in the RHS.
     template<class Target, class Boundary, class Coefficient = UniformCoefficient<Real>>
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law = {}, Real time = 0) const
-    { add_system_async(target, boundary, status, law, numerics::gradient::NoCorrection{}, time); }
+        IsotropicDiffusion<Coefficient> law = {}, Real time = 0, bool add_rhs = true) const
+    { add_system_async(target, boundary, status, law, numerics::gradient::NoCorrection{}, time, add_rhs); }
 
     /// @brief Adds diffusion coefficients and boundary/correction contributions to an existing system.
     /// @tparam Target Writable system slice with a matching native entry map.
@@ -47,15 +48,16 @@ public:
     /// @param law Isotropic relation between the normal gradient and flux.
     /// @param correction Provider of the explicit corrections. Its gradients must include current ghosts.
     /// @param time Evaluation time passed to the face providers.
+    /// @param add_rhs Include known boundary and explicit correction terms in the RHS.
     template<class Target, class Boundary, class Coefficient, class Correction> requires (!std::is_arithmetic_v<Correction>)
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0) const {
+                          IsotropicDiffusion<Coefficient> law, Correction correction, Real time = 0, bool add_rhs = true) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
-            validate_system(target);
+            validate_system(target, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
-            submit_inner_system(target, flags, all_inner_faces(), law, correction, time);
-            submit_boundary_system(target, boundary, flags, law, correction, time);
+            submit_inner_system(target, flags, all_inner_faces(), law, correction, time, add_rhs);
+            submit_boundary_system(target, boundary, flags, law, correction, time, add_rhs);
         });
     }
 
@@ -66,30 +68,34 @@ public:
     /// @param law Coefficient provider for the selected faces.
     /// @param correction Optional gradient projection. All data read by the selected faces must be ready.
     /// @param time Evaluation time passed to the providers.
+    /// @param add_rhs Include the explicit nonorthogonal correction in the RHS.
     template<class Target, class Coefficient = UniformCoefficient<Real>, class Correction = numerics::gradient::NoCorrection>
     void add_inner_system_async(Target target, AssemblyStatus<Exec>& status, FaceRange faces = {},
-                                IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+                                IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0,
+                                bool add_rhs = true) const {
         mpi::guarded([&] {
             faces = inner_range(faces);
-            validate_providers(law, correction, time);
-            validate_system(target);
+            validate_providers(law, correction, time, add_rhs);
+            validate_system(target, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
             if (faces.begin == faces.end) return;
-            submit_inner_system(target, flags, faces, law, correction, time);
+            submit_inner_system(target, flags, faces, law, correction, time, add_rhs);
         });
     }
 
     /// @brief Adds the diagonal and RHS terms from the physical boundary patches.
     /// Submit once when composing a system from several inner ranges.
+    /// @param add_rhs Include the affine constant from each boundary relation in the RHS.
     template<class Target, class Boundary, class Coefficient = UniformCoefficient<Real>,
         class Correction = numerics::gradient::NoCorrection>
     void add_boundary_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status,
-        IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0) const {
+                                   IsotropicDiffusion<Coefficient> law = {}, Correction correction = {}, Real time = 0,
+                                   bool add_rhs = true) const {
         mpi::guarded([&] {
             validate_inputs(boundary, law, correction, time);
-            validate_system(target);
+            validate_system(target, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
-            submit_boundary_system(target, boundary, flags, law, correction, time);
+            submit_boundary_system(target, boundary, flags, law, correction, time, add_rhs);
         });
     }
 
@@ -213,7 +219,8 @@ public:
     template<class Field, class Boundary, class Coefficient, class Source, class Correction>
         requires (!std::is_arithmetic_v<Correction>)
     [[nodiscard]] BalanceResult balance(Field field, const Boundary& boundary,
-            IsotropicDiffusion<Coefficient> law, Source source, Correction correction, Real time = 0) const {
+                                        IsotropicDiffusion<Coefficient> law, Source source,
+                                        Correction correction, Real time = 0) const {
         return mpi::guarded([&]() -> BalanceResult {
             validate_inputs(boundary, law, correction, time);
             const auto mesh = plan_.mesh_view();
@@ -262,12 +269,13 @@ private:
     }
 
     template<class Target>
-    void validate_system(const Target& target) const {
+    void validate_system(const Target& target, bool add_rhs) const {
         const auto sizes = plan_.mesh_view().sizes;
-        const std::size_t rows = static_cast<std::size_t>(sizes.n_own);
+        const auto rows = static_cast<std::size_t>(sizes.n_own);
         scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-        scalar::detail::validate_output<Exec>(target.rhs, rows);
-        mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
+        if (add_rhs)
+            scalar::detail::validate_output<Exec>(target.rhs, rows);
+        mpi::require((!add_rhs || target.rhs.extent(0) == rows) && target.entries.diagonal.extent(0) == rows &&
             target.entries.owner_entries.extent(0) == static_cast<std::size_t>(sizes.n_inner_faces) &&
             target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(sizes.n_internal_faces),
             "Scalar diffusion: incompatible system slice/entry map");
@@ -283,10 +291,11 @@ private:
     }
 
     template<class Law, class Correction>
-    void validate_providers(const Law& law, const Correction& correction, Real time) const {
+    void validate_providers(const Law& law, const Correction& correction, Real time, bool use_correction = true) const {
         mpi::require(std::isfinite(time), "Scalar diffusion: time must be finite");
         detail::validate_coefficient(plan_, law.coefficient);
-        detail::validate_correction(plan_, correction);
+        if (use_correction)
+            detail::validate_correction(plan_, correction);
     }
 
     template<class Boundary, class Law, class Correction>
@@ -295,25 +304,47 @@ private:
         validate_providers(law, correction, time);
     }
 
-    template<class Target, class Law, class Correction>
-    void submit_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Law& law,
+    template<bool AddRhs, class Target, class Law, class Correction>
+    void launch_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Law& law,
                              const Correction& correction, Real time) const {
         const auto& exec = execution_space_instance();
         Kokkos::parallel_for("diffusion/add_rows", Policy(exec, 0, plan_.mesh_view().sizes.n_own),
-            detail::AddRows<Space, Real, Target, Law, Correction, Flags>{
+            detail::AddRows<AddRhs, Space, Real, Target, Law, Correction, Flags>{
                 stencil_data(), target, law, correction, flags, time, faces});
     }
 
-    template<class Target, class Boundary, class Law, class Correction>
-    void submit_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
+    template<class Target, class Law, class Correction>
+    void submit_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Law& law,
+                             const Correction& correction, Real time, bool add_rhs) const {
+        if constexpr (detail::corrected<Correction>) {
+            if (add_rhs) {
+                launch_inner_system<true>(target, flags, faces, law, correction, time);
+                return;
+            }
+        }
+        // The inner-face matrix is independent of the explicit gradient projection.
+        launch_inner_system<false>(target, flags, faces, law, numerics::gradient::NoCorrection{}, time);
+    }
+
+    template<bool AddRhs, class Target, class Boundary, class Law, class Correction>
+    void launch_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
                                 const Law& law, const Correction& correction, Real time) const {
         const auto& exec = execution_space_instance();
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
             Kokkos::parallel_for("diffusion/add_boundary", Policy(exec, range.begin, range.end),
-                detail::AddBoundary<Space, Real, Target, C, Law, Correction, Flags>{
+                detail::AddBoundary<AddRhs, Space, Real, Target, C, Law, Correction, Flags>{
                     boundary.geometry_view(), target, condition, law, correction, flags, time});
         });
+    }
+
+    template<class Target, class Boundary, class Law, class Correction>
+    void submit_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
+                                const Law& law, const Correction& correction, Real time, bool add_rhs) const {
+        if (add_rhs)
+            launch_boundary_system<true>(target, boundary, flags, law, correction, time);
+        else
+            launch_boundary_system<false>(target, boundary, flags, law, correction, time);
     }
 
     template<class Field, class Output, class Law, class Correction>

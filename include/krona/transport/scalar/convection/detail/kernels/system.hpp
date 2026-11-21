@@ -7,13 +7,14 @@
 namespace krona::transport::scalar::convection::detail {
 
 /// @brief Adds upwind matrix entries and the explicit reconstruction terms for one owned row.
+/// @tparam AddRhs Include the explicit reconstruction term in the RHS.
 /// @tparam Space Kokkos memory space of the mesh arrays.
 /// @tparam Real Type used to evaluate and accumulate face terms.
 /// @tparam Target Writable matrix and RHS slice with its face-entry map.
 /// @tparam Flux Callable returning the signed mass rate integrated over a face.
 /// @tparam Reconstruction Policy returning a face increment relative to the upwind cell value.
 /// @tparam Flags Device view holding the batch's error flags.
-template<class Space, class Real, class Target, class Flux, class Reconstruction, class Flags>
+template<bool AddRhs, class Space, class Real, class Target, class Flux, class Reconstruction, class Flags>
 struct AddRows {
     StencilData<Space> data;
     Target target;
@@ -53,17 +54,18 @@ struct AddRows {
             }
 
             // Keep the donor-cell matrix and move the reconstructed part to the RHS.
-            if constexpr (reconstructed<Reconstruction>)
+            if constexpr (AddRhs && reconstructed<Reconstruction>)
                 rhs -= outward * interior_increment<Real>(reconstruction, c, m, flags);
         }
 
         scalar::detail::add_checked(target.values, target.entries.diagonal(i), diagonal, flags);
-        if constexpr (reconstructed<Reconstruction>)
+        if constexpr (AddRhs && reconstructed<Reconstruction>)
             scalar::detail::add_checked(target.rhs, i, rhs, flags);
     }
 };
 
 /// @brief Adds a physical boundary face's contribution to its adjacent cell's system row.
+/// @tparam AddRhs Include prescribed inflow and outflow reconstruction in the RHS.
 /// @tparam Space Kokkos memory space of the mesh arrays.
 /// @tparam Real Type used to evaluate and accumulate face terms.
 /// @tparam Target Writable matrix and RHS slice with its face-entry map.
@@ -72,7 +74,7 @@ struct AddRows {
 /// @tparam Reconstruction Policy returning a face increment relative to the upwind cell value.
 /// @tparam Inflow Callable supplying the scalar carried into the domain.
 /// @tparam Flags Device view holding the batch's error flags.
-template<class Space, class Real, class Target, class Condition, class Flux, class Reconstruction,
+template<bool AddRhs, class Space, class Real, class Target, class Condition, class Flux, class Reconstruction,
          class Inflow, class Flags>
 struct AddBoundary {
     boundary::GeometryView<Space> geometry;
@@ -98,10 +100,10 @@ struct AddBoundary {
         // Use the cell value on outflow and the prescribed value on inflow.
         if (m > Real{0}) {
             scalar::detail::atomic_add_checked(target.values, target.entries.diagonal(i), m, flags);
-            if constexpr (reconstructed<Reconstruction>)
+            if constexpr (AddRhs && reconstructed<Reconstruction>)
                 scalar::detail::atomic_add_checked(target.rhs, i,
                     -m * boundary_increment<Real>(reconstruction, c, flags), flags);
-        } else {
+        } else if constexpr (AddRhs) {
             scalar::detail::atomic_add_checked(target.rhs, i,
                 -m * inflow_value<Real>(inflow, c, condition, flags), flags);
         }

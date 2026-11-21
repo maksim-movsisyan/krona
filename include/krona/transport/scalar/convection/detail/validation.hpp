@@ -76,13 +76,15 @@ void validate_time(Real time) {
 /// @param flux Mass rate provider for this launch.
 /// @param reconstruction Reconstruction policy for this launch.
 /// @param with_boundary Whether to include the boundary formula in the reconstruction checks.
+/// @param use_reconstruction Whether the launch reads reconstruction inputs.
 template<class Exec, class Real, class Flux, class Reconstruction>
 void validate_providers(const ConvectionPlan<Exec, Real>& plan, const Flux& flux, const Reconstruction& reconstruction,
-                        bool with_boundary) {
+                        bool with_boundary, bool use_reconstruction = true) {
     static_assert(!std::is_arithmetic_v<Reconstruction>, "Pass time after reconstruction and inflow policies");
     const auto sizes = plan.mesh_view().sizes;
     validate_flux<Exec>(flux, static_cast<std::size_t>(sizes.n_faces));
-    validate_reconstruction<Exec>(reconstruction, static_cast<std::size_t>(sizes.n_cells), with_boundary);
+    if (use_reconstruction)
+        validate_reconstruction<Exec>(reconstruction, static_cast<std::size_t>(sizes.n_cells), with_boundary);
 }
 
 /// @brief Checks that the system has storage and entry lists for this local mesh.
@@ -90,12 +92,14 @@ void validate_providers(const ConvectionPlan<Exec, Real>& plan, const Flux& flux
 /// @tparam Target System slice containing the matrix, RHS and entry map.
 /// @param target Writable system to increment.
 /// @param sizes Local mesh sizes defining the required map and RHS extents.
+/// @param add_rhs Whether the kernel needs a writable RHS for all owned cells.
 template<class Exec, class Target>
-void validate_system(const Target& target, const mesh::device::MeshSizes& sizes) {
+void validate_system(const Target& target, const mesh::device::MeshSizes& sizes, bool add_rhs) {
     const auto rows = static_cast<std::size_t>(sizes.n_own);
     scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-    scalar::detail::validate_output<Exec>(target.rhs, rows);
-    mpi::require(target.rhs.extent(0) == rows && target.entries.diagonal.extent(0) == rows &&
+    if (add_rhs)
+        scalar::detail::validate_output<Exec>(target.rhs, rows);
+    mpi::require((!add_rhs || target.rhs.extent(0) == rows) && target.entries.diagonal.extent(0) == rows &&
         target.entries.owner_entries.extent(0) == static_cast<std::size_t>(sizes.n_inner_faces) &&
         target.entries.neighbour_entries.extent(0) == static_cast<std::size_t>(sizes.n_internal_faces),
         "Scalar convection: incompatible system slice/entry map");

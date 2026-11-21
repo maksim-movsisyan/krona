@@ -73,6 +73,22 @@ void additive(const Exec& exec)
     test::equal(a(1), 20.0, "Off-diagonal entry preserved");
     test::equal(a(3), 40.0, "Off-diagonal entry preserved");
     test::equal(a(5), 60.0, "Off-diagonal entry preserved");
+
+    // Reuse the residual as the RHS for a correction solve. The matrix pass only needs the new-time mass.
+    auto correction_values = input<double>(exec, {10, 20, 30, 40, 50, 60});
+    const auto unread_history = tt::time_history(tt::TimeLevel{tt::UniformMass{0.0}, View<double>{}});
+    status.begin_async();
+    op.add_system_async(ts::SystemView{correction_values, residual, entries}, status, derivative,
+                        tt::CellMass{mass}, unread_history, /*add_rhs=*/false);
+    (void)status.check();
+    const auto correction_a = host_copy(correction_values);
+    const auto correction_rhs = host_copy(residual);
+    for (std::size_t entry = 0; entry < original.size(); ++entry)
+        test::equal(correction_a(entry), a(entry), "Correction solve uses the same temporal diagonal");
+    for (std::size_t i = 0; i < 3; ++i) {
+        const double expected = static_cast<double>(i+8)+6*p(i)-2*m(i)*x(i);
+        test::equal(correction_rhs(i), expected, "Diagonal-only assembly preserves the correction RHS");
+    }
 }
 
 /// @brief Checks integrated-quantity conservation when mass varies between time layers.

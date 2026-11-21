@@ -43,16 +43,18 @@ public:
     /// @param reconstruction Optional high-order increment. Keep its inputs alive and current.
     /// @param inflow Values sampled only on boundary faces with inward flow.
     /// @param time Evaluation time passed to the face providers.
+    /// @param add_rhs Include prescribed inflow and explicit reconstruction in the RHS. Use false for a matrix-only pass.
     template<class Target, class Boundary, class Flux, class Reconstruction = NoReconstruction,
              class Inflow = FixedValueInflow>
     void add_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status, Flux flux,
-                          Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const {
+                          Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0,
+                          bool add_rhs = true) const {
         mpi::guarded([&] {
-            validate_inputs(boundary, flux, reconstruction, time);
-            detail::validate_system<Exec>(target, plan_.mesh_view().sizes);
+            validate_inputs(boundary, flux, reconstruction, time, add_rhs);
+            detail::validate_system<Exec>(target, plan_.mesh_view().sizes, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
-            submit_inner_system(target, flags, all_inner_faces(), flux, reconstruction, time);
-            submit_boundary_system(target, boundary, flags, flux, reconstruction, inflow, time);
+            submit_inner_system(target, flags, all_inner_faces(), flux, reconstruction, time, add_rhs);
+            submit_boundary_system(target, boundary, flags, flux, reconstruction, inflow, time, add_rhs);
         });
     }
 
@@ -66,19 +68,20 @@ public:
     /// @param flux Integrated mass rate in the face orientation.
     /// @param reconstruction Optional high-order increment. All inputs read by this range must be ready.
     /// @param time Evaluation time passed to the face providers.
+    /// @param add_rhs Include the explicit reconstruction contribution in the RHS.
     template<class Target, class Flux, class Reconstruction = NoReconstruction>
     void add_inner_system_async(Target target, AssemblyStatus<Exec>& status, FaceRange faces, Flux flux,
-                                Reconstruction reconstruction = {}, Real time = 0) const {
+                                Reconstruction reconstruction = {}, Real time = 0, bool add_rhs = true) const {
         mpi::guarded([&] {
             const auto sizes = plan_.mesh_view().sizes;
             faces = detail::checked_inner_range(faces, sizes.n_inner_faces);
             detail::validate_time(time);
-            detail::validate_providers(plan_, flux, reconstruction, false);
-            detail::validate_system<Exec>(target, sizes);
+            detail::validate_providers(plan_, flux, reconstruction, false, add_rhs);
+            detail::validate_system<Exec>(target, sizes, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
             if (faces.begin == faces.end)
                 return;
-            submit_inner_system(target, flags, faces, flux, reconstruction, time);
+            submit_inner_system(target, flags, faces, flux, reconstruction, time, add_rhs);
         });
     }
 
@@ -95,15 +98,17 @@ public:
     /// @param reconstruction Optional high-order increment at outflow.
     /// @param inflow Values sampled on faces with inward flow.
     /// @param time Evaluation time passed to the face providers.
+    /// @param add_rhs Include prescribed inflow and outflow reconstruction in the RHS.
     template<class Target, class Boundary, class Flux, class Reconstruction = NoReconstruction,
              class Inflow = FixedValueInflow>
     void add_boundary_system_async(Target target, const Boundary& boundary, AssemblyStatus<Exec>& status, Flux flux,
-                                   Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0) const {
+                                   Reconstruction reconstruction = {}, const Inflow& inflow = {}, Real time = 0,
+                                   bool add_rhs = true) const {
         mpi::guarded([&] {
-            validate_inputs(boundary, flux, reconstruction, time);
-            detail::validate_system<Exec>(target, plan_.mesh_view().sizes);
+            validate_inputs(boundary, flux, reconstruction, time, add_rhs);
+            detail::validate_system<Exec>(target, plan_.mesh_view().sizes, add_rhs);
             const auto flags = status.device_flags(execution_space_instance());
-            submit_boundary_system(target, boundary, flags, flux, reconstruction, inflow, time);
+            submit_boundary_system(target, boundary, flags, flux, reconstruction, inflow, time, add_rhs);
         });
     }
 
@@ -290,33 +295,55 @@ private:
 
     template<class Boundary, class Flux, class Reconstruction>
     void validate_inputs(const Boundary& boundary, const Flux& flux, const Reconstruction& reconstruction,
-                         Real time) const {
+                         Real time, bool use_reconstruction = true) const {
         detail::validate_time(time);
         detail::validate_boundary(plan_.mesh_view(), boundary);
-        detail::validate_providers(plan_, flux, reconstruction, true);
+        detail::validate_providers(plan_, flux, reconstruction, true, use_reconstruction);
     }
 
     // Full and split calls use the same kernels. The full calls scan the inner faces once.
-    template<class Target, class Flux, class Reconstruction>
-    void submit_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Flux& flux,
+    template<bool AddRhs, class Target, class Flux, class Reconstruction>
+    void launch_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Flux& flux,
                              const Reconstruction& reconstruction, Real time) const {
         const auto& exec = execution_space_instance();
         Kokkos::parallel_for("convection/add_rows", Policy(exec, 0, plan_.mesh_view().sizes.n_own),
-            detail::AddRows<Space, Real, Target, Flux, Reconstruction, Flags>{
+            detail::AddRows<AddRhs, Space, Real, Target, Flux, Reconstruction, Flags>{
                 stencil_data(), target, flux, reconstruction, flags, time, faces});
     }
 
-    template<class Target, class Boundary, class Flux, class Reconstruction, class Inflow>
-    void submit_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
+    template<class Target, class Flux, class Reconstruction>
+    void submit_inner_system(const Target& target, const Flags& flags, FaceRange faces, const Flux& flux,
+                             const Reconstruction& reconstruction, Real time, bool add_rhs) const {
+        if constexpr (detail::reconstructed<Reconstruction>) {
+            if (add_rhs) {
+                launch_inner_system<true>(target, flags, faces, flux, reconstruction, time);
+                return;
+            }
+        }
+        launch_inner_system<false>(target, flags, faces, flux, reconstruction, time);
+    }
+
+    template<bool AddRhs, class Target, class Boundary, class Flux, class Reconstruction, class Inflow>
+    void launch_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
                                 const Flux& flux, const Reconstruction& reconstruction, const Inflow& inflow,
                                 Real time) const {
         const auto& exec = execution_space_instance();
         boundary.for_each_patch([&](auto range, const auto& condition) {
             using C = std::remove_cvref_t<decltype(condition)>;
             Kokkos::parallel_for("convection/add_boundary", Policy(exec, range.begin, range.end),
-                detail::AddBoundary<Space, Real, Target, C, Flux, Reconstruction, Inflow, Flags>{
+                detail::AddBoundary<AddRhs, Space, Real, Target, C, Flux, Reconstruction, Inflow, Flags>{
                     boundary.geometry_view(), target, condition, flux, reconstruction, inflow, flags, time});
         });
+    }
+
+    template<class Target, class Boundary, class Flux, class Reconstruction, class Inflow>
+    void submit_boundary_system(const Target& target, const Boundary& boundary, const Flags& flags,
+                                const Flux& flux, const Reconstruction& reconstruction, const Inflow& inflow,
+                                Real time, bool add_rhs) const {
+        if (add_rhs)
+            launch_boundary_system<true>(target, boundary, flags, flux, reconstruction, inflow, time);
+        else
+            launch_boundary_system<false>(target, boundary, flags, flux, reconstruction, inflow, time);
     }
 
     template<class Field, class Output, class Flux, class Reconstruction>

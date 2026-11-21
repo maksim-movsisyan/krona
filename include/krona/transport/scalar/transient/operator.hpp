@@ -3,143 +3,141 @@
 #include <krona/numerics/time/derivative.hpp>
 #include <krona/transport/scalar/status.hpp>
 #include <krona/transport/scalar/system_view.hpp>
+#include <krona/transport/scalar/transient/detail/kernels.hpp>
+#include <krona/transport/scalar/transient/detail/validation.hpp>
 #include <krona/transport/scalar/transient/mass.hpp>
 
 #include <cmath>
+#include <type_traits>
 
 namespace krona::transport::scalar::transient {
-namespace detail {
-using scalar::detail::flag;
-using scalar::detail::BadSystem;
-using scalar::detail::BadTemporalMass;
-using scalar::detail::BadTemporalState;
 
-// Generic providers keep their mass(cell) interface. The built-in product
-// receives the operator's Real before either factor is multiplied.
-template<class Real, class Mass>
-KOKKOS_INLINE_FUNCTION Real mass_value(const Mass& mass, std::size_t i)
-{ return static_cast<Real>(mass(i)); }
-
-template<class Real, class Volumes, class Density>
-KOKKOS_INLINE_FUNCTION Real mass_value(const DensityVolumeMass<Volumes, Density>& mass, std::size_t i)
-{ return mass.template operator()<Real>(i); }
-
-template<class Real, class Mass, class Flags>
-KOKKOS_INLINE_FUNCTION Real read_mass(Mass mass, std::size_t i, Flags flags) {
-    const Real value = mass_value<Real>(mass, i);
-    if (!Kokkos::isfinite(value) || !(value > Real{0})) {
-        flag(flags, BadTemporalMass); return Real{0};
-    }
-    return value;
-}
- 
-template<class Level, class Tail>
-template<class Real, std::size_t J, class Weights, class Flags>
-KOKKOS_INLINE_FUNCTION Real History<Level, Tail>::rhs(std::size_t i, const Weights& weights, Flags flags) const {
-    const Real mass = read_mass<Real>(level.mass, i, flags);
-    const Real value = static_cast<Real>(level.field(i));
-    if (!Kokkos::isfinite(value)) { flag(flags, BadTemporalState); return Real{0}; }
-    const Real result = -weights[J]*mass*value + tail.template rhs<Real, J+1>(i, weights, flags);
-    if (!Kokkos::isfinite(result)) flag(flags, BadSystem);
-    return result;
-}
-
-template<class Real, class Target, class Weights, class Mass, class History, class Flags>
-struct AddSystem {
-    Target target; Weights weights; Mass mass; History history; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
-        const std::size_t entry = static_cast<std::size_t>(target.entries.diagonal(i));
-        if (entry >= target.values.extent(0)) { flag(flags, BadSystem); return; }
-        const Real diagonal = weights[0]*read_mass<Real>(mass, i, flags);
-        using Value = typename decltype(target.values)::non_const_value_type;
-        if (!(static_cast<Value>(diagonal) > Value{0})) { flag(flags, BadSystem); return; }
-        scalar::detail::add_checked(target.values, entry, diagonal, flags);
-        scalar::detail::add_checked(target.rhs, i, history.template rhs<Real, 1>(i, weights, flags), flags);
-    }
-};
-
-template<class Real, class Field, class Output, class Weights, class Mass, class History, class Flags>
-struct AddResidual {
-    Field field; Output output; Weights weights; Mass mass; History history; Flags flags;
-    KOKKOS_INLINE_FUNCTION void operator()(std::size_t i) const {
-        const Real current_mass = read_mass<Real>(mass, i, flags);
-        const Real value = static_cast<Real>(field(i));
-        if (!Kokkos::isfinite(value)) { flag(flags, BadTemporalState); return; }
-        const Real residual = history.template rhs<Real, 1>(i, weights, flags)-weights[0]*current_mass*value;
-        scalar::detail::add_checked(output, i, residual, flags);
-    }
-};
-} // namespace detail
-
-/// @brief Additive implicit d(M*phi)/dt on owned cells, M=rho*V. No mesh/algebra/history ownership.
-/// Inputs are frozen during submitted work and have no overlap with written targets.
-/// Each history layer retains its own mass, scalar values and owned-cell ordering.
-/// Static topology only: changed cell numbering requires external history remapping.
+/// @brief Adds the integrated time derivative d(M*phi)/dt on owned cells, with M = rho*V.
+/// Time t^(n+1) is the step being solved. Its mass is frozen during assembly.
+/// Time t^n is the last accepted step. Each accepted field is paired with its own mass.
+/// Keep all time levels in the same owned-cell order and separate from written outputs. The caller
+/// keeps the inputs fixed until the queued work completes and rotates history after accepting a step.
+/// @tparam Exec Kokkos execution space used by the operator's kernels.
+/// @tparam Real Floating-point type used to compute the time contributions.
 template<class Exec = execution::ExecutionSpace, class Real = ComputeReal>
 class TransientOperator {
     static_assert(std::is_floating_point_v<Real>);
     using Policy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
+    using Flags = typename AssemblyStatus<Exec>::flags_type;
 public:
     using execution_space = Exec;
     using memory_space = typename Exec::memory_space;
 
-    explicit TransientOperator(std::size_t owned, Exec exec = {}) : owned_(owned), exec_(exec)
-    { execution::require_kokkos(); }
+    /// @brief Creates an operator for the owned rows on this rank.
+    /// @param owned Number of owned cells in the views and entry map.
+    /// @param exec Execution instance shared with the diagnostic batch.
+    explicit TransientOperator(std::size_t owned, Exec exec = {}) : owned_(owned), exec_(exec) {
+        execution::require_kokkos();
+    }
 
-    /// @brief Adds w0*M_current to A_ii and -sum_{j>0} wj*M_j*phi_j to b.
-    /// Diagonal entries must be distinct, valid native graph entries, one per owned row.
-    template<class Target, class C, std::size_t N, class Mass, class History>
+    /// @brief Queues an addition of w[0]*M^(n+1) to the diagonal and, optionally, the accepted terms to the RHS.
+    /// Each diagonal ID must refer to the true diagonal of its row. Different rows must have distinct IDs.
+    /// @tparam Target Writable system slice with a diagonal-entry map.
+    /// @tparam Coefficient Floating-point type of the supplied derivative weights.
+    /// @tparam N Number of accepted time levels used by the derivative.
+    /// @tparam Mass Device-callable provider of integrated cell mass at t^(n+1).
+    /// @tparam History Accepted scalar-and-mass pairs, in order t^n, t^(n-1), and so on.
+    /// @param target Initialized matrix entries and, when add_rhs is true, the RHS to increment.
+    /// @param status Open diagnostic batch on the operator's execution instance.
+    /// @param derivative Weights including inverse time, with the unknown at index 0.
+    /// @param mass_at_new_time Integrated mass for the step being solved.
+    /// @param history Accepted values contributing -sum(w[j]*M_j*phi_j) for j >= 1.
+    /// @param add_rhs Add the history term to the RHS. For a correction solve, use false and
+    /// obtain the RHS contribution with add_residual_async() at the known iterate.
+    template<class Target, class Coefficient, std::size_t N, class Mass, class History>
     void add_system_async(Target target, AssemblyStatus<Exec>& status,
-        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const {
+                          numerics::time::Derivative<Coefficient, N> derivative,
+                          Mass mass_at_new_time, History history, bool add_rhs = true) const {
         mpi::guarded([&] {
-            const auto weights = validate(derivative, mass, history);
+            const auto weights = validate(derivative, mass_at_new_time, history, add_rhs);
             scalar::detail::validate_output<Exec>(target.values, target.values.extent(0));
-            scalar::detail::validate_output<Exec>(target.rhs, owned_);
+            if (add_rhs) {
+                scalar::detail::validate_output<Exec>(target.rhs, owned_);
+                mpi::require(target.rhs.extent(0) == owned_, "Scalar transient: incompatible system slice/entry map");
+            }
             scalar::detail::validate_view<Exec>(target.entries.diagonal, owned_);
-            mpi::require(target.rhs.extent(0) == owned_ && target.entries.diagonal.extent(0) == owned_,
+            mpi::require(target.entries.diagonal.extent(0) == owned_,
                          "Scalar transient: incompatible system slice/entry map");
+
             const auto flags = status.device_flags(exec_);
-            Kokkos::parallel_for("transient/add_system", Policy(exec_, 0, owned_),
-                detail::AddSystem<Real, Target, decltype(weights), Mass, History, decltype(flags)>{
-                    target, weights, mass, history, flags});
+            if (add_rhs)
+                launch_system<true>(target, weights, mass_at_new_time, history, flags);
+            else
+                launch_system<false>(target, weights, mass_at_new_time, history, flags);
         });
     }
 
-    /// @brief Adds the negative integrated time derivative to r=b-A*phi; no volume normalization.
-    /// No ghosts are read. No resets, allocation, fence, MPI, commit or history rotation.
-    template<class Field, class Output, class C, std::size_t N, class Mass, class History>
-    void add_residual_async(Field field, Output output, AssemblyStatus<Exec>& status,
-        numerics::time::Derivative<C, N> derivative, Mass mass, History history) const {
+    /// @brief Queues an addition of the negative integrated derivative to r = b - A*phi.
+    /// Reads only owned cells. The diagonal term uses the supplied candidate at t^(n+1).
+    /// @tparam Field Rank-one scalar view for the step being solved.
+    /// @tparam Output Writable rank-one residual view indexed by owned cell ID.
+    /// @tparam Coefficient Floating-point type of the supplied derivative weights.
+    /// @tparam N Number of accepted time levels used by the derivative.
+    /// @tparam Mass Device-callable provider of integrated cell mass at t^(n+1).
+    /// @tparam History Accepted scalar-and-mass pairs, in order t^n, t^(n-1), and so on.
+    /// @param field_at_new_time Candidate scalar at t^(n+1), before accepting the step.
+    /// @param output Initialized residual to increment. Keep it disjoint from all inputs.
+    /// @param status Open diagnostic batch on the operator's execution instance.
+    /// @param derivative Weights including inverse time, with the candidate at index 0.
+    /// @param mass_at_new_time Integrated mass paired with field_at_new_time.
+    /// @param history Accepted scalar and mass values from before this step.
+    template<class Field, class Output, class Coefficient, std::size_t N, class Mass, class History>
+    void add_residual_async(Field field_at_new_time, Output output, AssemblyStatus<Exec>& status,
+                            numerics::time::Derivative<Coefficient, N> derivative,
+                            Mass mass_at_new_time, History history) const {
         mpi::guarded([&] {
-            const auto weights = validate(derivative, mass, history);
-            scalar::detail::validate_view<Exec>(field, owned_);
+            const auto weights = validate(derivative, mass_at_new_time, history);
+            scalar::detail::validate_view<Exec>(field_at_new_time, owned_);
             scalar::detail::validate_output<Exec>(output, owned_);
-            mpi::require(owned_ == 0 || static_cast<const void*>(field.data()) != static_cast<const void*>(output.data()),
+            mpi::require(owned_ == 0 ||
+                             static_cast<const void*>(field_at_new_time.data()) != static_cast<const void*>(output.data()),
                          "Scalar transient: in-place residual is unsupported");
+
             const auto flags = status.device_flags(exec_);
             Kokkos::parallel_for("transient/add_residual", Policy(exec_, 0, owned_),
                 detail::AddResidual<Real, Field, Output, decltype(weights), Mass, History, decltype(flags)>{
-                    field, output, weights, mass, history, flags});
+                    field_at_new_time, output, weights, mass_at_new_time, history, flags});
         });
     }
 
+    /// @brief Returns the number of owned cells processed by this operator.
     [[nodiscard]] std::size_t local_size() const noexcept { return owned_; }
+
+    /// @brief Returns the execution instance used to queue the time term.
     [[nodiscard]] const Exec& execution_space_instance() const noexcept { return exec_; }
+
 private:
     std::size_t owned_;
     Exec exec_;
 
-    template<class C, std::size_t N, class Mass, class History>
-    auto validate(numerics::time::Derivative<C, N> derivative, const Mass& mass, const History& history) const {
+    template<bool AddRhs, class Target, class Weights, class Mass, class History>
+    void launch_system(const Target& target, const Weights& weights, const Mass& mass_at_new_time,
+                       const History& history, const Flags& flags) const {
+        Kokkos::parallel_for("transient/add_system", Policy(exec_, 0, owned_),
+            detail::AddSystem<AddRhs, Real, Target, Weights, Mass, History, Flags>{
+                target, weights, mass_at_new_time, history, flags});
+    }
+
+    /// @brief Converts the weights and checks the views used by the selected operation.
+    template<class Coefficient, std::size_t N, class Mass, class History>
+    auto validate(numerics::time::Derivative<Coefficient, N> derivative,
+                  const Mass& mass_at_new_time, const History& history, bool use_history = true) const {
         static_assert(N == History::size, "Time derivative requires exactly one input layer per history coefficient");
-        Kokkos::Array<Real, N+1> weights;
-        for (std::size_t j = 0; j <= N; ++j) {
+        Kokkos::Array<Real, N + 1> weights{};
+        const std::size_t count = use_history ? N + 1 : 1;
+        for (std::size_t j = 0; j < count; ++j) {
             weights[j] = static_cast<Real>(derivative.weights[j]);
             mpi::require(std::isfinite(weights[j]) && (j != 0 || weights[j] > Real{0}),
                          "Scalar transient: invalid derivative coefficients in computation precision");
         }
-        detail::validate_mass<Exec>(mass, owned_);
-        detail::validate_history<Exec>(history, owned_);
+        detail::validate_mass<Exec>(mass_at_new_time, owned_);
+        if (use_history)
+            detail::validate_history<Exec>(history, owned_);
         return weights;
     }
 };

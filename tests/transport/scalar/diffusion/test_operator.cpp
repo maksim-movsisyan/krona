@@ -258,14 +258,21 @@ void empty(const Exec& e) { run_case(e, false, false, true); }
 /// @brief Checks duplicate-face accumulation into shared native graph entries.
 void duplicate(const Exec& e) { run_case(e, false, false, false, true); }
 
-/// @brief Implements a validated zero correction without exposing a gradients member.
-struct ZeroProjection {
+/// @brief Supplies a test boundary increment and checks the expected number of cells.
+struct TestProjection {
     std::size_t expected_cells;
+    Real boundary_increment = 0;
     template<class E> void validate(std::size_t cells) const
     { mpi::require(cells == expected_cells, "Wrong cell count passed to custom correction validator"); }
     template<class C, class R> KOKKOS_INLINE_FUNCTION R interior(const C&, R, R, R) const { return R{0}; }
     template<class C> KOKKOS_INLINE_FUNCTION auto operator()(const C& c) const
-    { return std::remove_cvref_t<decltype(c.tx)>{0}; }
+    { return static_cast<std::remove_cvref_t<decltype(c.tx)>>(boundary_increment); }
+};
+
+/// @brief Uses the correction in the normal-gradient slope to exercise custom boundary assembly.
+struct CorrectionDependentSlope {
+    KOKKOS_INLINE_FUNCTION bc::Relation<Real> operator()(const boundary::FaceContext<Real>&, Real increment) const
+    { return {Real{0}, Real{1}, -(Real{1} + increment), Real{1}}; }
 };
 
 /// @brief Checks a correction policy with validation but no gradients data member.
@@ -282,9 +289,24 @@ void custom_correction(const Exec& exec)
     const td::DiffusionOperator op(a.plan); ts::AssemblyStatus<Exec> status(exec);
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     status.begin_async(); op.add_residual_async(field, first, boundary, status, law); (void)status.check();
-    status.begin_async(); op.add_residual_async(field, second, boundary, status, law, ZeroProjection{static_cast<std::size_t>(f.host.n_cells)}); (void)status.check();
+    status.begin_async(); op.add_residual_async(field, second, boundary, status, law, TestProjection{static_cast<std::size_t>(f.host.n_cells)}); (void)status.check();
     const auto x = snapshot(first, exec), y = snapshot(second, exec);
     for (std::size_t i = 0; i < x.extent(0); ++i) test::near(x(i), y(i), Real{0}, "custom correction without a gradients member");
+
+    bc::Manager<Exec, Real, CorrectionDependentSlope> custom_boundary(layout);
+    for (std::size_t patch = 0; patch < f.host.patches.size(); ++patch)
+        custom_boundary.set(static_cast<mesh::PatchId>(patch), CorrectionDependentSlope{});
+    custom_boundary.finalize();
+    NativeSystem<double> full(f, exec), matrix_only(f, exec);
+    const TestProjection projection{static_cast<std::size_t>(f.host.n_cells), Real{1}};
+    status.begin_async();
+    op.add_system_async(full.view(), custom_boundary, status, law, projection);
+    op.add_system_async(matrix_only.view(), custom_boundary, status, law, projection, Real{0}, /*add_rhs=*/false);
+    (void)status.check();
+    const auto expected = snapshot(full.view().values, exec);
+    const auto actual = snapshot(matrix_only.view().values, exec);
+    for (std::size_t i = 0; i < expected.extent(0); ++i)
+        test::equal(actual(i), expected(i), "matrix-only assembly retains the correction-dependent boundary slope");
 }
 
 /// @brief Exercises uncached metrics in matrix, residual, correction and balance paths.
@@ -366,11 +388,12 @@ void split_ranges(const Exec& exec)
     op.add_system_async(full.view(), boundary, status, law, correction, time);
     op.add_residual_async(field, full_residual, boundary, status, law, correction, time);
     op.add_correction_async(full_correction, boundary, status, law, correction, time);
-    (void)status.check();
+    const auto full_report = status.check();
 
     const double tolerance = std::max(2.e-11, 400. * static_cast<double>(Kokkos::epsilon_v<Real>));
     const auto compare = [&](auto actual, auto expected, std::string_view label) {
-        const auto a_host = snapshot(actual, exec), e_host = snapshot(expected, exec);
+        const auto a_host = snapshot(actual, exec);
+        const auto e_host = snapshot(expected, exec);
         for (std::size_t i = 0; i < a_host.extent(0); ++i)
             test::near(a_host(i), e_host(i), tolerance, label);
     };
@@ -378,6 +401,26 @@ void split_ranges(const Exec& exec)
     compare(split.view().rhs, full.view().rhs, "split RHS");
     compare(split_residual, full_residual, "split residual");
     compare(split_correction, full_correction, "split correction");
+
+    // Fill the correction RHS from the complete residual, then assemble only the matrix.
+    for (const bool use_split : {false, true}) {
+        split.reset(exec);
+        status.begin_async();
+        op.add_residual_async(field, split.view().rhs, boundary, status, law, correction, time);
+        (void)status.check();
+        status.begin_async();
+        if (use_split) {
+            op.add_inner_system_async(split.view(), status, {}, law, correction, time, /*add_rhs=*/false);
+            op.add_boundary_system_async(split.view(), boundary, status, law, correction, time, /*add_rhs=*/false);
+        } else {
+            op.add_system_async(split.view(), boundary, status, law, correction, time, /*add_rhs=*/false);
+        }
+        const auto report = status.check();
+        check(report.has_local_diffusion_anchor == full_report.has_local_diffusion_anchor,
+              "matrix-only diffusion preserves boundary anchoring");
+        compare(split.view().values, full.view().values, "matrix-only diffusion coefficients");
+        compare(split.view().rhs, full_residual, "matrix-only diffusion preserves the correction RHS");
+    }
 }
 
 /// @brief Checks geometric gradient weights and harmonic coefficients with and without cached metrics.

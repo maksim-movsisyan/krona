@@ -186,6 +186,15 @@ Without Trilinos, construct a `ts::SystemView{values, rhs, entries}` over existi
 
 All entry positions must be valid for `values`; duplicate connecting faces may share an entry. The caller supplies a correct graph/map. Convection does not allocate or reorder it, impose a reference constraint, or test global solvability.
 
+To solve for an update to a known iterate, pass `add_rhs=false` after `time` and use the residual as the RHS:
+
+```cpp
+convection.add_system_async(target, boundary, status, flux, reconstruction, inflow, time, /*add_rhs=*/false);
+convection.add_residual_async(phi_iterate, target.rhs, boundary, status, flux, reconstruction, inflow, time);
+```
+
+The matrix pass keeps the upwind couplings and outflow diagonal. The residual pass supplies the full flux contribution, including prescribed inflow and reconstruction. The same flag is available on the inner and boundary system calls.
+
 ## Boundary profiles
 
 Profiles belong to **boundary conditions**. Convection samples them through `FixedValueInflow`; there is no separate convection profile registry.

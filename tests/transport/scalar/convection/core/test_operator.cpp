@@ -426,6 +426,25 @@ void split_ranges(const Exec& exec)
         compare(split.view().rhs, full.view().rhs, "split convection RHS");
         compare(split_residual, full_residual, "split convection residual");
         compare(split_correction, full_correction, "split convection correction");
+
+        // Build the correction RHS first, then assemble the upwind matrix around it.
+        for (const bool use_split : {false, true}) {
+            split.reset(exec);
+            status.begin_async();
+            op.add_residual_async(field, split.view().rhs, boundary, status, flux, reconstruction, inflow, time);
+            if (use_split) {
+                op.add_inner_system_async(split.view(), status, {}, flux, InvalidReconstruction{}, time,
+                                          /*add_rhs=*/false);
+                op.add_boundary_system_async(split.view(), boundary, status, flux, InvalidReconstruction{}, inflow,
+                                             time, /*add_rhs=*/false);
+            } else {
+                op.add_system_async(split.view(), boundary, status, flux, InvalidReconstruction{}, inflow, time,
+                                    /*add_rhs=*/false);
+            }
+            (void)status.check();
+            compare(split.view().values, full.view().values, "matrix-only convection coefficients");
+            compare(split.view().rhs, full_residual, "matrix-only convection preserves the correction RHS");
+        }
     }
 }
 

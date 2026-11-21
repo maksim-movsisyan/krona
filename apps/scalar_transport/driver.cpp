@@ -287,6 +287,7 @@ int solve(const Options& options, mpi::CommView comm) {
     linalg::Vector<SolverReal, Exec> rhs(matrix.distribution()), solution(matrix.distribution());
     linalg::Solver linear(matrix, solver_options(config.linear));
     const auto base_rhs = Kokkos::View<SolverReal*, Space>("scalar_transport/base_rhs", corrections ? owned : 0);
+    // During a transient solve, q is the candidate at t^(n+1). Keep q_n and q_nm1 at the accepted times.
     const auto q_n = Kokkos::View<StorageReal*, Space>("scalar_transport/accepted", steady ? 0 : owned);
     const auto q_nm1 = Kokkos::View<StorageReal*, Space>("scalar_transport/previous", bdf2 ? owned : 0);
     if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
@@ -300,10 +301,10 @@ int solve(const Options& options, mpi::CommView comm) {
         const auto source = make_source(problem, m, next, static_cast<Real>(config.source));
         const auto with_time_term = [&](const auto& submit) {
             if (steady) return;
-            const tt::TimeLevel newest{mass, q_n};
+            const tt::TimeLevel accepted_n{mass, q_n};
             if (bdf2 && step > 0)
-                submit(nt::Bdf2{}.coefficients(dt), tt::time_history(newest, tt::TimeLevel{mass, q_nm1}));
-            else submit(nt::BackwardEuler{}.coefficients(dt), tt::time_history(newest));
+                submit(nt::Bdf2{}.coefficients(dt), tt::time_history(accepted_n, tt::TimeLevel{mass, q_nm1}));
+            else submit(nt::BackwardEuler{}.coefficients(dt), tt::time_history(accepted_n));
         };
 
         // Assemble the base system at the new time with the accepted layers frozen.
@@ -377,6 +378,7 @@ int solve(const Options& options, mpi::CommView comm) {
         }
         if (gradients_needed) boundary_status.check();
         if (corrections) (void)status.check();
+        // Accept t^(n+1). Save the old t^n for BDF2 before promoting the candidate to q_n.
         if (bdf2) Kokkos::deep_copy(exec, q_nm1, q_n);
         if (!steady) Kokkos::deep_copy(exec, q_n, q_owned);
         time = next;

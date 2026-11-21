@@ -207,6 +207,15 @@ sources.add_async(residual, status, source);
 
 Input, gradients/coefficient buffers and written output must not overlap. In particular, in-place residual evaluation is unsupported; the runtime only detects equal starting pointers, so avoiding offset/strided aliases is also the caller's responsibility.
 
+For a correction equation, assemble the matrix with `add_rhs=false` after `time` and evaluate the RHS from the known iterate:
+
+```cpp
+diffusion.add_system_async(target, boundary, status, law, correction, time, /*add_rhs=*/false);
+diffusion.add_residual_async(phi_iterate, target.rhs, boundary, status, law, correction, time);
+```
+
+The matrix pass keeps each boundary relation's owner coefficient. The residual pass supplies the affine constant and the explicit nonorthogonal correction. A custom boundary condition may use the supplied correction to calculate its owner coefficient, so the matrix pass still evaluates the boundary relation with that correction. The same flag is available on the inner and boundary system calls.
+
 ## Coefficients, sources and boundary relations
 
 Pass `transport::IsotropicDiffusion{provider}`. Although the standalone constitutive law permits zero conductivity in its forward operation, **this spatial diffusion operator requires finite, strictly positive coefficients on every processed inner/boundary face**. Transmissibilities must remain positive and representable in the target scalar type.
