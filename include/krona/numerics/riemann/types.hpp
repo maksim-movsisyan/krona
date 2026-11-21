@@ -1,9 +1,8 @@
 #pragma once
- 
+
 #include <krona/execution/types.hpp>
 #include <krona/flow/conservative.hpp>
 #include <krona/math/vector3.hpp>
-#include <Kokkos_NumericTraits.hpp>
 
 #include <type_traits>
 
@@ -111,90 +110,5 @@ KOKKOS_INLINE_FUNCTION Flux<R> physical_flux(State<R> s, Vector<R> normal) {
     const R energy=s.density*(s.internal_energy+R{0.5}*s.velocity.norm2());
     return {mass,s.velocity*mass+normal*s.pressure,(energy+s.pressure)*un};
 }
-
-namespace detail {
-template<class R> KOKKOS_INLINE_FUNCTION bool finite(Vector<R> v)
-{ return Kokkos::isfinite(v.x)&&Kokkos::isfinite(v.y)&&Kokkos::isfinite(v.z); }
-template<class R> KOKKOS_INLINE_FUNCTION bool finite(Flux<R> u)
-{ return Kokkos::isfinite(u.mass)&&finite(u.momentum)&&Kokkos::isfinite(u.energy); }
-template<class R> KOKKOS_INLINE_FUNCTION bool finite(flow::Conservative<R> u)
-{ return Kokkos::isfinite(u.density)&&finite(u.momentum)&&Kokkos::isfinite(u.total_energy_density); }
-/// @brief Checks the side data shared by all solvers. The sign of e depends on its reference.
-template<class R> KOKKOS_INLINE_FUNCTION bool valid(State<R> s) {
-    return Kokkos::isfinite(s.density)&&s.density>R{0}&&finite(s.velocity)&&
-        Kokkos::isfinite(s.pressure)&&s.pressure>R{0}&&Kokkos::isfinite(s.internal_energy)&&
-        Kokkos::isfinite(s.sound_speed)&&s.sound_speed>R{0};
-}
-template<class R> KOKKOS_INLINE_FUNCTION Result<R> failure(Status status) {
-    const R nan=Kokkos::quiet_NaN_v<R>;
-    return {{nan,{nan,nan,nan},nan},nan,status};
-}
-template<class R> KOKKOS_INLINE_FUNCTION bool unit(Vector<R> n) {
-    const R norm=n.norm2();
-    // A normal can come from mesh geometry stored in a different precision.
-    const R tolerance=R{128}*(Kokkos::epsilon_v<R>+static_cast<R>(Kokkos::epsilon_v<GeometryReal>));
-    return finite(n)&&Kokkos::isfinite(norm)&&Kokkos::abs(norm-R{1})<=tolerance;
-}
-/// @brief Checks the face geometry and both sides, including the conversion to densities.
-template<class R> KOKKOS_INLINE_FUNCTION Status input_status(State<R> l,State<R> r,Vector<R> n) {
-    if(!unit(n)) return Status::InvalidNormal;
-    if(!valid(l) || !valid(r) || !finite(conservative(l)) || !finite(conservative(r))) return Status::InvalidState;
-    return Status::Success;
-}
-/// @brief Packages the flux only when its entries and the CFL speed are usable.
-template<class R> KOKKOS_INLINE_FUNCTION Result<R> finish(Flux<R> flux,R speed) {
-    if(!finite(flux)||!Kokkos::isfinite(speed)||!(speed>R{0}))return failure<R>(Status::NonfiniteFlux);
-    return {flux,speed,Status::Success};
-}
-/// @brief Takes the larger of |u dot n| + a from the two states.
-template<class R> KOKKOS_INLINE_FUNCTION R endpoint_speed(State<R> l,State<R> r,Vector<R> n)
-{ return Kokkos::max(Kokkos::abs(l.velocity.dot(n))+l.sound_speed,Kokkos::abs(r.velocity.dot(n))+r.sound_speed); }
-} // namespace detail
-
-/// @brief Computes a face-integrated flux from an oriented area vector.
-/// The vector length gives the area. Only the flux is scaled by that area.
-/// @tparam Solver Callable such as Hllc<> that returns a flux per unit area.
-/// @tparam R Scalar type of the states, geometry and result.
-/// @param solver Solver to apply to the normalized face direction.
-/// @param left State on the side the area vector points away from.
-/// @param right State on the side the area vector points towards.
-/// @param area_vector Face area times the unit normal from left to right.
-template<class Solver,class R>
-KOKKOS_INLINE_FUNCTION Result<R> integrated_flux(const Solver& solver,State<R> left,State<R> right,Vector<R> area_vector) {
-    const R area=Kokkos::sqrt(area_vector.norm2());
-    if(!detail::finite(area_vector)||!Kokkos::isfinite(area)||!(area>R{0}))
-        return detail::failure<R>(Status::InvalidNormal);
-    auto result=solver(left,right,area_vector*(R{1}/area));
-    if(result.valid()){
-        result.flux=result.flux*area;
-        if(!detail::finite(result.flux))return detail::failure<R>(Status::NonfiniteFlux);
-    }
-    return result;
-}
-
-/// @brief Computes a face-integrated flux when the unit normal and area are already available.
-/// The flux is multiplied by the area. The signal speed remains in velocity units.
-/// @tparam Solver Callable such as Hllc<> that returns a flux per unit area.
-/// @tparam R Scalar type of the states, geometry and result.
-/// @param solver Solver to apply to the supplied unit normal.
-/// @param left State on the side the normal points away from.
-/// @param right State on the side the normal points towards.
-/// @param normal Unit normal pointing from left to right.
-/// @param area Positive face area.
-template<class Solver, class R>
-KOKKOS_INLINE_FUNCTION Result<R> integrated_flux(
-    const Solver& solver, State<R> left, State<R> right, Vector<R> normal, R area) {
-    if (!Kokkos::isfinite(area) || !(area > R{0}))
-        return detail::failure<R>(Status::InvalidNormal);
-
-    auto result = solver(left, right, normal);
-    if (result.valid()) {
-        result.flux = result.flux * area;
-        if (!detail::finite(result.flux))
-            return detail::failure<R>(Status::NonfiniteFlux);
-    }
-    return result;
-}
-
 
 } // namespace krona::numerics::riemann

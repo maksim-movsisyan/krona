@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/numerics/riemann/detail/validation.hpp>
 #include <krona/transport/euler/boundary.hpp>
 #include <krona/transport/euler/jacobian.hpp>
 #include <krona/transport/euler/state.hpp>
@@ -36,8 +37,7 @@ KOKKOS_INLINE_FUNCTION auto flux_array(numerics::riemann::Flux<R> q)
 /// @brief Differentiates all five flux components with respect to one primitive variable.
 /// @tparam R Scalar type of the state and derivative.
 /// @tparam Sample Callable that evaluates the boundary flux at a trial trace.
-/// @param flux Evaluates the Riemann flux on this boundary face for a trial interior primitive 
-//              state (Boundary flux function).
+/// @param flux Bound flux function.
 /// @param point Unperturbed primitive trace in p, u, v, w, T order.
 /// @param base Flux at point.
 /// @param column Index of the primitive variable to perturb.
@@ -45,7 +45,7 @@ KOKKOS_INLINE_FUNCTION auto flux_array(numerics::riemann::Flux<R> q)
 /// @param derivative Matrix whose selected column is written on success.
 template<class R, class Sample>
 KOKKOS_INLINE_FUNCTION bool differentiate_flux_column(const Sample& flux, const Kokkos::Array<R, 5>& point,
-                                                      const Kokkos::Array<R, 5>& base, std::size_t column, 
+                                                      const Kokkos::Array<R, 5>& base, std::size_t column,
                                                       R step, numerics::riemann::Matrix5<R>& derivative) {
     const R x = point[column];
     for (int attempt = 0; attempt < 6; ++attempt, step *= R{0.5}) {
@@ -102,14 +102,13 @@ struct FiniteDifferenceBoundary {
     /// @param context Face geometry and evaluation time, held fixed during all probes.
     /// @param condition Condition sampled at the face during flux evaluation.
     /// @param model Physical boundary model or its face-specific data.
-    /// @param closure Policy used to produce the exterior state for each perturbed trace (e.g EvaluatedExterior).
+    /// @param closure Policy used to produce the exterior state for each perturbed trace.
     /// @param states Owner state, interior trace and optional prepared boundary value.
     /// @param state_law Primitive-to-Riemann-state conversion.
     /// @param solver Numerical flux to differentiate.
     template<class R, class Condition, class Model, class Closure, class StateLaw, class Solver>
     KOKKOS_INLINE_FUNCTION BoundaryJacobian<R> operator()(const boundary::FaceContext<R>& context,
-                                                          const Condition& condition, const Model& model, 
-                                                          const Closure& closure,
+                                                          const Condition& condition, const Model& model, const Closure& closure,
                                                           const BoundaryLinearizationState<R>& states,
                                                           const StateLaw& state_law, const Solver& solver) const {
         namespace ri = numerics::riemann;
@@ -118,11 +117,9 @@ struct FiniteDifferenceBoundary {
             const auto inside = detail::primitive(point);
             const auto left = detail::prepare_state(state_law, inside);
             if (!detail::state_valid(left)) return {{}, R{0}, ri::Status::InvalidState};
-
             const auto outside = closure(context, condition, inside, states.prepared_face, model);
             const auto right = detail::prepare_state(state_law, outside);
             if (!detail::state_valid(right)) return {{}, R{0}, ri::Status::InvalidState};
-
             const auto result = solver(left, right, normal);
             if (result.valid() && !ri::detail::finite(result.flux))
                 return {{}, R{0}, ri::Status::NonfiniteFlux};
@@ -133,9 +130,8 @@ struct FiniteDifferenceBoundary {
         const auto point = detail::primitive_array(states.trace);
         const auto base = flux(point);
         if (!base.valid()) return {};
-
         const auto reference = detail::flux_array(base.flux);
-        const R relative_step = Kokkos::cbrt(Kokkos::epsilon_v<R>); // 1e-6 / 1e-3 for double / float
+        const R relative_step = Kokkos::cbrt(Kokkos::epsilon_v<R>);
         ri::Matrix5<R> trace_jacobian;
         for (std::size_t column = 0; column < 5; ++column) {
             R scale = Kokkos::abs(point[column]);

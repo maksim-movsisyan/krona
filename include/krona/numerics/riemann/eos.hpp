@@ -2,6 +2,7 @@
  
 #include <krona/numerics/riemann/types.hpp>
 #include <krona/thermodynamics/ideal_gas.hpp>
+#include <Kokkos_NumericTraits.hpp>
 
 namespace krona::numerics::riemann {
 

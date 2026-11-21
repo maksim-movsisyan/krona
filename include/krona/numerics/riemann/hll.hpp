@@ -1,8 +1,16 @@
 #pragma once
  
-#include <krona/numerics/riemann/types.hpp>
+#include <krona/numerics/riemann/detail/validation.hpp>
 
 namespace krona::numerics::riemann {
+
+namespace detail {
+
+/// @brief Takes the larger of |u dot n| + a from the two states.
+template<class R> KOKKOS_INLINE_FUNCTION R endpoint_speed(State<R> l,State<R> r,Vector<R> n)
+{ return Kokkos::max(Kokkos::abs(l.velocity.dot(n))+l.sound_speed,Kokkos::abs(r.velocity.dot(n))+r.sound_speed); }
+
+} // namespace detail
 
 /// @brief Estimates the outer wave speeds from the sound speeds and normal velocities on both sides.
 struct DavisSpeeds {
