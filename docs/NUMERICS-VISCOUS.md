@@ -1,10 +1,9 @@
 # Local viscous transport
 
 `krona::numerics::viscous` evaluates local Newtonian stresses, Fourier heat flux,
-and total-energy viscous flux. It belongs beside the local Riemann solvers in
-`numerics/viscous`, while material correlations remain in `transport/properties`.
+and total-energy viscous flux.
 
-The production headers depend only on KRONA execution types and Kokkos. There is
+The production headers use KRONA execution types, fixed-size math and Kokkos. There is
 no EOS, mesh, MPI, field-storage, boundary-manager or Riemann-solver dependency.
 The same constitutive calculations can be used by conservative compressible,
 SIMPLE and coupled pressure-based spatial operators.
@@ -15,15 +14,28 @@ namespace viscous = krona::numerics::viscous;
 using Real = krona::ComputeReal;
 ```
 
+## Contents
+
+- [Physical contract](#physical-contract)
+- [Velocity-gradient layout](#velocity-gradient-layout)
+- [Momentum, including nonthermal incompressible use](#momentum-including-nonthermal-incompressible-use)
+- [Heat transfer and coefficient models](#heat-transfer-and-coefficient-models)
+- [Total-energy adapters and signs](#total-energy-adapters-and-signs)
+- [Viscous dissipation for thermal equations](#viscous-dissipation-for-thermal-equations)
+- [Status, validation and execution](#status-validation-and-execution)
+- [Limits](#limits)
+- [Formula reference](#formula-reference)
+
+
 ## Physical contract
 
 The implementation is three-dimensional, isotropic and Newtonian:
 
-\[
+$$
 \theta=\nabla\cdot\mathbf u,\qquad
 \tau=\mu\left[\nabla\mathbf u+(\nabla\mathbf u)^T-\tfrac23\theta I\right]
       +\zeta\theta I.
-\]
+$$
 
 `mu` is dynamic shear viscosity; `bulk` is bulk viscosity zeta. Both must be
 finite and nonnegative. `bulk=0` is the default **Stokes hypothesis**, not a
@@ -33,17 +45,16 @@ that generally negative quantity as `bulk`.
 
 Pressure is excluded from `SymmetricStress`: it is already part of the inviscid
 momentum flux. At exact zero divergence, the law reduces to
-`mu*(grad(u)+transpose(grad(u)))`. The implementation uses the supplied gradient
-and does not force its trace to zero during a pressure-correction iteration.
+`mu*(grad(u)+transpose(grad(u)))`. The stress law computes the divergence directly from the supplied velocity gradient.
 An operator using a different constitutive/discrete form can supply its own
 symmetric tensor to `project_traction`.
 
 For a unit normal n, normally directed from owner to neighbour (outward on a
 physical boundary):
 
-\[
+$$
 \mathbf t=\tau\mathbf n,\qquad q_n=-\lambda\nabla T\cdot\mathbf n.
-\]
+$$
 
 `traction` means positive `tau*n`; it is **not** the outward diffusive momentum
 flux, which has the opposite sign. `q_n` is the physical outward heat flux.
@@ -106,7 +117,7 @@ if (!traction.valid()) {
 
 A stress result contains `value.xx`, `yy`, `zz`, `xy`, `xz`, `yz`. Off-diagonal
 entries are actual tensor entries, not doubled engineering shear components.
-The tensor is symmetric.
+The result uses `math::SymmetricTensor3<Real>`.
 
 `NewtonianStress::traction` uses the same constitutive formula directly and
 avoids a second validation of a materialized stress result. If a stress has
@@ -157,7 +168,8 @@ condition evaluation itself remains outside this module.
 request it explicitly as above; its coefficient is then converted to that type.
 For Newtonian stress, the arithmetic type comes from `VelocityGradient<Real>`.
 Normal-unit tolerance accounts for both arithmetic precision and the stored
-normal component precision. Normalization is never performed internally.
+normal component precision. The caller supplies a unit normal. For an already projected derivative, use
+`FourierHeatFlux{}.from_normal_gradient(dT_dn, conductivity)`.
 
 ## Total-energy adapters and signs
 
@@ -167,11 +179,11 @@ constructible from `{mass, {mx,my,mz}, energy}`, exposing `.mass`, `.momentum.x`
 local calculation. This avoids an unnecessary dependency on the Riemann module
 or a second, competing five-component flow type.
 
-The existing `riemann::Flux<Real>` already satisfies this contract:
+Use the shared `flow::Flux<Real>` as the five-component value:
 
 ```cpp
-#include <krona/numerics/riemann/types.hpp>
-using Flux = krona::numerics::riemann::Flux<Real>;
+#include <krona/flow/flux.hpp>
+using Flux = krona::flow::Flux<Real>;
 
 const auto fv = viscous::outward_flux<Flux>(surface, face_velocity);
 if (fv.valid()) {
@@ -182,20 +194,20 @@ if (fv.valid()) {
 
 For an outward-flux balance,
 
-\[
+$$
 \partial_t U+\nabla\cdot(F_{\mathrm{inv}}+F_{\mathrm{diff}})=0,
 \qquad
 F_{\mathrm{diff},n}=(0,-\mathbf t,q_n-\mathbf u\cdot\mathbf t).
-\]
+$$
 
 `outward_flux` returns this diffusive contribution. If viscous transport is
 instead written on the right-hand side,
 
-\[
+$$
 \partial_t U+\nabla\cdot F_{\mathrm{inv}}=\nabla\cdot F_{\mathrm{visc}},
 \qquad
 F_{\mathrm{visc},n}=(0,\mathbf t,\mathbf u\cdot\mathbf t-q_n),
-\]
+$$
 
 use `rhs_flux<Flux>(surface, face_velocity)`. These are opposite conventions for
 the same contribution. Never add `rhs_flux` to an outward inviscid flux.
@@ -224,11 +236,11 @@ const auto phi = viscous::NewtonianStress{}.dissipation(g, mu, bulk);
 
 This evaluates the source density
 
-\[
+$$
 \Phi=\tau:\nabla\mathbf u
 =2\mu D_{\mathrm{dev}}:D_{\mathrm{dev}}+\zeta\theta^2,
 \qquad D=\tfrac12(\nabla\mathbf u+(\nabla\mathbf u)^T).
-\]
+$$
 
 It uses the nonnegative strain-based expression. Rigid rotation does not
 produce viscous stress or dissipation. Multiply Phi by cell volume for an
@@ -283,6 +295,8 @@ It supports the stated Newtonian/Fourier continuum model, independently of the
 EOS. Anisotropic conduction, mixture enthalpy diffusion, non-Newtonian or
 nonsymmetric constitutive laws require explicit extensions. A supplied
 symmetric stress can already be projected without using NewtonianStress.
+
+See [Viscous transport](TRANSPORT-VISCOUS.md) for face discretization and assembly.
 
 ## Formula reference
 
