@@ -4,7 +4,15 @@ The mesh partitioner converts a CGNS mesh into a distributed KRONA solver mesh: 
 
 The application is `krona_mesh_partitioner`. Its workflow uses `io::cgns`, `mesh::host`, `mesh::partition` and `io::solver_mesh`; the graph partitioner itself only needs CSR connectivity and vertex ownership.
 
-## Processing steps
+## Contents
+
+- [1. Processing steps](#1-processing-steps)
+- [2. Input and output contracts](#2-input-and-output-contracts)
+- [3. Prepare and save a mesh in C++](#3-prepare-and-save-a-mesh-in-c)
+- [4. Partition an arbitrary graph](#4-partition-an-arbitrary-graph)
+- [5. Application choices](#5-application-choices)
+
+## 1. Processing steps
 
 | Step / API | Input → output | How it works |
 | --- | --- | --- |
@@ -20,16 +28,16 @@ During face construction, a unique face record is held by the source owner of it
 
 Steps involving MPI must be called by every rank, including ranks with no cells, in the same order. Geometry computation with a communicator is collective; reordering and local validation do not exchange mesh data.
 
-## Input and output contracts
+## 2. Input and output contracts
 
 - Volume cells are linear TET, PYRA, PRISM or HEXA; boundary facets are TRI or QUAD. Connectivity follows canonical CGNS node ordering.
-- The CGNS reader accepts HDF5 unstructured zones with supported uniform or MIXED sections. Higher-order and polyhedral elements are unsupported. Legacy variable-arity sections needing implicit conversion must be converted to a suitable CGNS format first.
+- The CGNS reader accepts HDF5 unstructured zones with supported uniform or MIXED sections. Higher-order and polyhedral elements are unsupported. **Legacy variable-arity sections needing implicit conversion must be converted to a suitable CGNS format first.**
 - Reader defaults select base 1 and zone 1. All ranks use the same file and options. CGNS calls must not overlap because CGNS configuration is process-global.
 - In 3D, supported BC point sets identify boundary elements: `PointList` / `PointRange` at `FaceCenter`, or legacy element lists/ranges. Unsupported BC sets are rejected by default; `UnsupportedBoundary::ignore` records their names in `ReadResult::source.ignored_boundary_conditions`.
 - External faces without a label remain boundary faces with `invalid_patch_id`. `build_faces` does not create an automatic patch. Duplicate boundary records, boundary labels on interior faces and faces shared by more than two cells are rejected. Hanging interfaces require a conforming mesh first.
-- The HDF5 result is a partitioned mesh snapshot. Loading requires the same MPI communicator size as the original run. The reader uses the saved part2rank mapping to assign partitions to ranks in the supplied communicator. If MPI ranks are placed differently in the solver run than during partitioning, the benefits of topology-aware mapping may be reduced or lost. Loading requires matching `GeometryReal` precision and equally wide or wider local/global index types. Loading with a different MPI size requires repartitioning.
+- The HDF5 result is a partitioned mesh snapshot. Loading requires the same MPI communicator size as the original run. The reader uses the saved part2rank mapping to assign partitions to ranks in the supplied communicator. **If MPI ranks are placed differently in the solver run than during partitioning, the benefits of topology-aware mapping may be reduced or lost (KNOWN LIMITATION: via using part2rank from KRONA file it can be lost anyway, some changes in code are nedeed, but not implemented now)** Loading requires matching `GeometryReal` precision and equally wide or wider local/global index types. Loading with a different MPI size requires repartitioning.
 
-## Prepare and save a mesh in C++
+## 3. Prepare and save a mesh in C++
 
 This is the application's processing order, with explicit ownership transfer. No Kokkos initialization is needed.
 
@@ -80,7 +88,7 @@ int main(int argc, char** argv) {
 
 `std::move` marks the imported payload and face records as consumed. The destination-rank span is borrowed only for the migration call. Release the dual graph before migration to reduce peak memory.
 
-## Partition an arbitrary graph
+## 4. Partition an arbitrary graph
 
 Header: `krona/mesh/partition/partition.hpp`. Namespace: `krona::mesh::partition`.
 
@@ -123,7 +131,7 @@ All ranks use identical options and ownership metadata. Calls run on the MPI mai
 
 Partitioning leaves input arrays and current ownership unchanged. The wrapper may convert index arrays and dKaMinPar copies its imported graph; accepting a view does not make the backend import zero-copy.
 
-## Application choices
+## 5. Application choices
 
 The application entry point is `apps/mesh_partitioner.cpp`; it owns MPI runtime and
 communicator lifetime. `apps/mesh_partitioner/cli.*` parses arguments locally, and
@@ -139,6 +147,7 @@ The current application fixes partition settings to the defaults above; they are
 | `--reorder SFC` | Orders owned centroids along a local 3D Hilbert curve. C++ enum: `HILBERT_SFC`. |
 | `--reorder RCM` | Uses Reverse Cuthill–McKee on owned-cell face adjacency. |
 | `--bc <path>` | Writes an editable TOML BC template on rank 0. Source labels provide suggestions; physical conditions still need review. |
+| `--bc-profiles <directory>` | Creates a <directory> and writes there description of every boundary patch (csv: owner-cell gid, x, y, z, value (blank)) this files can be used to create tabulated boundary conditions for patches in boundary manager (though the current implementation performs interpolation, so it does not require exact coordinates for each face center) |
 | `--vtu <directory>` | Writes owned volume cells and boundary faces as `part.pvtu` and `part_bnd.pvtu`, with per-rank pieces. |
 | `-v` / `--verbose`, `-vv` | Summary / detailed application diagnostics. Backend output remains quiet. |
 
