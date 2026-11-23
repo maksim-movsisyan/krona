@@ -665,7 +665,7 @@ endif()
     #=== THERMODYNAMICS ===
     #======================   
 krona_interface(thermodynamics krona::execution krona::mpi)
-krona_interface(flow krona::math)
+krona_interface(flow krona::math krona::build_config)
 
 
     #================
@@ -675,8 +675,8 @@ krona_interface(gradient krona::mesh_device krona::fields krona::math)
 krona_interface(reconstruction krona::math krona::fields)
 krona_interface(reconstruction_mesh krona::reconstruction krona::mesh_device)
 krona_interface(riemann krona::execution krona::mpi krona::thermodynamics krona::flow)
-krona_interface(time_derivative krona::execution krona::mpi)
 krona_interface(viscous krona::execution krona::math)
+krona_interface(time_derivative krona::execution krona::mpi)
 
 
     #========================

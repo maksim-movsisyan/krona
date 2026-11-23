@@ -14,7 +14,6 @@ namespace krona::numerics::riemann {
 template <typename Real = ComputeReal>
 using Vector = math::Vector3<Real>;
 
-using flow::Flux;
 
 /// @brief One side of a face, ready to pass to a Riemann solver.
 /// The caller supplies the velocity and the thermodynamic quantities from the EOS.
@@ -45,7 +44,7 @@ enum class Status {
 /// @tparam Real Scalar type of the computed flux and speed.
 template<class Real = ComputeReal>
 struct Result {
-    Flux<Real> flux{};             ///< Per unit face area from a solver, or area-integrated from integrated_flux().
+    flow::Flux<Real> flux{};       ///< Per unit face area from a solver, or area-integrated from integrated_flux().
     Real max_signal_speed=0;       ///< Positive wave speed estimate for CFL, in velocity units.
     Status status=Status::Success; ///< Whether and how the flux was computed.
 
@@ -77,7 +76,7 @@ KOKKOS_INLINE_FUNCTION flow::Conservative<R> conservative(State<R> s)
 /// @param jump Change in density, momentum density and total energy density across the wave.
 /// @param speed Signed propagation speed along the face normal.
 template<class R>
-KOKKOS_INLINE_FUNCTION Flux<R> wave_flux(flow::Conservative<R> jump, R speed)
+KOKKOS_INLINE_FUNCTION flow::Flux<R> wave_flux(flow::Conservative<R> jump, R speed)
 { return {speed * jump.density, jump.momentum * speed, speed * jump.total_energy_density}; }
 
 /// @brief Computes the physical Euler flux per unit area for a single state.
@@ -86,7 +85,7 @@ KOKKOS_INLINE_FUNCTION Flux<R> wave_flux(flow::Conservative<R> jump, R speed)
 /// @param s Prepared Euler state.
 /// @param normal Unit normal pointing from the left side to the right side.
 template<class R>
-KOKKOS_INLINE_FUNCTION Flux<R> physical_flux(State<R> s, Vector<R> normal) {
+KOKKOS_INLINE_FUNCTION flow::Flux<R> physical_flux(State<R> s, Vector<R> normal) {
     const R un=s.velocity.dot(normal), mass=s.density*un;
     const R energy=s.density*(s.internal_energy+R{0.5}*s.velocity.norm2());
     return {mass,s.velocity*mass+normal*s.pressure,(energy+s.pressure)*un};

@@ -1,7 +1,6 @@
 #pragma once
 
-#include <krona/execution/utils.hpp>
-#include <krona/mpi/communicator.hpp>
+#include <krona/mpi/error.hpp>
 #include <krona/mesh/device/validation.hpp>
 #include <krona/transport/scalar/diffusion/types.hpp>
 #include <krona/transport/scalar/diffusion/detail/geometry.hpp>
@@ -88,24 +87,17 @@ private:
     }
 };
 
-/// @brief Verifies the local topology, primary geometry and supplied caches before submitting work.
+/// @brief Checks the primary and cached metrics required by diffusion on validated topology.
 template<class Exec, class Real>
-void validate_plan(mesh::device::MeshView<typename Exec::memory_space> mesh_view,
-    mesh::device::AuxConnectivityView<typename Exec::memory_space> connectivity,
+void validate_geometry(mesh::device::MeshView<typename Exec::memory_space> mesh_view,
     mesh::device::AuxGeometryView<typename Exec::memory_space> geometry,
-    mpi::CommView comm, const Exec& exec, DiffusionOptions options) {
+    const Exec& exec, DiffusionOptions options) {
     mpi::guarded([&] {
-        execution::require_kokkos();
         const auto& s = mesh_view.sizes;
-        mpi::require(comm.native() != MPI_COMM_NULL, "Scalar diffusion: null communicator");
         mpi::require(std::isfinite(options.orthogonality_tolerance) && options.orthogonality_tolerance >= 0 &&
                      options.orthogonality_tolerance < 1, "Scalar diffusion: invalid orthogonality tolerance");
         using mesh::device::MeshData;
         namespace validation = mesh::device::validation;
-        // Existing shared validators check shapes, face intervals and complete cell-face incidence.
-        const auto status = validation::validate<MeshData::FaceCells | MeshData::FaceGeometry,
-            mesh::AuxConnType::CellFaces, mesh::AuxGeomType::None, true>(exec, mesh_view, connectivity, geometry);
-        mpi::require(status.ok(), "Scalar diffusion: invalid mesh, cell-face incidence or normal metrics");
         const auto cells = static_cast<std::size_t>(s.n_cells);
         const auto owned = static_cast<std::size_t>(s.n_own);
         const auto& g = mesh_view.geometry;

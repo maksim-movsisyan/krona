@@ -1,5 +1,6 @@
 #pragma once
 
+#include <krona/transport/detail/component_pack.hpp>
 #include <krona/transport/euler/boundary.hpp>
 #include <krona/transport/euler/detail/stencil_data.hpp>
 #include <krona/transport/euler/reconstruction.hpp>
@@ -34,7 +35,7 @@ struct Physics {
     }
 
     KOKKOS_INLINE_FUNCTION auto base(std::size_t cell) const {
-        const auto q = primitive<R>(reconstruction.values(), cell);
+        const auto q = transport::detail::read_primitive<R>(reconstruction.values(), cell);
         return CellState<R>{q, prepare(q)};
     }
 
@@ -129,7 +130,7 @@ struct Physics {
     /// @param slot Index of the face value in the extended primitive pack.
     template<bool Read>
     KOKKOS_INLINE_FUNCTION auto prepared_face(std::size_t slot) const {
-        if constexpr (Read) return primitive<R>(reconstruction.values(), slot);
+        if constexpr (Read) return transport::detail::read_primitive<R>(reconstruction.values(), slot);
         else return boundary::physical::Primitive<R, true>{};
     }
 

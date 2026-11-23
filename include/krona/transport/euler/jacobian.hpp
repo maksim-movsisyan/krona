@@ -4,21 +4,12 @@
 
 namespace krona::transport::euler {
 
-/// @brief Borrows the writable matrix blocks and the locations where face contributions go.
-/// @tparam Blocks Rank-three native view indexed by entry, row variable and column variable.
-/// @tparam Entries Device map produced by the face assembly plan for those blocks.
-template<class Blocks, class Entries>
-struct JacobianView {
-    Blocks blocks;   ///< Writable 5x5 blocks; assembly increments their existing coefficients.
-    Entries entries; ///< Diagonal entries and off-diagonal entries for each face side.
-};
-
 /// @brief Derivatives of the oriented flux per unit area in conservative variable order.
 /// @tparam R Scalar type of the derivative entries.
 template<class R>
 struct FaceJacobians {
-    numerics::riemann::Matrix5<R> left;  ///< Derivative with respect to owner state.
-    numerics::riemann::Matrix5<R> right; ///< Derivative with respect to neighbour state.
+    math::Matrix5<R> left;  ///< Derivative with respect to owner state.
+    math::Matrix5<R> right; ///< Derivative with respect to neighbour state.
 };
 
 /// @brief Approximates the inner-face Jacobian using the two cell-centre states.

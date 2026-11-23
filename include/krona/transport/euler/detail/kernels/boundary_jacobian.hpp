@@ -1,10 +1,10 @@
 #pragma once
 
-#include <krona/transport/euler/boundary_jacobian.hpp>
-#include <krona/transport/euler/detail/accumulation.hpp>
-#include <krona/transport/euler/detail/face_physics.hpp>
-#include <krona/transport/euler/plan.hpp>
 #include <krona/boundary/geometry_view.hpp>
+#include <krona/numerics/reconstruction/types.hpp>
+#include <krona/transport/detail/assembly_output.hpp>
+#include <krona/transport/euler/boundary_jacobian.hpp>
+#include <krona/transport/euler/detail/face_physics.hpp>
 
 namespace krona::transport::euler::detail {
 
@@ -28,7 +28,7 @@ struct BoundaryJacobianFaces {
     Condition condition;
     Closure closure;
     Linearization linearization;
-    CellRange cells;
+    numerics::reconstruction::CellRange cells;
     R time;
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
@@ -65,9 +65,11 @@ struct BoundaryJacobianFaces {
         // Multiple faces of a patch can contribute to the same row.
         const A area = static_cast<A>(geometry.face_area(f));
         for (std::size_t row = 0; row < 5; ++row)
-            for (std::size_t column = 0; column < 5; ++column)
-                atomic_add_checked(&target.blocks(entry, row, column),
-                    area * static_cast<A>(derivative.block(row, column)), physics.flags, BadJacobian);
+            for (std::size_t column = 0; column < 5; ++column) {
+                const A contribution = area * static_cast<A>(derivative.block(row, column));
+                if (!transport::detail::atomic_add(&target.blocks(entry, row, column), contribution))
+                    flag(physics.flags, BadJacobian);
+            }
     }
 };
 

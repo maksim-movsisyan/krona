@@ -1,3 +1,4 @@
+#include <krona/flow/flux.hpp>
 #include <common/test_support.hpp>
 #include <krona/numerics/riemann/flux.hpp>
 #include <array>
@@ -14,7 +15,7 @@ template<class R> auto state(R rho,R u,R p,R v=0,R w=0)
 { return r::ideal_gas_from_rhop(krona::thermodynamics::IdealGas<R>{},rho,r::Vector<R>{u,v,w},p); }
 
 /// @brief Compares every conservative flux component against a reference.
-template<class R> void compare(r::Flux<R> a,r::Flux<R> b,R tol)
+template<class R> void compare(krona::flow::Flux<R> a,krona::flow::Flux<R> b,R tol)
 {
     near(a.mass,b.mass,tol,"mass flux"); near(a.energy,b.energy,tol,"energy flux");
     near(a.momentum.x,b.momentum.x,tol,"x momentum");
@@ -72,7 +73,7 @@ void contacts(const Exec&)
 
     // These shock states have the same exact mass, momentum and energy flux.
     const auto l=state(1.,2.,1.),q=state(24./11.,11./12.,19./6.);
-    compare(r::Roe{1.4}(l,q,{1,0,0}).flux,r::Flux<double>{2.,{5.,0,0},11.},1.e-12);
+    compare(r::Roe{1.4}(l,q,{1,0,0}).flux,krona::flow::Flux<double>{2.,{5.,0,0},11.},1.e-12);
 }
 
 /// @brief Supplies reversed wave bounds to exercise invalid-fan diagnostics.
@@ -174,9 +175,9 @@ template<class Solver> void sod_run(Solver solver)
 {
     constexpr int count=240;const double dx=1./count;
     std::vector<flow::Conservative<double>> q(count),next(count);
-    std::vector<r::Flux<double>> flux(count+1);
+    std::vector<krona::flow::Flux<double>> flux(count+1);
     for(int i=0;i<count;++i)q[i]=r::conservative(i<count/2?state(1.,0.,1.):state(0.125,0.,0.1));
-    const auto initial=q;double t=0; r::Flux<double> boundary{};
+    const auto initial=q;double t=0; krona::flow::Flux<double> boundary{};
     const krona::thermodynamics::IdealGas<double> gas{};
 
     // Use face wave speeds for the CFL step and update cells by conservative flux differences.

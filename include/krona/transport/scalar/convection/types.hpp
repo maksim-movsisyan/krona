@@ -1,12 +1,10 @@
 #pragma once
 
 #include <krona/boundary/scalar/conditions.hpp>
-#include <krona/transport/scalar/face_range.hpp>
+#include <krona/transport/face_range.hpp>
 #include <Kokkos_NumericTraits.hpp>
 
 namespace krona::transport::scalar::convection {
-
-using scalar::FaceRange;
 
 /// @brief Reads the signed mass flow rate already integrated over each face.
 /// Interface copies must describe the same physical flux with their respective normal signs.

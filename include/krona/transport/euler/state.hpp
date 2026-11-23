@@ -1,6 +1,7 @@
 #pragma once
 #include <krona/boundary/physical/state.hpp>
 #include <krona/numerics/riemann/eos.hpp>
+#include <Kokkos_Array.hpp>
 
 namespace krona::transport::euler {
 
@@ -27,11 +28,6 @@ KOKKOS_INLINE_FUNCTION numerics::riemann::State<R> prepare_state(const StateLaw&
     return law(primitive);
 }
 
-template<class R,class Pack>
-KOKKOS_INLINE_FUNCTION auto primitive(const Pack& values,std::size_t cell) {
-    return boundary::physical::Primitive<R,true>{static_cast<R>(values(cell,0)),
-        {static_cast<R>(values(cell,1)),static_cast<R>(values(cell,2)),static_cast<R>(values(cell,3))},static_cast<R>(values(cell,4))};
-}
 template<class R>
 KOKKOS_INLINE_FUNCTION auto primitive(const Kokkos::Array<R,5>& a)
 { return boundary::physical::Primitive<R,true>{a[0],{a[1],a[2],a[3]},a[4]}; }

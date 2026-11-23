@@ -323,7 +323,7 @@ A custom correction supplies `interior(context, tx, ty, tz)` and a boundary-cont
 
 The full `add_system_async()`, `add_residual_async()` and `add_correction_async()` calls run one pass over the owned rows for the inner contributions, followed by the physical boundary patches. For split submission, use the corresponding `add_inner_*_async()` for each selected face range and `add_boundary_*_async()` once for the boundary patches.
 
-An inner `FaceRange{begin, end}` is a half-open interval of local face IDs. `FaceRange{}` covers every inner face, `end = -1` extends to `n_inner_faces`, and `begin == end` selects no faces. Use disjoint ranges when adding contributions to the same target.
+An inner `krona::transport::FaceRange{begin, end}` is a half-open interval of local face IDs. `krona::transport::FaceRange{}` covers every inner face, `end = -1` extends to `n_inner_faces`, and `begin == end` selects no faces. Use disjoint ranges when adding contributions to the same target.
 
 | Range | Faces |
 |---|---|

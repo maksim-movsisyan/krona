@@ -1,10 +1,8 @@
 #pragma once
 
-#include <krona/transport/scalar/face_range.hpp>
+#include <krona/transport/face_range.hpp>
 
 namespace krona::transport::scalar::diffusion {
-
-using scalar::FaceRange;
 
 /// @brief Geometry checks for a diffusion plan.
 struct DiffusionOptions {

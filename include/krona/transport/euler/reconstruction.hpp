@@ -2,7 +2,7 @@
 
 #include <krona/numerics/reconstruction/face_profiles.hpp>
 #include <krona/numerics/reconstruction/schemes/polynomial.hpp>
-#include <krona/transport/euler/bindings.hpp>
+#include <krona/transport/detail/component_pack.hpp>
 
 namespace krona::transport::euler {
 
@@ -42,7 +42,7 @@ struct Reconstruction {
     /// @param with_boundary Whether to check the boundary formula inputs as well.
     template <class Exec>
     void validate(std::size_t cells, std::size_t extended, bool with_boundary) const {
-        detail::validate_pack<Exec, false>(values(), with_boundary ? extended : cells);
+        transport::detail::validate_pack<Exec, 5, false>(values(), with_boundary ? extended : cells);
         profiles.template validate<Exec>(cells, with_boundary ? extended : cells, with_boundary,
                                          "Euler: undersized reconstruction provider");
     }

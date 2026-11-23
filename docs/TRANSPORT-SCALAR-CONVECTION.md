@@ -118,11 +118,11 @@ The base scalar loop reads cell centres and samples prescribed inflow directly f
 
 ## Overlap with halo exchange
 
-Use `add_inner_*_async` and `add_boundary_*_async` to split a full contribution. The inner calls accept a half-open `cv::FaceRange{begin, end}`. With grouped faces, `[0, n_internal_faces)` connects owned cells and `[n_internal_faces, n_inner_faces)` connects owned cells to MPI ghosts. Use `{}` for all inner faces or `{begin, -1}` to select through the last inner face. An empty interval adds nothing.
+Use `add_inner_*_async` and `add_boundary_*_async` to split a full contribution. The inner calls accept a half-open `krona::transport::FaceRange{begin, end}`. With grouped faces, `[0, n_internal_faces)` connects owned cells and `[n_internal_faces, n_inner_faces)` connects owned cells to MPI ghosts. Use `{}` for all inner faces or `{begin, -1}` to select through the last inner face. An empty interval adds nothing.
 
 ```cpp
-const cv::FaceRange owned_faces{0, m.sizes.n_internal_faces};
-const cv::FaceRange interface_faces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+const krona::transport::FaceRange owned_faces{0, m.sizes.n_internal_faces};
+const krona::transport::FaceRange interface_faces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
 
 status.begin_async();
 halo_exchange.start();

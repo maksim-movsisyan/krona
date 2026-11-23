@@ -376,7 +376,7 @@ void reject_alias(const Exec& exec)
 {
     const auto comm=krona::mpi::CommView::world();Grid grid(comm,exec);Fields<> fields(grid,exec);fields.initialize(grid,exec);
     const eu::EulerOperator op{grid.plan,eu::Thermodynamics{gas()}};eu::AssemblyStatus<Exec> status(exec);status.begin_async();
-    auto output=eu::primitive_fields(fields.pressure.view(),fields.velocity.view(),fields.temperature.view());
+    auto output=krona::fields::pack(fields.pressure.view(),fields.velocity.view(),fields.temperature.view());
     op.add_inner_residual_async(fields.reconstruction(grid),output,status);
 }
 

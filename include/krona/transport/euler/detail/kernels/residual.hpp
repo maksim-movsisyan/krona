@@ -1,9 +1,10 @@
 #pragma once
 
-#include <krona/transport/euler/detail/accumulation.hpp>
-#include <krona/transport/euler/detail/face_physics.hpp>
-#include <krona/transport/euler/plan.hpp>
 #include <krona/boundary/geometry_view.hpp>
+#include <krona/numerics/reconstruction/types.hpp>
+#include <krona/transport/detail/assembly_output.hpp>
+#include <krona/transport/euler/detail/face_physics.hpp>
+#include <krona/transport/face_range.hpp>
 
 namespace krona::transport::euler::detail {
 
@@ -37,9 +38,9 @@ struct InnerResidualRows {
 
             // Flux points from owner to neighbour. The residual subtracts outward flux.
             const A sign = data.owner(f) == static_cast<LocalIndex>(cell) ? A{-1} : A{1};
-            accumulate(sum, flux.flux, sign * static_cast<A>(data.area(f)));
+            transport::detail::accumulate_flux(sum, flux.flux, sign * static_cast<A>(data.area(f)));
         }
-        add(output, cell, sum, physics.flags);
+        if (!transport::detail::add_row(output, cell, sum)) flag(physics.flags, BadOutput);
     }
 };
 
@@ -60,7 +61,7 @@ struct BoundaryResidualFaces {
     Model model;
     Condition condition;
     Closure closure;
-    CellRange cells;
+    numerics::reconstruction::CellRange cells;
     R time;
 
     KOKKOS_INLINE_FUNCTION void operator()(LocalIndex face) const {
@@ -75,10 +76,10 @@ struct BoundaryResidualFaces {
         const auto flux = physics.boundary_flux(c, condition, model, closure, current);
         if (!flux.valid()) return;
         Kokkos::Array<A, 5> contribution{};
-        accumulate(contribution, flux.flux, -static_cast<A>(geometry.face_area(static_cast<std::size_t>(face))));
+        transport::detail::accumulate_flux(contribution, flux.flux, -static_cast<A>(geometry.face_area(static_cast<std::size_t>(face))));
         // Two faces can share an owner and write the same residual component.
         for (std::size_t k = 0; k < contribution.size(); ++k)
-            atomic_add_checked(&output(cell, k), contribution[k], physics.flags, BadOutput);
+            if (!transport::detail::atomic_add(&output(cell, k), contribution[k])) flag(physics.flags, BadOutput);
     }
 };
 

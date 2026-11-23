@@ -1,3 +1,4 @@
+#include <krona/transport/face_range.hpp>
 #include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <common/test_support.hpp>
@@ -363,8 +364,8 @@ void split_ranges(const Exec& exec)
     Kokkos::View<double*, Space> split_residual("split residual", rows), full_residual("full residual", rows);
     Kokkos::View<double*, Space> split_correction("split correction", rows), full_correction("full correction", rows);
     const cv::ConvectionOperator op(cv::ConvectionPlan<Exec>{m, a.connectivity.view(), comm, exec});
-    const cv::FaceRange local{0, m.sizes.n_internal_faces};
-    const cv::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+    const krona::transport::FaceRange local{0, m.sizes.n_internal_faces};
+    const krona::transport::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
     constexpr Real time = Real(0.25);
     constexpr cv::FixedValueInflow inflow{};
     ts::AssemblyStatus<Exec> status(exec);

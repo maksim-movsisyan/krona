@@ -25,7 +25,7 @@ namespace ri = krona::numerics::riemann;
 
 Call a solver as `solver(left, right, normal)`. **The normal is unit length and points from left to right.** On a mesh face, use owner as left, neighbour as right, and the owner-to-neighbour normal. The implementation checks unit length with a tolerance based on `R` and `GeometryReal`. No coordinate rotation is needed.
 
-`conservative(state)` returns `krona::flow::Conservative<R>`. `physical_flux()` and a solver's `result.flux` use `riemann::Flux<R>`.
+`conservative(state)` returns `krona::flow::Conservative<R>`. `physical_flux()` and a solver's `result.flux` use `krona::flow::Flux<R>`.
 
 | Quantity | Conservative state (per unit volume) | Flux (per unit face area) |
 |---|---|---|
@@ -179,7 +179,7 @@ The enclosing Kokkos launch can be asynchronous. Keep its captured buffers valid
 
 ## State and physical flux Jacobians
 
-`state_jacobians.hpp` works with conservative variables \(U\) and primitive variables \(W\), ordered as
+`krona/numerics/riemann/state_jacobians.hpp` provides the physical flux Jacobian. The state transformations in `krona/flow/state_jacobian.hpp` take a `flow::InternalEnergyState<R>` containing density, velocity and specific internal energy. Both headers work with conservative variables \(U\) and primitive variables \(W\), ordered as
 
 $$
 U=(\rho,\mathbf m,\mathcal E),\qquad
@@ -213,7 +213,7 @@ $$
 
 ### Conservative to primitive
 
-`primitive_from_conservative_jacobian(state, eos)` computes \($\partial W/\partial U$\). Given \($(d\rho,d\mathbf m,d\mathcal E)$\), first recover the changes in velocity and internal energy.
+`flow::primitive_from_conservative_jacobian(state, eos)` computes \($\partial W/\partial U$\). Given \($(d\rho,d\mathbf m,d\mathcal E)$\), first recover the changes in velocity and internal energy.
 
 $$
 d\mathbf u=\frac{d\mathbf m-\mathbf u\,d\rho}{\rho},
@@ -258,7 +258,7 @@ temperature rows.
 
 ### Primitive to conservative
 
-`conservative_from_primitive_jacobian(state, eos)` computes \($\partial U/\partial W$\). Given \($(dp,d\mathbf u,dT)$\), recover \($d\rho$\) and \($de$\) by locally inverting the thermodynamic map. This requires \($B$\) to be invertible at the current state.
+`flow::conservative_from_primitive_jacobian(state, eos)` computes \($\partial U/\partial W$\). Given \($(dp,d\mathbf u,dT)$\), recover \($d\rho$\) and \($de$\) by locally inverting the thermodynamic map. This requires \($B$\) to be invertible at the current state.
 
 $$
 \begin{bmatrix}d\rho\\de\end{bmatrix}

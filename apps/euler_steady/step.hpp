@@ -59,7 +59,7 @@ void initialize_state(const Exec& exec, MeshView mesh, Conserved conserved, View
 }
 
 /// @brief Adds V/dtau to each component of the owned diagonal block.
-/// Target comes from make_jacobian_view. The face acoustic sum gives V/dtau directly.
+/// The target comes from transport::make_block_assembly_view. The face acoustic sum gives V/dtau directly.
 template<class Target, class Views>
 void add_pseudo_time_diagonal(const Exec& exec, MeshView mesh, mesh::device::AuxConnectivityView<Space> connectivity,
                               Target target, Views primitive, Gas gas, Real cfl) {

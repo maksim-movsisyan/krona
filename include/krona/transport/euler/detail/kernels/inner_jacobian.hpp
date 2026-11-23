@@ -1,48 +1,14 @@
 #pragma once
 
+#include <krona/transport/detail/assembly_output.hpp>
+#include <krona/transport/detail/component_pack.hpp>
 #include <krona/transport/euler/detail/stencil_data.hpp>
 #include <krona/transport/euler/jacobian.hpp>
-#include <krona/transport/euler/plan.hpp>
 #include <krona/transport/euler/state.hpp>
 #include <krona/transport/euler/status.hpp>
-#include <Kokkos_NumericTraits.hpp>
-#include <type_traits>
+#include <krona/transport/face_range.hpp>
 
 namespace krona::transport::euler::detail {
-
-template<class A, class R>
-KOKKOS_INLINE_FUNCTION void accumulate_block(numerics::riemann::Matrix5<A>& sum,
-    const numerics::riemann::Matrix5<R>& block, A factor) {
-    for (std::size_t k = 0; k < sum.values.size(); ++k)
-        sum.values[k] += factor * static_cast<A>(block.values[k]);
-}
-
-template<class Blocks, class R, class A, class Flags>
-KOKKOS_INLINE_FUNCTION void add_block(Blocks blocks, std::size_t entry,
-                                      const numerics::riemann::Matrix5<R>& block,
-                                      A factor, Flags flags) {
-    using Value = typename Blocks::non_const_value_type;
-    using Sum = std::common_type_t<Value, R, A>;
-    constexpr Sum limit = static_cast<Sum>(Kokkos::finite_max_v<Value>);
-    if (entry >= blocks.extent(0)) {
-        flag(flags, BadJacobian);
-        return;
-    }
-    numerics::riemann::Matrix5<Value> result;
-    for (std::size_t row = 0; row < 5; ++row)
-        for (std::size_t column = 0; column < 5; ++column) {
-            const Sum next = static_cast<Sum>(blocks(entry, row, column)) +
-                             static_cast<Sum>(factor) * static_cast<Sum>(block(row, column));
-            if (!Kokkos::isfinite(next) || Kokkos::abs(next) > limit) {
-                flag(flags, BadJacobian);
-                return;
-            }
-            result(row, column) = static_cast<Value>(next);
-        }
-    for (std::size_t row = 0; row < 5; ++row)
-        for (std::size_t column = 0; column < 5; ++column)
-            blocks(entry, row, column) = result(row, column);
-}
 
 /// @brief Assembles one owned block row per work item using cell-centre states.
 /// @tparam Space Memory space of the mesh arrays.
@@ -64,12 +30,12 @@ struct InnerJacobianRows {
     FaceRange range;
 
     KOKKOS_INLINE_FUNCTION void operator()(std::size_t cell) const {
-        const auto current = prepare_state(state_law, primitive<R>(values, cell));
+        const auto current = prepare_state(state_law, transport::detail::read_primitive<R>(values, cell));
         if (!state_valid(current)) {
             flag(flags, BadState);
             return;
         }
-        numerics::riemann::Matrix5<A> diagonal;
+        math::Matrix5<A> diagonal;
         bool touched = false;
         for (auto k = data.offsets(cell); k < data.offsets(cell + 1); ++k) {
             const auto face = data.faces(k);
@@ -78,7 +44,7 @@ struct InnerJacobianRows {
             const bool owner = data.owner(f) == static_cast<LocalIndex>(cell);
             const std::size_t other = static_cast<std::size_t>(owner ? data.neighbour(f) : data.owner(f));
 
-            const auto adjacent = prepare_state(state_law, primitive<R>(values, other));
+            const auto adjacent = prepare_state(state_law, transport::detail::read_primitive<R>(values, other));
             if (!state_valid(adjacent)) {
                 flag(flags, BadState);
                 continue;
@@ -95,11 +61,14 @@ struct InnerJacobianRows {
             const auto entry = owner ? target.entries.owner_entries(f) : target.entries.neighbour_entries(f);
 
             // Entries in this native block row are written by this thread only.
-            add_block(target.blocks, entry, owner ? derivative.right : derivative.left, outward, flags);
-            accumulate_block(diagonal, owner ? derivative.left : derivative.right, outward);
+            const auto& off_diagonal = owner ? derivative.right : derivative.left;
+            if (!transport::detail::add_block(target.blocks, entry, off_diagonal, outward))
+                flag(flags, BadJacobian);
+            transport::detail::accumulate_block(diagonal, owner ? derivative.left : derivative.right, outward);
             touched = true;
         }
-        if (touched) add_block(target.blocks, target.entries.diagonal(cell), diagonal, A{1}, flags);
+        if (touched && !transport::detail::add_block(target.blocks, target.entries.diagonal(cell), diagonal, A{1}))
+            flag(flags, BadJacobian);
     }
 };
 

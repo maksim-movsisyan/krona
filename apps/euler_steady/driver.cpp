@@ -16,7 +16,7 @@
 #include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/toml_config/file.hpp>
-#include <krona/transport/euler/assembly.hpp>
+#include <krona/transport/block_assembly.hpp>
 #include <krona/transport/euler/operator.hpp>
 
 #include <Tpetra_Core.hpp>
@@ -202,7 +202,7 @@ int solve(const Options& options, mpi::CommView comm) {
             }
 
             // Assemble (J + V/dtau I) and solve for a conservative increment with a zero initial guess.
-            const auto target = eu::make_jacobian_view(matrix, assembly, exec);
+            const auto target = transport::make_block_assembly_view(matrix, assembly, exec);
             Kokkos::deep_copy(exec, target.blocks, SolverReal{0});
             euler.add_jacobian_async(target, reconstruction, boundary, status, inner_jacobian, closure);
             add_pseudo_time_diagonal(exec, m, connectivity.view(), target, primitive, gas, cfl);

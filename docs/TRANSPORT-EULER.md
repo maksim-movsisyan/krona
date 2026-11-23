@@ -44,6 +44,7 @@ Assume active MPI/Kokkos, a prepared `mesh::host::MeshPart host`, and matching `
 #include <krona/mesh/device/aux_storage.hpp>
 #include <krona/mesh/host/aux_connectivity.hpp>
 #include <krona/fields/field_storage.hpp>
+#include <krona/fields/pack.hpp>
 #include <krona/halo/exchange.hpp>
 
 using namespace krona;
@@ -109,7 +110,7 @@ const auto report = status.check(); // Completes kernels and checks this rank.
 
 No heat-flux law is needed for this slip-wall example.
 
-The field packs and `physical` binding reference the same allocations. The former supplies five indexed components to Euler; the latter supplies named primitive components to the physical manager. For separate existing fields, use `eu::primitive_fields(p.view(), velocity.view(), T.view())` for Euler and `ph::primitive_views(p.view(), velocity.view(), T.view())` for the manager. Residual fields can be bound with `eu::conservative_fields(rho_residual.view(), momentum_residual.view(), energy_residual.view())`. These adapters copy descriptors only.
+The field packs and `physical` binding reference the same allocations. The former supplies five indexed components to Euler; the latter supplies named primitive components to the physical manager. For separate existing fields, use `fields::pack(p.view(), velocity.view(), T.view())` for Euler and `ph::primitive_views(p.view(), velocity.view(), T.view())` for the manager. Residual fields can be bound with `fields::pack(rho_residual.view(), momentum_residual.view(), energy_residual.view())`. These bindings copy descriptors only.
 
 Every labelled patch must have a condition, including patches empty on this rank. Unlabelled faces need an explicit condition when present. The manager must use the same mesh arrays and patch IDs/ranges as the plan. Its model must be both compressible and thermal, with thermodynamics consistent with the Euler state policy. The characteristic policy in this example enables total-condition inlets and pressure outlets; see `BOUNDARY-PHYSICAL.md` for their contracts/backflow data.
 
@@ -217,7 +218,7 @@ euler.add_boundary_residual_async(high_order, output, boundary, status,
 (void)status.check();
 ```
 
-`FaceRange` is half-open; default end `-1` selects all inner faces (owned/owned plus owned/ghost). `CellRange` is a half-open owned-row interval; default end selects `n_own`. It restricts output rows, not which neighbour/stencil values they may read. Output storage must still cover all owned rows. Unselected output/tail entries are untouched. Split ranges must not overlap unless repeated addition is intended. Readiness must cover the **complete selected reconstruction stencil**, including wider samples; an owned/owned face does not automatically guarantee an entirely owned stencil.
+`krona::transport::FaceRange` is half-open; default end `-1` selects all inner faces (owned/owned plus owned/ghost). `krona::numerics::reconstruction::CellRange` is a half-open owned-row interval; default end selects `n_own`. It restricts output rows, not which neighbour/stencil values they may read. Output storage must still cover all owned rows. Unselected output/tail entries are untouched. Split ranges must not overlap unless repeated addition is intended. Readiness must cover the **complete selected reconstruction stencil**, including wider samples; an owned/owned face does not automatically guarantee an entirely owned stencil.
 
 Inner-only validation requires primitive storage for all real cells. Full and boundary calls require extended storage for `PreparedExterior`, custom closures and custom boundary Jacobians. The reconstruction can also require face samples for a wider stencil. Required gradient/factor/Hessian/moment providers cover at least real cells when they expose sizes; custom indices and wider-stencil coverage remain caller contracts. Inputs and residual components must not overlap, including partial/strided aliases. Checks catch duplicate residual starting pointers and some exact input/output aliases, not arbitrary memory overlap.
 
@@ -228,7 +229,7 @@ $\delta U=(\delta\rho,\delta(\rho u),\delta(\rho v),\delta(\rho w),\delta(\rho E
 The matrix methods add the Jacobian of the **outward flux sum**, with sign opposite to the derivative of the residual. Add the physical or pseudo-time diagonal separately when the integration method calls for it.
 
 ```cpp
-#include <krona/transport/euler/assembly.hpp>
+#include <krona/transport/block_assembly.hpp>
 #include <krona/linalg/field_transfer.hpp>
 
 // Set up once, with the same host cell/face numbering as EulerPlan.
@@ -239,7 +240,7 @@ linalg::Vector<SolverReal, Exec> rhs(matrix.distribution());
 // Repeat after halo, boundary-slot and reconstruction preparation.
 const auto closure = eu::EvaluatedExterior<>{};
 const auto inner = eu::FrozenRusanov{gas};
-const auto target = eu::make_jacobian_view(matrix, assembly, exec);
+const auto target = krona::transport::make_block_assembly_view(matrix, assembly, exec);
 Kokkos::deep_copy(exec, target.blocks, SolverReal{0});
 r.fill_async(exec, AccumulationReal{0});
 status.begin_async();
@@ -252,7 +253,7 @@ matrix.commit();
 rhs.commit();
 ```
 
-The same sequence accepts a higher-order reconstruction in both calls. Add a time residual or matrix contribution as needed before committing. The target borrows native blocks addressed as `(entry, equation, variable)`. The adapter checks that the matrix shares the assembly graph and has block width five. The caller keeps the assembly plan's local numbering and halo topology consistent with the Euler plan. Keep input and matrix storage disjoint. An application with another backend may provide `JacobianView{blocks, entries}` with the same native-row and entry-map contract.
+The same sequence accepts a higher-order reconstruction in both calls. Add a time residual or matrix contribution as needed before committing. The target borrows native blocks addressed as `(entry, equation, variable)`. The adapter checks that the matrix shares the assembly graph and has block width five. The caller keeps the assembly plan's local numbering and halo topology consistent with the Euler plan. Keep input and matrix storage disjoint. An application with another backend may provide `krona::transport::BlockAssemblyView{blocks, entries}` with the same native-row and entry-map contract.
 
 ### Inner faces
 
@@ -274,11 +275,11 @@ With `EvaluatedExterior`, the characteristic outlet/inlet and mirror responses t
 
 The boundary policy is independently replaceable via the final argument of either boundary assembly call. It receives `(context, condition, model, closure, states, state_law, solver)` and returns a `eu::BoundaryJacobian<Real>{block, valid}`. The states include the owner's thermodynamic state, current primitive interior trace and prepared face slot. Return the unit-area derivative by owner conservative density. It is added to the owner diagonal. This also supports a direct analytic boundary-flux derivative.
 
-`krona/numerics/riemann/state_jacobians.hpp` exposes `primitive_from_conservative_jacobian`, `conservative_from_primitive_jacobian` and `physical_flux_jacobian`. They use the EOS derivatives in density and specific internal energy. `IdealGas` already supplies them. The default boundary policy reads the EOS from `state_law.eos`. State policies without this interface can use a custom boundary derivative. All EOS and boundary domain checks apply to the perturbed states too.
+`krona/numerics/riemann/state_jacobians.hpp` provides `physical_flux_jacobian` for Riemann states. Euler's finite-difference boundary policy uses [`flow::primitive_from_conservative_jacobian`](FLOW.md#state-transformation-jacobians) with a `flow::InternalEnergyState`. The flow Jacobian uses EOS derivatives in density and specific internal energy. `IdealGas` already supplies them. The default boundary policy reads the EOS from `state_law.eos`. State policies without this interface can use a custom boundary derivative. All EOS and boundary domain checks apply to the perturbed states too.
 
 ## Completion, storage and the next stage
 
-`EulerPlan` owns the host patch catalog and borrows the mesh/connectivity arrays and communicator. `EulerOperator` stores the plan, state policy and solver by value. Inner faces gather by owned cell row. Each boundary kernel runs over one patch with one iteration per face and atomically adds to the owner's five residual components or the 25 entries of its diagonal BSR block. Patch launches are ordered on one execution instance. No face-work buffer is allocated.
+`EulerPlan` inherits from `transport::OperatorPlan`. It owns the host patch catalog and borrows the device mesh, auxiliary arrays and communicator. `EulerOperator` stores the plan, state policy and solver by value. Inner faces gather by owned cell row. Each boundary kernel runs over one patch with one iteration per face and atomically adds to the owner's five residual components or the 25 entries of its diagonal BSR block. Patch launches are ordered on one execution instance. No face-work buffer is allocated.
 
 Boundary additions use the destination scalar precision. When several faces update the same cell within a patch, accumulation order can vary and affect floating-point round-off.
 

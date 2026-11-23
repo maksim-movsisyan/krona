@@ -1,3 +1,4 @@
+#include <krona/transport/face_range.hpp>
 #include <common/test_support.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -365,8 +366,8 @@ void split_ranges(const Exec& exec)
     Kokkos::deep_copy(exec, full_correction, 0.);
 
     const td::DiffusionOperator op(a.plan);
-    const td::FaceRange local{0, m.sizes.n_internal_faces};
-    const td::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
+    const krona::transport::FaceRange local{0, m.sizes.n_internal_faces};
+    const krona::transport::FaceRange interfaces{m.sizes.n_internal_faces, m.sizes.n_inner_faces};
     ts::AssemblyStatus<Exec> status(exec);
     status.begin_async();
     halo.start();

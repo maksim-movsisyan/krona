@@ -147,7 +147,7 @@ The current application fixes partition settings to the defaults above; they are
 | `--reorder SFC` | Orders owned centroids along a local 3D Hilbert curve. C++ enum: `HILBERT_SFC`. |
 | `--reorder RCM` | Uses Reverse Cuthill–McKee on owned-cell face adjacency. |
 | `--bc <path>` | Writes an editable TOML BC template on rank 0. Source labels provide suggestions; physical conditions still need review. |
-| `--bc-profiles <directory>` | Creates a <directory> and writes there description of every boundary patch (csv: owner-cell gid, x, y, z, value (blank)) this files can be used to create tabulated boundary conditions for patches in boundary manager (though the current implementation performs interpolation, so it does not require exact coordinates for each face center) |
+| `--bc-profile <directory>` | Creates a <directory> and writes there description of every boundary patch (csv: owner-cell gid, x, y, z, value (blank)) this files can be used to create tabulated boundary conditions for patches in boundary manager (though the current implementation performs interpolation, so it does not require exact coordinates for each face center) |
 | `--vtu <directory>` | Writes owned volume cells and boundary faces as `part.pvtu` and `part_bnd.pvtu`, with per-rank pieces. |
 | `-v` / `--verbose`, `-vv` | Summary / detailed application diagnostics. Backend output remains quiet. |
 

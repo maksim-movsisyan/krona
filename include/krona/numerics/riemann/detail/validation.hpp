@@ -12,7 +12,7 @@ KOKKOS_INLINE_FUNCTION bool finite(Vector<R> v) {
 }
 
 template<class R>
-KOKKOS_INLINE_FUNCTION bool finite(Flux<R> flux) {
+KOKKOS_INLINE_FUNCTION bool finite(flow::Flux<R> flux) {
     return Kokkos::isfinite(flux.mass) && finite(flux.momentum) && Kokkos::isfinite(flux.energy);
 }
 
@@ -55,7 +55,7 @@ KOKKOS_INLINE_FUNCTION Status input_status(State<R> l, State<R> r, Vector<R> n) 
 
 /// @brief Packages the flux only when its entries and the CFL speed are usable.
 template<class R>
-KOKKOS_INLINE_FUNCTION Result<R> finish(Flux<R> flux, R speed) {
+KOKKOS_INLINE_FUNCTION Result<R> finish(flow::Flux<R> flux, R speed) {
     if (!finite(flux) || !Kokkos::isfinite(speed) || !(speed > R{0}))
         return failure<R>(Status::NonfiniteFlux);
     return {flux, speed, Status::Success};

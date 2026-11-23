@@ -1,7 +1,9 @@
 #include <common/test_support.hpp>
 #include "fixture.hpp"
 #include <krona/flow/conservative.hpp>
-#include <krona/transport/euler/assembly.hpp>
+#include <krona/flow/flux.hpp>
+#include <krona/flow/state_jacobian.hpp>
+#include <krona/transport/block_assembly.hpp>
 #include <Tpetra_Core.hpp>
 
 namespace {
@@ -18,7 +20,7 @@ auto components(krona::flow::Conservative<T> q)
 { return std::array<T, 5>{q.density, q.momentum.x, q.momentum.y, q.momentum.z, q.total_energy_density}; }
 
 template<class T>
-auto components(ri::Flux<T> q)
+auto components(krona::flow::Flux<T> q)
 { return std::array<T, 5>{q.mass, q.momentum.x, q.momentum.y, q.momentum.z, q.energy}; }
 
 Delta direction(krona::GlobalIndex gid)
@@ -32,14 +34,13 @@ void state_derivatives()
     krona::thermodynamics::IdealGas<double> eos;
     eos.gas_constant = 1.4;
     const auto state = ri::from_pT(eos, 1.2, 0.95, ri::Vector<double>{1.1, -0.3, 0.2});
-    const auto to_w = ri::primitive_from_conservative_jacobian(state, eos);
-    const auto to_u = ri::conservative_from_primitive_jacobian(state, eos);
+    const krona::flow::InternalEnergyState<double> local{state.density, state.velocity, state.internal_energy};
+    const auto to_w = krona::flow::primitive_from_conservative_jacobian(local, eos);
+    const auto to_u = krona::flow::conservative_from_primitive_jacobian(local, eos);
+    const auto identity = to_u * to_w;
     for (std::size_t i = 0; i < 5; ++i)
-        for (std::size_t j = 0; j < 5; ++j) {
-            double coefficient = 0;
-            for (std::size_t k = 0; k < 5; ++k) coefficient += to_u(i, k) * to_w(k, j);
-            near(coefficient, i == j ? 1.0 : 0.0, 1e-12, "analytic state transformations are inverses");
-        }
+        for (std::size_t j = 0; j < 5; ++j)
+            near(identity(i, j), i == j ? 1.0 : 0.0, 1e-12, "analytic state transformations are inverses");
 
     const ri::Vector<double> n{0.6, 0, 0.8};
     const auto du = direction(0);
@@ -98,7 +99,7 @@ void inner_blocks(const Exec& exec, Grid& grid)
     const eu::Thermodynamics law{gas()};
     const eu::EulerOperator op{grid.plan, law};
     eu::AssemblyStatus<Exec> status(exec);
-    const auto target = eu::make_jacobian_view(matrix, assembly, exec);
+    const auto target = krona::transport::make_block_assembly_view(matrix, assembly, exec);
     Kokkos::deep_copy(exec, target.blocks, krona::SolverReal{0});
     status.begin_async();
     const auto inner = eu::FrozenRusanov{gas()};
@@ -110,7 +111,7 @@ void inner_blocks(const Exec& exec, Grid& grid)
 
     // Independent finite differences of the frozen Rusanov flux, with native remote-column import.
     const auto eos = krona::thermodynamics::IdealGas<double>{static_cast<double>(gas().gamma), 1.0};
-    std::array<ri::Flux<double>, 2> expected{};
+    std::array<krona::flow::Flux<double>, 2> expected{};
     for (std::size_t f = 0; f < static_cast<std::size_t>(grid.host.n_inner_faces); ++f) {
         const auto i = static_cast<std::size_t>(grid.host.face_owner[f]);
         const auto j = static_cast<std::size_t>(grid.host.face_neigh[f]);
@@ -216,7 +217,7 @@ void boundary_blocks(const Exec& exec, Grid& grid)
     fill(0);
     const la::FaceAssemblyPlan assembly(grid.host, comm, exec);
     la::BsrMatrix matrix(assembly.pattern(), 5);
-    const auto target = eu::make_jacobian_view(matrix, assembly, exec);
+    const auto target = krona::transport::make_block_assembly_view(matrix, assembly, exec);
     Kokkos::deep_copy(exec, target.blocks, krona::SolverReal{0});
     status.begin_async();
     op.add_jacobian_async(target, reconstruction, boundary, status, ZeroInner{}, closure, time);
