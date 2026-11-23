@@ -735,6 +735,11 @@ if(KRONA_ENABLE_TRILINOS)
 endif()
 
 
+    #========================= 
+    #=== VISCOUS TRANSPORT ===
+    #=========================
+krona_interface(transport_viscous krona::viscous krona::boundary_physical krona::flow krona::transport_properties)
+
     #=======================
     #=== TRANSPORT EULER ===
     #=======================
