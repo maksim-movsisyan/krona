@@ -2,6 +2,7 @@
 
 #include <krona/execution/types.hpp>
 #include <krona/flow/conservative.hpp>
+#include <krona/flow/flux.hpp>
 #include <krona/math/vector3.hpp>
 
 #include <type_traits>
@@ -13,27 +14,7 @@ namespace krona::numerics::riemann {
 template <typename Real = ComputeReal>
 using Vector = math::Vector3<Real>;
 
-/// @brief Mass, momentum and total energy flux through a face.
-/// Solvers return flux per unit area. integrated_flux() multiplies it by the face area.
-/// @tparam Real Scalar type of all five flux components.
-template<class Real = ComputeReal>
-struct Flux {
-    Real mass=0;             ///< Mass flux.
-    Vector<Real> momentum{}; ///< Cartesian momentum flux.
-    Real energy=0;           ///< Total energy flux.
-
-    /// @brief Adds corresponding entries.
-    KOKKOS_INLINE_FUNCTION Flux operator+(Flux b) const
-    { return {mass+b.mass,momentum+b.momentum,energy+b.energy}; }
-
-    /// @brief Subtracts corresponding entries.
-    KOKKOS_INLINE_FUNCTION Flux operator-(Flux b) const
-    { return {mass-b.mass,momentum-b.momentum,energy-b.energy}; }
-
-    /// @brief Scales all five entries by the same factor.
-    KOKKOS_INLINE_FUNCTION Flux operator*(Real a) const
-    { return {a*mass,momentum*a,a*energy}; }
-};
+using flow::Flux;
 
 /// @brief One side of a face, ready to pass to a Riemann solver.
 /// The caller supplies the velocity and the thermodynamic quantities from the EOS.

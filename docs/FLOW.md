@@ -41,3 +41,19 @@ Include `<krona/thermodynamics/ideal_gas.hpp>` for the ideal-gas calls in the
 example. A different material can use the same first conversion and pass
 `local.density` and `local.internal_energy` to its own EOS. Each function
 computes one state in the calling host or device context.
+
+## State transformation Jacobians
+
+Include `<krona/flow/state_jacobian.hpp>` and pass an
+`InternalEnergyState<Real>` with positive density and an admissible specific
+internal energy. The EOS supplies `rhoe_derivatives(density, internal_energy)`,
+which returns the partial derivatives of pressure and temperature.
+
+- `primitive_from_conservative_jacobian(state, eos)` returns the derivative of
+  `(p, u, v, w, T)` with respect to `(rho, rho*u, rho*v, rho*w, rho*E)`.
+- `conservative_from_primitive_jacobian(state, eos)` returns the reverse
+  derivative. The EOS map from `(rho, e)` to `(p, T)` must have an invertible
+  derivative at the supplied state.
+
+Both functions return a host/device `math::Matrix5<Real>` with one row per
+output and one column per input.

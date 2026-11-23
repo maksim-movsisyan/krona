@@ -1,17 +1,18 @@
-# Small 3D math
+# Small fixed-size math
 
-`krona::math` provides inline 3D value types and an SPD matrix inverse. Include `<krona/math/math.hpp>` for everything, or a specific header below.
+`krona::math` provides inline vectors, matrices, symmetric tensors, and an SPD matrix inverse. Include `<krona/math/math.hpp>` for everything, or a specific header below.
 
 | Header / type | Storage and operations |
 | --- | --- |
 | `vector3.hpp` — `Vector3<Real>` | `x, y, z`; indexed access `v[i]`; addition, subtraction, scaling and division. Member/free `dot`, `cross`, `norm2`, `norm`. |
 | `matrix3.hpp` — `Matrix3<Real>` | Row-major `data[row][column]`, also accessed as `m(row,column)`; zero by default. `identity()`, matrix-vector and matrix-matrix products, arithmetic, `transpose`, `trace`, `determinant`, `outer(a,b)`. |
+| `matrix5.hpp` — `Matrix5<Real>` | Row-major `values[5*row+column]`, also accessed as `m(row,column)`. Zero by default. Matrix products use `a*b`. |
 | `symmetric_tensor3.hpp` — `SymmetricTensor3<Real>` | Six values in order `xx, yy, zz, xy, xz, yz`; symmetric indexed access, arithmetic, tensor-vector product, `to_matrix`, `trace`, `symmetric_outer`, `double_contract`, `quadratic_form`. |
 | `inverse_spd.hpp` — `inverse_spd` | Checked Cholesky inverse of a symmetric positive-definite 3-by-3 matrix; returns `bool`. |
 
-All types store their values directly, default to zero, and are trivially copyable aggregates. Scalar types are floating-point and explicit, for example `Vector3<double>`; no project-wide precision alias is imposed. Use `float` or `double` for portable host/device arithmetic. Vector and matrix indices are zero-based and must be below 3. Index assertions are debug checks, not a release-mode validation API.
+All types store their values directly, default to zero, and are trivially copyable aggregates. Scalar types are floating-point and explicit, for example `Vector3<double>`; no project-wide precision alias is imposed. Use `float` or `double` for portable host/device arithmetic. Indices are zero-based and bounded by the size of the object. Index assertions are debug checks, not a release-mode validation API.
 
-All three types support `+`, `-`, unary `-`, multiplication by a scalar on either side, division by a scalar, and compound assignments `+=`, `-=`, `*=`, `/=`. Compound assignments retain the destination precision. Division requires a nonzero divisor. Other arithmetic follows ordinary floating-point rules and may produce nonfinite results; `isfinite(value)` is available for each type.
+`Vector3`, `Matrix3`, and `SymmetricTensor3` support `+`, `-`, unary `-`, multiplication by a scalar on either side, division by a scalar, and compound assignments `+=`, `-=`, `*=`, `/=`. Compound assignments retain the destination precision. Division requires a nonzero divisor. Other arithmetic follows ordinary floating-point rules and may produce nonfinite results; `isfinite(value)` is available for these three types.
 
 ## Use and precision
 
@@ -38,7 +39,7 @@ if (ok) {
 }
 ```
 
-Mixed binary operations use `std::common_type_t` of their operand scalar types. For example, `Vector3<float> * 2.0` produces `Vector3<double>`, while multiplication by `2` retains `float`. `cast<Real>(value)` explicitly converts any of the three value types. To choose dot-product arithmetic independently of storage, use `dot_as<Real>(a,b)`; conversion happens before multiplication and accumulation.
+Mixed binary operations use `std::common_type_t` of their operand scalar types. For example, `Vector3<float> * 2.0` produces `Vector3<double>`, while multiplication by `2` retains `float`. `cast<Real>(value)` explicitly converts `Vector3`, `Matrix3`, and `SymmetricTensor3`. To choose dot-product arithmetic independently of storage, use `dot_as<Real>(a,b)`; conversion happens before multiplication and accumulation.
 
 `norm()` uses nested two-argument `hypot` to avoid unnecessary overflow/underflow from squaring components. `norm2()` is an ordinary dot product and can overflow or underflow.
 
