@@ -3,7 +3,7 @@
 #include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/transport/scalar/config.hpp>
 
-namespace krona::apps::scalar_transport {
+namespace krona::solvers::scalar::detail {
 
 namespace rec = numerics::reconstruction;
 namespace ts = transport::scalar;
@@ -44,4 +44,4 @@ void with_reconstruction(const ts::ReconstructionOptions& options, Gradients gra
     else with_skew(rec::NoSkewCorrection{});
 }
 
-} // namespace krona::apps::scalar_transport
+} // namespace krona::solvers::scalar::detail

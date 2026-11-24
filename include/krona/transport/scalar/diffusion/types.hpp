@@ -6,7 +6,7 @@ namespace krona::transport::scalar::diffusion {
 
 /// @brief Geometry checks for a diffusion plan.
 struct DiffusionOptions {
-    bool require_orthogonal = true; ///< Require the cell connection to be nearly parallel to the face normal.
+    bool require_orthogonal = true;          ///< Require the cell connection to be nearly parallel to the face normal.
     double orthogonality_tolerance = 1.0e-6; ///< Maximum tangential separation divided by the normal separation.
 };
 
