@@ -747,7 +747,18 @@ krona_interface(transport_euler krona::boundary_physical krona::riemann krona::r
 if(KRONA_ENABLE_TRILINOS)
     target_link_libraries(krona_transport_euler INTERFACE krona::linalg)
 endif()
-          
+
+
+    #================================
+    #=== COMPRESSIBLE FLOW CONFIG ===
+    #================================
+add_library(krona_transport_compressible_config STATIC src/transport/compressible/config.cpp)
+add_library(krona::transport_compressible_config ALIAS krona_transport_compressible_config)
+krona_public_headers(krona_transport_compressible_config PUBLIC)
+target_compile_features(krona_transport_compressible_config PUBLIC cxx_std_20)
+target_link_libraries(krona_transport_compressible_config
+    PUBLIC krona::mpi
+    PRIVATE krona::warnings krona::toml_config)
 
 #==================================================================
 #==== SOLVERS =====================================================
