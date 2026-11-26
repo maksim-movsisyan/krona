@@ -1,0 +1,30 @@
+[flow.initial]
+pressure = 100000.0
+temperature = 310.0
+velocity = [0.0, 0.0, 0.0]
+
+[flow.numerics]
+flux = "hllc"
+reconstruction = "first_order"
+
+[flow.transport]
+enabled = true
+viscosity = "constant"
+dynamic_viscosity = 0.001
+conductivity = "constant"
+thermal_conductivity = 3.0
+
+[flow.pseudo_time]
+cfl = 1000.0
+relaxation = 0.7
+maximum_iterations = 600
+relative_tolerance = 1e-6
+absolute_tolerance = 1e-8
+
+[flow.linear_solver]
+relative_tolerance = 1e-6
+maximum_iterations = 300
+restart_length = 240
+
+[flow.output]
+directory = "vtk"

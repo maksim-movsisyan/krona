@@ -4,7 +4,17 @@
 
 Use `RawMesh` while importing and distributing source connectivity. Use `MeshPart` in a solver or when preparing kernel views. The conversion pipeline is described in [MESH-PARTITIONER](MESH-PARTITIONER.md).
 
-## Load a prepared mesh and add auxiliary data
+## Contents
+
+- [1. Load a prepared mesh and add auxiliary data](#1-load-a-prepared-mesh-and-add-auxiliary-data)
+- [2. Data layout](#2-data-layout)
+- [3. Geometry, reordering and validation](#3-geometry-reordering-and-validation)
+- [4. Auxiliary connectivity](#4-auxiliary-connectivity)
+- [5. Auxiliary geometry](#5-auxiliary-geometry)
+- [6. Cache lifetime and mesh changes](#6-cache-lifetime-and-mesh-changes)
+- [7. Module tests](#7-module-tests)
+
+## 1. Load a prepared mesh and add auxiliary data
 
 ```cpp
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
@@ -53,7 +63,7 @@ The reader returns a validated, grouped, geometric `MeshPart`; rebuilding its fa
 
 Keep the application workflow inside `mpi::guarded`: validation failures use `mpi::fatal`, and the guard converts escaping exceptions, including allocation failures, into a job-wide fatal error.
 
-## Data layout
+## 2. Data layout
 
 ### `RawMesh`: before migration
 
@@ -108,7 +118,7 @@ Halo peers in `nb_ranks` are sorted and unique. For peer position `p`:
 
 Offsets count **cells**, not scalar components or bytes. These maps define exchange order; storing a mesh or a `HaloPlanView` does not exchange field values. See [MESH-DEVICE](MESH-DEVICE.md) for the split between host MPI metadata and kernel maps.
 
-## Geometry, reordering and validation
+## 3. Geometry, reordering and validation
 
 Headers: `geometry.hpp`, `reorder.hpp`, `validate.hpp` under `krona/mesh/host/`.
 
@@ -125,7 +135,7 @@ Metrics include centroids and volumes for owned **and ghost** cells, plus face c
 
 Keep duplicated node coordinates consistent across ranks before recomputing metrics. Build caches and device storage **after** the final reordering.
 
-## Auxiliary connectivity
+## 4. Auxiliary connectivity
 
 Header: `krona/mesh/host/aux_connectivity.hpp`. Flags are `krona::mesh::AuxConnType`.
 
@@ -142,7 +152,7 @@ Every table uses CSR: row `i` spans `[offsets[i], offsets[i+1])`; values are loc
 
 Construction is local. Node-based relations only see cells present in `MeshPart`: a face-neighbour halo does not supply every remote vertex-only neighbour. Expand the halo separately if a complete distributed vertex stencil is required. Requesting `CellCellsByNode` alone may use a temporary node-to-cell table without marking `NodeCells` ready.
 
-## Auxiliary geometry
+## 5. Auxiliary geometry
 
 Header: `krona/mesh/host/aux_geometry.hpp`. Flags are `krona::mesh::AuxGeomType`.
 
@@ -197,7 +207,7 @@ All ranks participate, including empty ranks. `max_sweeps` must be positive; `re
 
 `WallDistanceStats` reports `sweeps`, global maximum `relative_change`, `converged` and global `unreachable_owned`. Unreachable cells retain infinity; convergence alone does not imply reachability. The result is marked ready even if the sweep limit was reached, so inspect the statistics before using it.
 
-## Cache lifetime and mesh changes
+## 6. Cache lifetime and mesh changes
 
 Auxiliary caches are independent snapshots. `active_mask`, `has(flag)` and convenience methods such as `has_cell_faces()` describe ready groups. Repeating an add call does not refresh an existing group. `clear()` releases all groups and retained capacities.
 
@@ -211,7 +221,7 @@ Builders fill snapshot counts automatically for ready data. Manually populated c
 
 For source-independent migration, `MigrationSource` accepts cell connectivity, coordinates, patch metadata and explicit `P + 1` cell/node ownership endpoints. IDs must remain globally dense and contiguous by source rank; renumber/remap adapted inputs first. Migration consumes payloads, accepts one destination rank per source cell and currently requires packed MPI counts/displacements to fit `int`.
 
-## Module tests
+## 7. Module tests
 
 `tests/mesh/host` uses the common host-only MPI runner and has no Kokkos dependency.
 Small analytic fixtures cover distributed face matching and CSR construction,

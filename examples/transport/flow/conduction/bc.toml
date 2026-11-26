@@ -1,0 +1,16 @@
+[[boundary_condition]]
+patch_id = 0
+name = "cold"
+type = "ISOTHERMAL_WALL"
+temperature = 300.0
+
+[[boundary_condition]]
+patch_id = 1
+name = "hot"
+type = "ISOTHERMAL_WALL"
+temperature = 320.0
+
+[[boundary_condition]]
+patch_id = 2
+name = "sides"
+type = "SYMMETRY"

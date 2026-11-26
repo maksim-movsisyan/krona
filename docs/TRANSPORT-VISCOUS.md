@@ -134,5 +134,5 @@ contributions. Finish external producers or exchanges before their
 outputs are consumed. A failed diagnostic batch may have partially
 written to its destinations.
 
-See the [steady Navier–Stokes application](NAVIER-STOKES-STEADY.md)
+See the [steady flow application](FLOW-STEADY.md)
 for configuration and the pseudo-time iteration.

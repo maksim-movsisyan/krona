@@ -756,7 +756,7 @@ add_library(krona::transport_compressible_config ALIAS krona_transport_compressi
 krona_public_headers(krona_transport_compressible_config PUBLIC)
 target_compile_features(krona_transport_compressible_config PUBLIC cxx_std_20)
 target_link_libraries(krona_transport_compressible_config
-    PUBLIC krona::mpi
+    PUBLIC krona::gradient krona::mpi
     PRIVATE krona::warnings krona::toml_config)
 
 #==================================================================
@@ -792,8 +792,7 @@ if(KRONA_BUILD_APPLICATIONS)
     #====================================================
     if(KRONA_ENABLE_TRILINOS)
         add_subdirectory(apps/scalar_transport)
-        add_subdirectory(apps/euler_steady)
-        add_subdirectory(apps/navier_stokes_steady)
+        add_subdirectory(apps/flow_steady)
     endif()
 
 endif()

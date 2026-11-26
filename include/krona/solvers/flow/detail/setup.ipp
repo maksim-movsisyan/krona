@@ -1,11 +1,11 @@
 namespace krona::solvers::flow {
-
 namespace ct = transport::compressible;
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
-Solver<Exec, Real, Properties, EOS, Storage, Layout>::Solver(
-    const mesh::host::MeshPart& host, Mesh mesh, Connectivity connectivity, mesh::host::HaloPlanView halo_plan,
-    ConservativeView conserved, Field primitives, EOS eos, Properties properties, Options options,
+template<class Exec, class Real, class Properties, class EOS, class Storage>
+Solver<Exec, Real, Properties, EOS, Storage>::Solver(
+    const mesh::host::MeshPart& host, Mesh mesh, Connectivity connectivity, Geometry geometry,
+    mesh::host::HaloPlanView halo_plan, ConservativePack conserved, PrimitivePack primitives,
+    std::optional<GradientPack> gradients, EOS eos, Properties properties, Options options,
     mpi::CommView comm, Exec exec)
     : exec_(exec), options_(checked(std::move(options))), mesh_(mesh), connectivity_(connectivity),
       conserved_(conserved), field_(primitives), eos_(eos), properties_(properties),
@@ -14,13 +14,14 @@ Solver<Exec, Real, Properties, EOS, Storage, Layout>::Solver(
       stencil_(mesh, connectivity), assembly_(host, comm, exec), matrix_(assembly_.pattern(), 5),
       rhs_(matrix_.distribution()), increment_(matrix_.distribution()), linear_(matrix_, options_.linear),
       residual_("flow_solver/residual", static_cast<std::size_t>(mesh.sizes.n_own), fields::FieldLocation::OwnCell, exec),
-      status_(exec), field_halo_(mesh, halo_plan, comm, options_.field_tag, exec) {
+      status_(exec), gradients_(gradients), field_halo_(mesh, halo_plan, comm, options_.field_tag, exec) {
     const std::size_t owned = static_cast<std::size_t>(mesh.sizes.n_own);
     const std::size_t cells = static_cast<std::size_t>(mesh.sizes.n_cells);
-    mpi::require(conserved_.extent(0) == owned && (owned == 0 || conserved_.data() != nullptr),
-                 "Steady flow: conservative state must contain exactly the owned cells");
-    mpi::require(field_.size() >= cells, "Steady flow: primitive field lacks real cells");
-    field_halo_.add_field(field_);
+    mpi::require(conserved_.size() == owned, "Steady flow: conservative state must contain exactly the owned cells");
+    transport::detail::validate_pack<Exec, 5, true>(conserved_, owned);
+    transport::detail::validate_pack<Exec, 5, true>(field_, cells);
+    transport::detail::reject_exact_alias(conserved_, field_);
+    field_halo_.add_pack(field_);
     field_halo_.prepare();
 
     if (options_.viscous_enabled) {
@@ -31,12 +32,15 @@ Solver<Exec, Real, Properties, EOS, Storage, Layout>::Solver(
     }
 
     if (options_.needs_gradients()) {
-        gradient_.emplace(mesh_, connectivity_, mesh::device::AuxGeometryView<Space>{}, gr::Options{}, exec_);
+        mpi::require(gradients_.has_value(), "Steady flow: missing primitive gradient fields");
+        transport::detail::validate_pack<Exec, 15, true>(*gradients_, cells);
+        transport::detail::reject_exact_alias(field_, *gradients_);
+        transport::detail::reject_exact_alias(conserved_, *gradients_);
+        gradient_.emplace(mesh_, connectivity_, geometry, options_.gradient, exec_);
         mpi::require(field_.size() >= gradient_->required_input_size(), "Steady flow: missing primitive boundary slots");
         boundary_status_.emplace(exec_);
-        gradients_.emplace("flow_solver/gradients", cells, fields::FieldLocation::Cell, exec_);
         gradient_halo_.emplace(mesh_, halo_plan, comm, options_.gradient_tag, exec_);
-        gradient_halo_->add_field(gradients_->view());
+        gradient_halo_->add_pack(*gradients_);
         if (options_.reconstruction.cell_limiter == ct::CellLimiter::BarthJespersen) {
             factors_.emplace("flow_solver/limiter", cells, fields::FieldLocation::Cell, exec_);
             gradient_halo_->add_field(factors_->view());
@@ -45,8 +49,8 @@ Solver<Exec, Real, Properties, EOS, Storage, Layout>::Solver(
     }
 }
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
-Options Solver<Exec, Real, Properties, EOS, Storage, Layout>::checked(Options options) {
+template<class Exec, class Real, class Properties, class EOS, class Storage>
+Options Solver<Exec, Real, Properties, EOS, Storage>::checked(Options options) {
     const auto& control = options.pseudo_time;
     constexpr double limit = static_cast<double>(std::numeric_limits<Real>::max());
     const auto positive_real = [](double value) {

@@ -14,6 +14,7 @@ struct Options {
     double bulk_viscosity = 0;    ///< Bulk viscosity used by the viscous operator.
     transport::compressible::Flux flux = transport::compressible::Flux::Hllc;
     transport::compressible::ReconstructionOptions reconstruction;
+    numerics::gradient::Options gradient;
     transport::compressible::PseudoTimeOptions pseudo_time;
     linalg::SolverOptions linear;
     int field_tag = 81;    ///< MPI tag for exchanging primitive values. Peers must agree.

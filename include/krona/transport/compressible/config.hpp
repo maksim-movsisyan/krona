@@ -1,6 +1,7 @@
 #pragma once
 
 #include <krona/mpi/communicator.hpp>
+#include <krona/numerics/gradient/types.hpp>
 
 #include <array>
 #include <filesystem>
@@ -86,6 +87,7 @@ struct Configuration {
     LinearOptions linear;
     Flux flux = Flux::Hllc;
     ReconstructionOptions reconstruction;
+    numerics::gradient::Options gradient;
     std::filesystem::path output_directory;
 };
 

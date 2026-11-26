@@ -35,10 +35,26 @@ MolecularOptions decode_molecular(const toml::table& table, const TomlReader& re
     return result;
 }
 
+/// @brief Reads the cell gradient method and its numerical controls.
+void read_gradient(numerics::gradient::Options& options, const toml::table& table, const TomlReader& reader) {
+    reader.check_keys(table, {"method", "interpolation", "pivot_tolerance"}, "flow.numerics.gradient");
+    using numerics::gradient::Scheme;
+    using numerics::gradient::Interpolation;
+    options.scheme = reader.choice<Scheme>(table, "method", "least_squares_face", {
+        {"green_gauss_cell", Scheme::GreenGaussCell}, {"green_gauss_face", Scheme::GreenGaussFace},
+        {"least_squares_face", Scheme::LeastSquaresFace}});
+    options.interpolation = reader.choice<Interpolation>(table, "interpolation", "arithmetic", {
+        {"arithmetic", Interpolation::Arithmetic}, {"auxiliary_weights", Interpolation::AuxiliaryWeights}});
+    options.pivot_tolerance = reader.number(table, "pivot_tolerance", options.pivot_tolerance);
+    if (!(options.pivot_tolerance > 0 && options.pivot_tolerance < 1))
+        reader.error("flow.numerics.gradient.pivot_tolerance must be in (0, 1)");
+}
+
 /// @brief Reads the local flux and reconstruction options.
 void read_numerics(Configuration& config, const toml::table& table, const TomlReader& reader) {
-    reader.check_keys(table, {"flux", "reconstruction", "limiter", "kappa", "tvd_limiter", "skew_correction"},
-                      "flow.numerics");
+    reader.check_keys(table, {"flux", "reconstruction", "limiter", "kappa", "tvd_limiter", "skew_correction",
+                              "gradient"}, "flow.numerics");
+    read_gradient(config.gradient, reader.table(table, "gradient"), reader);
     config.flux = reader.choice<Flux>(table, "flux", "hllc",
         {{"hllc", Flux::Hllc}, {"hll", Flux::Hll}, {"rusanov", Flux::Rusanov}});
 
@@ -73,7 +89,7 @@ Configuration decode(const toml::table& root, const TomlReader& reader) {
     const std::string section = "flow";
     const auto& flow = reader.table(root, section, true);
     reader.check_keys(flow, {"physics", "initial", "numerics", "pseudo_time", "linear_solver",
-                                        "output", "transport"}, section);
+                             "output", "transport"}, section);
 
     Configuration config;
     const auto& transport = reader.table(flow, "transport");

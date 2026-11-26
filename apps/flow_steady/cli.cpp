@@ -3,18 +3,15 @@
 #include <algorithm>
 #include <string_view>
 
-namespace krona::apps::euler_steady {
+namespace krona::apps::flow_steady {
 
 /// @brief Prints help without accessing files.
 void usage(std::FILE* stream) noexcept {
-    std::fputs("KRONA steady compressible Euler solver\n"
-               "\n"
-               "Usage:\n"
-               "  mpirun -np N krona_euler_steady <mesh.h5> <euler.toml> <bc.toml> [options]\n"
-               "  krona_euler_steady --help\n"
-               "\n"
-               "Options:\n"
-               "  --case=<name>              C++ setup: custom, channel, wedge (default: custom).\n"
+    std::fprintf(stream, "KRONA steady compressible flow solver\n\n"
+        "Usage:\n  mpirun -np N %s <mesh.h5> <flow.toml> <bc.toml> [options]\n  %s --help\n\n",
+        program, program);
+    std::fputs("Options:\n"
+               "  --case=<name>              C++ setup: custom, channel (default: custom).\n"
                "  --vtu=<dir>                Override the output directory from TOML.\n"
                "  -v, --verbose              Summary diagnostics.\n"
                "  -vv                        Pseudo-time iteration diagnostics.\n"
@@ -108,9 +105,8 @@ void usage(std::FILE* stream) noexcept {
                 case_seen = true;
                 if (value == "custom") result.options.problem = Case::custom;
                 else if (value == "channel") result.options.problem = Case::channel;
-                else if (value == "wedge") result.options.problem = Case::wedge;
                 else {
-                    fail("Invalid case, expected custom or channel / wedge", value);
+                    fail("Invalid case, expected custom or channel", value);
                     return result;
                 }
             }
@@ -134,7 +130,7 @@ void usage(std::FILE* stream) noexcept {
         ++positional_count;
     }
     if (positional_count != 3) {
-        fail("Expected solver mesh, Euler configuration and boundary configuration paths");
+        fail("Expected solver mesh, solver configuration and boundary configuration paths");
     }
     return result;
 }
@@ -142,7 +138,7 @@ void usage(std::FILE* stream) noexcept {
 /// @brief Limits diagnostic lengths before writing rank-zero error output.
 void print_error(const ParseResult& result, std::FILE* stream) noexcept {
     constexpr std::size_t limit = 512;
-    std::fprintf(stream, "euler_steady: %.*s", static_cast<int>(std::min(result.error.size(), limit)),
+    std::fprintf(stream, "%s: %.*s", program, static_cast<int>(std::min(result.error.size(), limit)),
                  result.error.data());
     if (!result.argument.empty())
         std::fprintf(stream, ": '%.*s'%s", static_cast<int>(std::min(result.argument.size(), limit)),
@@ -151,4 +147,4 @@ void print_error(const ParseResult& result, std::FILE* stream) noexcept {
     usage(stream);
 }
 
-} // namespace krona::apps::euler_steady
+} // namespace krona::apps::flow_steady

@@ -62,12 +62,12 @@ void add_pseudo_time_diagonal(const Exec& exec, mesh::device::MeshView<typename 
                              mesh::device::AuxConnectivityView<typename Exec::memory_space> connectivity,
                              Target target, Views primitive, EOS eos, Real cfl, Diffusion diffusion = {}) {
     using CellPolicy = Kokkos::RangePolicy<Exec, Kokkos::IndexType<std::size_t>>;
-    const auto geometry = mesh.geometry;
     const auto blocks = target.blocks;
     const auto diagonal = target.entries.diagonal;
     std::size_t invalid = 0;
     Kokkos::parallel_reduce("flow_solver/pseudo_time", CellPolicy(exec, 0, static_cast<std::size_t>(mesh.sizes.n_own)),
         KOKKOS_LAMBDA(std::size_t cell, std::size_t& bad) {
+            const auto& geometry = mesh.geometry;
             const auto state = primitive.template read<Real>(cell);
             thermodynamics::AcousticState<Real> thermo;
             if (!eos.try_acoustic_from_pT(state.pressure, state.temperature, thermo)) {

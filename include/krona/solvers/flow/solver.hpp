@@ -15,10 +15,12 @@
 #include <krona/solvers/flow/detail/state.hpp>
 #include <krona/solvers/flow/options.hpp>
 #include <krona/transport/block_assembly.hpp>
+#include <krona/transport/detail/component_pack.hpp>
 #include <krona/transport/euler/operator.hpp>
 #include <krona/transport/viscous/operator.hpp>
 
 #include <optional>
+#include <utility>
 
 namespace krona::solvers::flow {
 
@@ -35,41 +37,49 @@ namespace ph = boundary::physical;
 /// @tparam EOS Device-copyable calorically perfect equation of state. Supplies checked
 /// acoustic conversions in (p,T) and (rho,e), rho-e derivatives and constant cv().
 /// @tparam Storage Value type of the primitive and reconstruction fields.
-/// @tparam Layout Layout of the caller's primitive field.
 /// @details Owns the compact block system, linear solver and reconstruction workspace.
 /// Keep the communicator, mesh and fields alive. Call collective methods in the same order
 /// on every rank. Boundary profiles are evaluated at physical time zero.
 template<class Exec, class Real, class Properties, class EOS = thermodynamics::IdealGas<Real>,
-         class Storage = StorageReal, class Layout = Kokkos::LayoutLeft>
+         class Storage = StorageReal>
 class Solver {
     using Space = typename Exec::memory_space;
     using Mesh = mesh::device::MeshView<Space>;
     using Connectivity = mesh::device::AuxConnectivityView<Space>;
+    using Geometry = mesh::device::AuxGeometryView<Space>;
     using Matrix = linalg::BsrMatrix<SolverReal, Exec>;
     using Euler = eu::EulerOperator<eu::Thermodynamics<EOS>, detail::NumericalFlux, Exec, Real>;
     using Viscous = vi::ViscousOperator<Exec, Real, Properties, EOS>;
-    using GradientStorage = fields::FieldStorage<Storage, 15, Exec>;
+
+    // A pack's type depends on the component descriptors, regardless of the input field layout.
+    template<class T, int N>
+    using Pack = decltype(fields::pack(std::declval<fields::FieldView<T, N, Space>>()));
     using FactorStorage = fields::FieldStorage<Storage, 5, Exec>;
 
 public:
-    using Field = fields::FieldView<Storage, 5, Space, Layout>;
-    using ConservativeView = Kokkos::View<krona::flow::Conservative<Real>*, Space>;
+    using PrimitivePack = Pack<Storage, 5>;
+    using ConservativePack = Pack<Real, 5>;
+    using GradientPack = Pack<Storage, 15>;
 
     /// @brief Binds the state fields and builds the reusable block system and halo exchanges.
     /// @param host Host partition used to build the sparsity pattern and patch catalog.
     /// @param mesh Device view of the same partition.
     /// @param connectivity Cell-to-face incidence in device memory.
+    /// @param geometry Auxiliary metrics required by the chosen gradient scheme.
     /// @param halo_plan Peer ranges of the mesh's cell halo.
-    /// @param conserved Writable conservative state for owned cells only.
-    /// @param primitives Writable field ordered as p,u,v,w,T. Include MPI ghosts and, if
-    /// options.needs_gradients() is true, physical boundary slots.
+    /// @param conserved Writable owned-cell components rho,rho*u,rho*v,rho*w,rho*E.
+    /// @param primitives Writable components p,u,v,w,T, including ghosts and, when using
+    /// gradients, the physical boundary slots.
+    /// @param gradients Writable owned and ghost derivatives ordered as 3*component + axis.
+    /// Required when options.needs_gradients() is true. Field allocations must be disjoint.
     /// @param eos Equation of state consistent with the physical boundary model.
     /// @param properties Molecular transport model. Evaluated when viscous transport is enabled.
     /// @param options Numerical settings shared by all ranks.
     /// @param comm Communicator of the partition.
     /// @param exec Execution instance also used by the boundary manager.
-    Solver(const mesh::host::MeshPart& host, Mesh mesh, Connectivity connectivity, mesh::host::HaloPlanView halo_plan,
-           ConservativeView conserved, Field primitives, EOS eos, Properties properties, Options options,
+    Solver(const mesh::host::MeshPart& host, Mesh mesh, Connectivity connectivity, Geometry geometry,
+           mesh::host::HaloPlanView halo_plan, ConservativePack conserved, PrimitivePack primitives,
+           std::optional<GradientPack> gradients, EOS eos, Properties properties, Options options,
            mpi::CommView comm, Exec exec = {});
 
     Solver(const Solver&) = delete;
@@ -77,7 +87,7 @@ public:
     Solver(Solver&&) = delete;
     Solver& operator=(Solver&&) = delete;
 
-    /// @brief Initializes both owned state representations from a device-callable sampler.
+    /// @brief Initializes the owned primitive and conservative values from a device-callable sampler.
     /// @param initial Callable returning Primitive<Real, true> from the three cell-centre coordinates.
     /// Before iterating, use this method or initialize both borrowed fields consistently.
     template<class Initial>
@@ -90,6 +100,7 @@ public:
     /// @param boundary Finalized physical boundary manager using the same mesh, EOS and execution instance.
     /// @return Residual and diagnostics of the input iterate and the linear iteration count.
     /// On return, the owned conservative and primitive fields contain the updated state.
+    /// Prepared gradients belong to the input state used during assembly.
     template<class Boundary>
     [[nodiscard]] IterationResult iterate(const Boundary& boundary);
 
@@ -98,6 +109,7 @@ public:
     /// @param observe Host callback invoked on every rank after evaluating an iterate, with its
     /// zero-based index and report. The last report has no linear solve.
     /// @return The convergence status, update count and initial and final residual norms.
+    /// Prepared gradients correspond to the state of the final residual evaluation.
     template<class Boundary, class Observe>
     [[nodiscard]] SolveResult solve_steady(const Boundary& boundary, const Observe& observe);
 
@@ -112,8 +124,8 @@ private:
     Options options_;
     Mesh mesh_;
     Connectivity connectivity_;
-    ConservativeView conserved_;
-    Field field_;
+    ConservativePack conserved_;
+    PrimitivePack field_;
     EOS eos_;
     Properties properties_;
     Euler euler_;
@@ -128,7 +140,7 @@ private:
     std::optional<vi::AssemblyStatus<Exec>> viscous_status_;
     std::optional<ph::Status<Exec>> boundary_status_;
     std::optional<gr::GradientOperator<Exec>> gradient_;
-    std::optional<GradientStorage> gradients_;
+    std::optional<GradientPack> gradients_;
     std::optional<FactorStorage> factors_;
     halo::Exchange<Storage, Exec> field_halo_;
     std::optional<halo::Exchange<Storage, Exec>> gradient_halo_;

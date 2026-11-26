@@ -1,0 +1,23 @@
+[mesh]
+name = "Heat conduction between parallel walls"
+vertices = [
+  [0, 0, 0], [0.01, 0, 0], [0.01, 0.002, 0], [0, 0.002, 0],
+  [0, 0, 0.002], [0.01, 0, 0.002], [0.01, 0.002, 0.002], [0, 0.002, 0.002],
+]
+
+[[blocks]]
+name = "gas"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [12, 2, 2]
+
+[[boundaries]]
+name = "cold"
+faces = [[3, 0, 4, 7]]
+
+[[boundaries]]
+name = "hot"
+faces = [[1, 2, 6, 5]]
+
+[[boundaries]]
+name = "sides"
+faces = [[0, 3, 2, 1], [0, 1, 5, 4], [2, 3, 7, 6], [4, 5, 6, 7]]

@@ -1,0 +1,29 @@
+[flow.physics]
+gamma = 1.4
+gas_constant = 287.05
+
+[flow.initial]
+pressure = 100000.0
+temperature = 300.0
+velocity = [1041.6569, 0.0, 0.0]
+
+[flow.numerics]
+flux = "hll"
+reconstruction = "first_order"
+
+[flow.pseudo_time]
+cfl = 12.0
+relaxation = 0.9
+maximum_iterations = 650
+relative_tolerance = 1e-6
+absolute_tolerance = 1e-8
+
+[flow.linear_solver]
+method = "GMRES"
+preconditioner = "RELAXATION"
+relative_tolerance = 1e-1
+maximum_iterations = 50
+restart_length = 50
+
+[flow.output]
+directory = "vtk"

@@ -14,7 +14,7 @@
 #     |                    |     / Wedge Ramp (Goes UP)
 #     |                    |   /
 #    (0)==================(1)/                                   Y = 0.0
-#    Inlet Floor           
+#    Inlet Floor
 #
 #    X = 0.0              X = 0.5             X = 1.1                     X = 3.0
 #    <---- L = 0.5 -----> <---- L = 0.6 -----> <----------- L = 1.9 ---------->
@@ -35,7 +35,7 @@ vertices = [
   [0.5, 0.0, 0.0],    #  1: Wedge start bottom
   [1.1, 0.2, 0.0],    #  2: Wedge end bottom
   [3.0, 0.2, 0.0],    #  3: Outlet bottom right
-  [3.0, 1.0, 0.0],    #  4: Outlet top right  
+  [3.0, 1.0, 0.0],    #  4: Outlet top right
   [1.1, 1.0, 0.0],    #  5: Wedge end top
   [0.5, 1.0, 0.0],    #  6: Wedge start top
   [0.0, 1.0, 0.0],    #  7: Inlet top left
@@ -72,7 +72,7 @@ grading = [1.0, 1.0, 1.0]
 name = "outlet_block"
 vertices = [2, 3, 4, 5, 10, 11, 12, 13]
 cells = [190, 90, 1]
-grading_type = ["uniform", "uniform", "uniform"]  
+grading_type = ["uniform", "uniform", "uniform"]
 grading = [1.0, 1.0, 1.0]
 
 # -----------------------------------------------------------------------------

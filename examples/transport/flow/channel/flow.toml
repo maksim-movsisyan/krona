@@ -1,30 +1,30 @@
-[euler.physics]
+[flow.physics]
 gamma = 1.4
 gas_constant = 287.05
 
-[euler.initial]
+[flow.initial]
 pressure = 100000.0
 temperature = 300.0
 velocity = [650.0, 0.0, 0.0]
 
-[euler.numerics]
+[flow.numerics]
 flux = "hllc"
 reconstruction = "first_order"
 limiter = "none"
 
-[euler.pseudo_time]
+[flow.pseudo_time]
 cfl = 5.0
 relaxation = 1.0
 maximum_iterations = 300
 relative_tolerance = 1e-8
 absolute_tolerance = 1e-8
 
-[euler.linear_solver]
+[flow.linear_solver]
 method = "GMRES"
 preconditioner = "RELAXATION"
 relative_tolerance = 1e-6
 maximum_iterations = 100
 restart_length = 30
 
-[euler.output]
-directory = "channel/vtk"
+[flow.output]
+directory = "vtk"

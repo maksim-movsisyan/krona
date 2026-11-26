@@ -3,7 +3,7 @@ patch_id = 0
 name = "inlet"
 family = ""
 source_type = "UserDefined"
-global_face_count = 80
+global_face_count = 90
 type = "SUPERSONIC_INLET"
 pressure = 100000.0
 temperature = 300.0
@@ -15,7 +15,7 @@ patch_id = 1
 name = "outlet"
 family = ""
 source_type = "UserDefined"
-global_face_count = 80
+global_face_count = 90
 type = "SUPERSONIC_OUTLET"
 
 [[boundary_condition]]
@@ -23,7 +23,7 @@ patch_id = 2
 name = "walls"
 family = ""
 source_type = "UserDefined"
-global_face_count = 580
+global_face_count = 600
 type = "SLIP_WALL"
 
 [[boundary_condition]]
@@ -31,5 +31,5 @@ patch_id = 3
 name = "symmetry"
 family = ""
 source_type = "UserDefined"
-global_face_count = 46400
+global_face_count = 54000
 type = "SYMMETRY"

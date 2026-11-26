@@ -1,15 +1,15 @@
 namespace krona::solvers::flow {
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
+template<class Exec, class Real, class Properties, class EOS, class Storage>
 template<class Boundary>
-IterationResult Solver<Exec, Real, Properties, EOS, Storage, Layout>::iterate(const Boundary& boundary) {
+IterationResult Solver<Exec, Real, Properties, EOS, Storage>::iterate(const Boundary& boundary) {
     return finish_iteration(boundary, assemble_residual(boundary), true);
 }
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
+template<class Exec, class Real, class Properties, class EOS, class Storage>
 template<class Boundary, class Observe>
-SolveResult Solver<Exec, Real, Properties, EOS, Storage, Layout>::solve_steady(const Boundary& boundary,
-                                                                               const Observe& observe) {
+SolveResult Solver<Exec, Real, Properties, EOS, Storage>::solve_steady(const Boundary& boundary,
+                                                                             const Observe& observe) {
     const auto& control = options_.pseudo_time;
     SolveResult result;
     while (true) {
@@ -25,9 +25,9 @@ SolveResult Solver<Exec, Real, Properties, EOS, Storage, Layout>::solve_steady(c
     }
 }
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
+template<class Exec, class Real, class Properties, class EOS, class Storage>
 template<class Boundary>
-IterationResult Solver<Exec, Real, Properties, EOS, Storage, Layout>::finish_iteration(
+IterationResult Solver<Exec, Real, Properties, EOS, Storage>::finish_iteration(
     const Boundary& boundary, double norm, bool update) {
     if (update) assemble_jacobian(boundary);
     IterationResult result{norm, std::nullopt, status_.check()};
@@ -39,8 +39,8 @@ IterationResult Solver<Exec, Real, Properties, EOS, Storage, Layout>::finish_ite
     return result;
 }
 
-template<class Exec, class Real, class Properties, class EOS, class Storage, class Layout>
-int Solver<Exec, Real, Properties, EOS, Storage, Layout>::solve_linear_update() {
+template<class Exec, class Real, class Properties, class EOS, class Storage>
+int Solver<Exec, Real, Properties, EOS, Storage>::solve_linear_update() {
     increment_.fill(SolverReal{0}, exec_);
     const auto solved = linear_.solve(rhs_, increment_);
     mpi::require(solved.converged, "Steady flow: linear solve did not converge");

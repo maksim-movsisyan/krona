@@ -3,11 +3,13 @@
 #include <cstdio>
 #include <string>
 
-namespace krona::apps::euler_steady {
+namespace krona::apps::flow_steady {
+
+inline constexpr char program[] = "krona_flow_steady";
 
 enum class Verbosity : int { quiet, summary, detailed };
 enum class CliAction : int { run, help, error };
-enum class Case : int { custom, channel, wedge };
+enum class Case : int { custom, channel };
 
 struct Options {
     std::string mesh;
@@ -30,4 +32,4 @@ struct ParseResult {
 void usage(std::FILE* stream) noexcept;
 void print_error(const ParseResult& result, std::FILE* stream) noexcept;
 
-} // namespace krona::apps::euler_steady
+} // namespace krona::apps::flow_steady
