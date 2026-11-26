@@ -748,7 +748,6 @@ if(KRONA_ENABLE_TRILINOS)
     target_link_libraries(krona_transport_euler INTERFACE krona::linalg)
 endif()
 
-
     #================================
     #=== COMPRESSIBLE FLOW CONFIG ===
     #================================
@@ -765,6 +764,8 @@ target_link_libraries(krona_transport_compressible_config
 #==================================================================
 if(KRONA_ENABLE_TRILINOS)
     krona_interface(solver_scalar krona::transport_scalar krona::time_derivative krona::linalg)
+    krona_interface(solver_flow krona::transport_compressible_config krona::transport_euler
+                    krona::transport_viscous krona::gradient krona::halo krona::linalg)
 endif()
 
 #==================================================================
@@ -792,6 +793,7 @@ if(KRONA_BUILD_APPLICATIONS)
     if(KRONA_ENABLE_TRILINOS)
         add_subdirectory(apps/scalar_transport)
         add_subdirectory(apps/euler_steady)
+        add_subdirectory(apps/navier_stokes_steady)
     endif()
 
 endif()
