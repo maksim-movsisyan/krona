@@ -1093,6 +1093,14 @@ void verification_modes(const Matrix& matrix)
           "test: unchecked solve exposes fabricated final residual metrics");
     check(error(solution) < 1e-8, "test: disabling verification changed the solution");
 
+    // The zero-guess path overwrites an existing iterate and uses the supplied global norm.
+    const auto zero_guess = unchecked.solve_from_zero(rhs, solution, result.rhs_norm);
+    check(zero_guess.converged && zero_guess.iterations == result.iterations &&
+          zero_guess.rhs_norm == result.rhs_norm && zero_guess.initial_residual_norm == result.rhs_norm &&
+          zero_guess.residual_threshold == result.residual_threshold && error(solution) < 1e-8,
+          "test: zero-guess solve differs from the ordinary solve");
+    check(static_cast<double>(rhs.native()->norm2()) == result.rhs_norm, "test: zero-guess solve changed the RHS");
+
     // An exact initial guess already has a measured residual and needs no preparation.
     const auto generation = unchecked.preconditioner().generation();
     const auto accepted = unchecked.solve(rhs, exact);
@@ -1104,8 +1112,7 @@ void verification_modes(const Matrix& matrix)
     // Enabling verification adds a true-residual check without changing Krylov controls.
     options.verify_residual = true;
     Solver<Matrix, S> checked(matrix, options);
-    solution.fill(S{0});
-    const auto verified = checked.solve(rhs, solution);
+    const auto verified = checked.solve_from_zero(rhs, solution, result.rhs_norm);
     check(verified.converged && verified.residual_checked &&
           std::isfinite(verified.residual_norm) && verified.residual_norm <= verified.residual_threshold,
           "test: requested final true-residual check was not recorded");
@@ -1136,6 +1143,12 @@ void verification_modes(const Matrix& matrix)
     check(!no_iterations.converged && no_iterations.residual_checked && !no_iterations.iterations_started &&
           no_iterations.residual_norm == no_iterations.initial_residual_norm,
           "test: zero-budget solve must report its unchanged initial residual");
+
+    solution.fill(S{1});
+    const auto zero_budget = stopped.solve_from_zero(rhs, solution, result.rhs_norm);
+    check(!zero_budget.converged && zero_budget.residual_checked && !zero_budget.iterations_started &&
+          zero_budget.residual_norm == result.rhs_norm && solution.native()->norm2() == S{0},
+          "test: zero-guess early exit must clear the solution and report the RHS norm");
 }
 
 /// @brief Applies residual-verification checks to a scalar CSR system.

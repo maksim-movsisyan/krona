@@ -10,6 +10,7 @@
 #include <krona/io/solver_mesh/hdf5_reader.hpp>
 #include <krona/mesh/device/aux_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
+#include <krona/mpi/collectives.hpp>
 #include <krona/solvers/flow/solver.hpp>
 #include <krona/toml_config/file.hpp>
 #include <krona/transport/compressible/config.hpp>
@@ -63,6 +64,31 @@ Real compute_value(double value, const char* message) {
     return static_cast<Real>(value);
 }
 
+void report_iteration(int index, const fs::IterationResult& iteration, mpi::CommView comm) {
+    const auto& timing = iteration.timings;
+    const std::array local{timing.total, timing.prepare_fields, timing.residual, timing.jacobian,
+                           timing.linear_solve, timing.update_state};
+    std::array<double, local.size()> maximum{};
+    mpi::reduce<mpi::Reduction::max>(comm, std::span{local}, std::span{maximum});
+    if (comm.rank() != 0) return;
+
+    std::fprintf(stderr, "KRONA %s: iteration %d, spatial residual %.9e\n",
+                 program, index, iteration.residual_norm);
+    const auto& norms = iteration.equation_residual_norms;
+    std::fprintf(stderr, "KRONA %s: residual L2 mass=%.9e mom_x=%.9e mom_y=%.9e mom_z=%.9e energy=%.9e\n",
+                 program, norms[0], norms[1], norms[2], norms[3], norms[4]);
+    if (iteration.linear_iterations) {
+        std::fprintf(stderr, "KRONA %s: linear iterations %d\n", program, *iteration.linear_iterations);
+        std::fprintf(stderr,
+            "KRONA %s: wall ms (rank max) total=%.3f fields=%.3f residual=%.3f jacobian=%.3f linear=%.3f update=%.3f\n",
+            program, 1000 * maximum[0], 1000 * maximum[1], 1000 * maximum[2], 1000 * maximum[3],
+            1000 * maximum[4], 1000 * maximum[5]);
+    } else {
+        std::fprintf(stderr, "KRONA %s: wall ms (rank max) total=%.3f fields=%.3f residual=%.3f\n",
+                     program, 1000 * maximum[0], 1000 * maximum[1], 1000 * maximum[2]);
+    }
+}
+
 int solve(const Options& options, mpi::CommView comm) {
     const auto config = ct::read_config(options.config, comm);
     const auto bc_config = ph::read_config(options.boundary, comm);
@@ -82,6 +108,7 @@ int solve(const Options& options, mpi::CommView comm) {
     settings.gradient = config.gradient;
     settings.pseudo_time = config.pseudo_time;
     settings.linear = linear_options(config.linear);
+    settings.measure_iteration_time = options.verbosity == Verbosity::detailed;
 
     const Exec exec;
     const auto host = io::solver_mesh::import_mesh_hdf5(options.mesh, comm);
@@ -141,7 +168,6 @@ int solve(const Options& options, mpi::CommView comm) {
     solver.initialize(InitialField<Real>{options.problem, reference});
 
     const bool root = comm.rank() == 0;
-    const bool detailed = root && options.verbosity == Verbosity::detailed;
     const char* flow_name = config.viscous_enabled ? "navier_stokes" : "euler";
     if (root && options.verbosity != Verbosity::quiet)
         std::fprintf(stderr, "KRONA %s: cells=%llu ranks=%d backend=%s CFL=%.6g physics=%s\n",
@@ -149,11 +175,7 @@ int solve(const Options& options, mpi::CommView comm) {
                      config.pseudo_time.cfl, flow_name);
 
     const auto result = solver.solve_steady(boundary, [&](int index, const fs::IterationResult& iteration) {
-        if (!detailed) return;
-        std::fprintf(stderr, "KRONA %s: iteration %d, spatial residual %.9e\n",
-                     program, index, iteration.residual_norm);
-        if (iteration.linear_iterations)
-            std::fprintf(stderr, "KRONA %s: linear iterations %d\n", program, *iteration.linear_iterations);
+        if (settings.measure_iteration_time) report_iteration(index, iteration, comm);
     });
     write_solution(host, output_directory, flow_name, primitives, conserved, comm);
     if (root)

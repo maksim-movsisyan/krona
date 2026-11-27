@@ -43,13 +43,17 @@ void Solver<Exec, Real, Properties, EOS, Storage>::with_boundary_reconstruction(
 
 template<class Exec, class Real, class Properties, class EOS, class Storage>
 template<class Boundary>
-double Solver<Exec, Real, Properties, EOS, Storage>::assemble_residual(const Boundary& boundary) {
+void Solver<Exec, Real, Properties, EOS, Storage>::assemble_residual(const Boundary& boundary, 
+                                                                     IterationResult& result, 
+                                                                     detail::IterationTimer& timer) {
     mpi::require(boundary.execution_space() == exec_, "Steady flow: boundary uses another execution instance");
 
     field_halo_.exchange();
     if (gradient_)
         detail::prepare_gradients(boundary, detail::primitive_views(field_), *gradient_, field_,
                                   *gradients_, properties_, options_.viscous_enabled, *boundary_status_);
+    if (timer.active() && gradient_) exec_.fence("Flow: field preparation complete");
+    result.timings.prepare_fields = timer.lap();
 
     residual_.fill_async(exec_, AccumulationReal{0});
     const auto output = fields::pack(residual_.view());
@@ -64,10 +68,15 @@ double Solver<Exec, Real, Properties, EOS, Storage>::assemble_residual(const Bou
         viscous_->add_residual_async(field_, *gradients_, output, boundary,
                                      *viscous_status_);
     }
-    linalg::copy_from_fields(rhs_, output, exec_);
-    const auto norm = static_cast<double>(rhs_.native()->norm2());
-    mpi::require(std::isfinite(norm), "Steady flow: nonfinite spatial residual norm");
-    return norm;
+    const auto squares = detail::pack_residual(exec_, euler_.plan().communicator(), output, rhs_);
+    double total_square = 0;
+    for (std::size_t c = 0; c < squares.size(); ++c) {
+        result.equation_residual_norms[c] = std::sqrt(squares[c]);
+        total_square += squares[c];
+    }
+    result.residual_norm = std::sqrt(total_square);
+    mpi::require(std::isfinite(result.residual_norm), "Steady flow: nonfinite spatial residual norm");
+    result.timings.residual = timer.lap();
 }
 
 template<class Exec, class Real, class Properties, class EOS, class Storage>

@@ -5,13 +5,14 @@
 #include <krona/fields/pack.hpp>
 #include <krona/halo/exchange.hpp>
 #include <krona/linalg/bsr_matrix.hpp>
-#include <krona/linalg/field_transfer.hpp>
 #include <krona/numerics/gradient/gradient_operator.hpp>
 #include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <krona/solvers/flow/detail/flux.hpp>
+#include <krona/solvers/flow/detail/iteration_timer.hpp>
 #include <krona/solvers/flow/detail/prepare_gradients.hpp>
 #include <krona/solvers/flow/detail/pseudo_time.hpp>
 #include <krona/solvers/flow/detail/reconstruction.hpp>
+#include <krona/solvers/flow/detail/residual_norms.hpp>
 #include <krona/solvers/flow/detail/state.hpp>
 #include <krona/solvers/flow/options.hpp>
 #include <krona/transport/block_assembly.hpp>
@@ -98,7 +99,7 @@ public:
 
     /// @brief Performs one pseudo-time update, including one linear solve.
     /// @param boundary Finalized physical boundary manager using the same mesh, EOS and execution instance.
-    /// @return Residual and diagnostics of the input iterate and the linear iteration count.
+    /// @return Residual norms and diagnostics of the input iterate, linear iteration count and timings.
     /// On return, the owned conservative and primitive fields contain the updated state.
     /// Prepared gradients belong to the input state used during assembly.
     template<class Boundary>
@@ -148,10 +149,10 @@ private:
     static Options checked(Options options);
 
     template<class Boundary>
-    [[nodiscard]] double assemble_residual(const Boundary& boundary);
+    void assemble_residual(const Boundary& boundary, IterationResult& result, detail::IterationTimer& timer);
 
     template<class Boundary>
-    [[nodiscard]] IterationResult finish_iteration(const Boundary& boundary, double norm, bool update);
+    void finish_iteration(const Boundary& boundary, IterationResult& result, detail::IterationTimer& timer, bool update);
 
     template<class Boundary>
     void assemble_jacobian(const Boundary& boundary);
@@ -162,7 +163,7 @@ private:
     template<class Visit>
     void with_boundary_reconstruction(const Visit& visit) const;
 
-    [[nodiscard]] int solve_linear_update();
+    void solve_linear_update(IterationResult& result, detail::IterationTimer& timer);
 };
 
 } // namespace krona::solvers::flow

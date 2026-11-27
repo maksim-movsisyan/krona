@@ -13,8 +13,9 @@ mpirun -np N krona_flow_steady mesh.h5 flow.toml bc.toml [options]
 
 Use the MPI size that produced `mesh.h5`. The application accepts
 `--case custom|channel|wedge`, `--vtu DIRECTORY`, `-v` and `-vv`.
-`--vtu` overrides the TOML output directory. `-vv` includes the spatial
-residual and Krylov iteration count at each update. The default `custom` case
+`--vtu` overrides the TOML output directory. `-vv` prints the spatial residual,
+five equation norms, Krylov iteration count and elapsed time at each update.
+The default `custom` case
 uses the uniform reference state from TOML. Edit
 [initial_field.hpp](../apps/flow_steady/initial_field.hpp) for a different spatial
 initialization. See the [examples](#examples) for ready-to-run cases.
@@ -155,6 +156,20 @@ This norm uses the unscaled owned conservative residual entries. The app
 reports the initial and final norms and returns a failure exit code if the
 iteration limit is reached before convergence.
 
+The per-equation norms are the global Euclidean norms of the stored RHS
+entries for mass, the three momentum components and energy. The solver
+accumulates their sums of squares while it packs its linear RHS and uses one
+MPI sum. The square root of the sum over all five components gives the
+norm used for the steady stopping test and the zero-guess linear solve.
+
+Detailed output measures time in milliseconds. It reports field preparation
+(primitive halo, boundary samples and gradients), residual assembly (including
+limiting, gradient exchange and norms), Jacobian assembly and commit, the
+linear solve (including preconditioning), and the state update. The total
+excludes the iteration callback and file output. Each number is the maximum of
+that duration across ranks, so the phase maxima can add up to more than the
+maximum total. The final residual evaluation reports only the phases it runs.
+
 
 ## Examples
 
@@ -204,5 +219,7 @@ Prepared gradients and ghosts describe the input state used for assembly.
 `solve_steady(boundary)` also checks convergence and returns the global
 residual norm and any prepared gradients at the final state. The iteration
 report contains local reconstruction and Riemann fallback counts.
+Set `Options::measure_iteration_time` to populate local phase durations in
+seconds in the iteration report.
 Call the solver collectively using the same execution instance as the
 finalized boundary manager.

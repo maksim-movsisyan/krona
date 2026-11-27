@@ -42,7 +42,7 @@ Owning `Teuchos::RCP` handles and managed Kokkos views retain shared allocations
 
 Original distribution/pattern wrapper objects need not outlive matrices or vectors constructed from them: those objects retain shared handles. This differs from the borrowed matrix wrapper used by solvers and preconditioners.
 
-Solver residual storage is allocated lazily on the first nonempty solve and reused. It is needed for the initial residual even when final verification is disabled; that initial residual is also supplied to Belos to avoid a duplicate initial SpMV. Enabling final verification reuses the same buffer. Belos allocates its Krylov workspace. Its linear problem can retain native RHS/solution `RCP`s; solving does not copy those vectors into replacement solution/RHS arrays.
+The solver allocates its residual buffer when it first needs to supply an initial residual to Belos or evaluate `b-A*x`. It reuses the buffer for subsequent solves. Belos allocates its Krylov workspace. Its linear problem can retain native RHS and solution `RCP`s.
 
 With equal matrix/preconditioner scalar types, preconditioning uses the original native matrix. With different types, it allocates a second coefficient array on the same logical graph and converts coefficients when refreshed. The precision bridge also caches input/output multivectors and converts values on each preconditioner application; an additional solver-precision buffer is needed for the nonzero-`beta` path. This is not zero-copy mixed precision.
 
@@ -317,7 +317,9 @@ The application must choose an algorithm/preconditioner appropriate to the matri
 
 `solve(b, x)` uses the current `x` as its initial guess. Both vectors and the matrix must be committed, use the matrix's native map object, and have distinct native RHS/solution allocations. The call is collective and blocking.
 
-The initial true residual is always computed to accept an already-converged guess and configure the stopping threshold:
+`solve_from_zero(b, x, rhs_norm, exec)` clears `x` on the supplied execution instance, even on an early exit. Supply the global Euclidean norm of the stored RHS values, identical on all ranks. With a zero guess the initial residual is `b`, so the solver uses the supplied norm for both initial norms and copies `b` to the residual buffer if Belos needs to iterate.
+
+The solver uses the initial true residual to accept an already-converged guess and configure the stopping threshold:
 
 $$
 \tau=\max(\mathrm{absolute\_tolerance},\mathrm{relative\_tolerance}\,R),

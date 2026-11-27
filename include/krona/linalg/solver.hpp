@@ -129,6 +129,23 @@ public:
     /// @param solution Initial guess on entry and the resulting iterate on return.
     /// @details Relative tolerance uses the RHS norm, or the initial residual norm when the RHS is zero.
     [[nodiscard]] SolveResult solve(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution) {
+        return solve_impl(rhs, solution, std::nullopt, Exec{});
+    }
+
+    /// @brief Clears the solution and solves A*x = rhs from a zero initial guess.
+    /// @param rhs Right-hand side on the matrix's owned scalar map.
+    /// @param solution Receives the resulting iterate, including on an early exit.
+    /// @param rhs_norm Global Euclidean norm of the stored RHS values, identical on every rank.
+    /// @param exec Execution instance used to clear the solution.
+    /// @details Uses rhs as the initial residual and skips the initial matrix apply and norm reductions.
+    [[nodiscard]] SolveResult solve_from_zero(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution,
+                                              double rhs_norm, const Exec& exec = {}) {
+        return solve_impl(rhs, solution, rhs_norm, exec);
+    }
+
+private:
+    [[nodiscard]] SolveResult solve_impl(const Vector<Scalar, Exec>& rhs, Vector<Scalar, Exec>& solution,
+                                         std::optional<double> zero_guess_rhs_norm, const Exec& exec) {
         matrix_.require_committed();
         rhs.require_committed();
         solution.require_committed();
@@ -138,25 +155,30 @@ public:
         mpi::require(rhs.native().getRawPtr() != solution.native().getRawPtr(), "Linalg: RHS and solution alias");
         return mpi::guarded([&] {
             SolveResult result;
-            result.rhs_norm = static_cast<double>(rhs.native()->norm2());
+            result.rhs_norm = zero_guess_rhs_norm ? *zero_guess_rhs_norm : static_cast<double>(rhs.native()->norm2());
             mpi::require(std::isfinite(result.rhs_norm), "Linalg: nonfinite RHS norm");
+            mpi::require(result.rhs_norm >= 0, "Linalg: negative RHS norm");
+            if (zero_guess_rhs_norm) solution.fill(Scalar{0}, exec);
             if (matrix_.distribution().global_size() == 0) {
+                mpi::require(result.rhs_norm == 0, "Linalg: nonzero RHS norm for an empty system");
                 result.converged = true;
                 result.residual_checked = true;
                 result.residual_norm = result.relative_residual = 0;
                 result.residual_threshold = options_.absolute_tolerance;
                 return result;
             }
-            // Measure b - A*x before iteration. This gives a stopping scale for a zero RHS
-            // and lets a sufficiently accurate initial guess return before setup.
-            if (residual_.is_null())
-                residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.distribution().native(), false));
-            const auto residual_norm = [&] {
-                matrix_.native()->apply(*solution.native(), *residual_);
-                residual_->update(Scalar{1}, *rhs.native(), Scalar{-1});
-                return static_cast<double>(residual_->norm2());
+            const auto residual_buffer = [&]() -> auto& {
+                if (residual_.is_null())
+                    residual_ = Teuchos::rcp(new typename T::vector_type(matrix_.distribution().native(), false));
+                return *residual_;
             };
-            result.initial_residual_norm = residual_norm();
+            const auto residual_norm = [&] {
+                auto& residual = residual_buffer();
+                matrix_.native()->apply(*solution.native(), residual);
+                residual.update(Scalar{1}, *rhs.native(), Scalar{-1});
+                return static_cast<double>(residual.norm2());
+            };
+            result.initial_residual_norm = zero_guess_rhs_norm ? result.rhs_norm : residual_norm();
             mpi::require(std::isfinite(result.initial_residual_norm), "Linalg: nonfinite initial residual");
             const double reference = result.rhs_norm > 0 ? result.rhs_norm : result.initial_residual_norm;
             result.residual_threshold = std::max(options_.absolute_tolerance, relative_tolerance_*reference);
@@ -176,7 +198,8 @@ public:
             prepare();
             problem_->setLHS(solution.native());
             problem_->setRHS(rhs.native());
-            // Reuse the true residual instead of doing another initial SpMV.
+            // Belos managers may take a non-const view of this buffer.
+            if (zero_guess_rhs_norm) residual_buffer().assign(*rhs.native());
             problem_->setInitResVec(residual_);
             mpi::require(problem_->setProblem(), "Linalg: Belos rejected the linear problem");
             auto parameters = Teuchos::rcp(new Teuchos::ParameterList(*manager_->getCurrentParameters()));
@@ -217,7 +240,6 @@ public:
         });
     }
 
-private:
     const Matrix& matrix_;
     SolverOptions options_;
     preconditioner_type preconditioner_;
