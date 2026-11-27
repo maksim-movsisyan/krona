@@ -1,0 +1,25 @@
+[mesh]
+name = "Heated lid-driven cavity"
+vertices = [
+  [0.00, 0.00, 0.00], [0.01, 0.00, 0.00],
+  [0.01, 0.01, 0.00], [0.00, 0.01, 0.00],
+  [0.00, 0.00, 0.01], [0.01, 0.00, 0.01],
+  [0.01, 0.01, 0.01], [0.00, 0.01, 0.01],
+]
+
+[[blocks]]
+name = "gas"
+vertices = [0, 1, 2, 3, 4, 5, 6, 7]
+cells = [64, 64, 64]
+
+[[boundaries]]
+name = "cold_wall"
+faces = [[0, 1, 5, 4]]
+
+[[boundaries]]
+name = "hot_lid"
+faces = [[2, 3, 7, 6]]
+
+[[boundaries]]
+name = "side_walls"
+faces = [[3, 0, 4, 7], [1, 2, 6, 5], [0, 3, 2, 1], [4, 5, 6, 7]]

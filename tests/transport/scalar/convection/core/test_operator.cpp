@@ -2,6 +2,7 @@
 #include <krona/numerics/reconstruction/reconstruction.hpp>
 #include <krona/numerics/reconstruction/stencil_data.hpp>
 #include <common/test_support.hpp>
+#include <common/view_snapshot.hpp>
 #include <krona/transport/scalar/convection/operator.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -23,13 +24,8 @@ using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
 using Real = ComputeReal;
 using test::check;
+using test::host_snapshot;
 #include "fixture.hpp"
-
-/// @brief Returns a completed independent host snapshot on the selected execution instance.
-template<class View> auto snapshot(View view, const Exec& exec) {
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
-    Kokkos::deep_copy(exec, host, view); exec.fence("Convection core snapshot"); return host;
-}
 
 /// @brief Owns device mesh and incidence allocations borrowed by the convection plan.
 struct Attached {
@@ -174,12 +170,12 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
     for(const Real velocity : {Real{3},Real{-3}}){
         system.reset(exec);
         status.begin_async(); op.add_system_async(system.view(),boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check();
-        const auto coefficients=snapshot(system.view().values,exec); const auto rhs=snapshot(system.view().rhs,exec);
+        const auto coefficients=host_snapshot(exec, system.view().values); const auto rhs=host_snapshot(exec, system.view().rhs);
         Kokkos::View<Storage*,Space> residual("residual",m.sizes.n_own); Kokkos::deep_copy(exec,residual,Storage{0});
         status.begin_async(); op.add_residual_async(phi,residual,boundary,status,VelocityFlux{velocity},reconstruction,cv::FixedValueInflow{},time); (void)status.check();
 
         // Evaluate b-A*phi independently from stored rows and compare with the direct residual.
-        const auto actual=snapshot(residual,exec); const auto field=snapshot(phi,exec);
+        const auto actual=host_snapshot(exec, residual); const auto field=host_snapshot(exec, phi);
         for(std::size_t row=0;row<system.owned;++row){
             double action=static_cast<double>(rhs(row));
             for(auto k=system.offsets[row];k<system.offsets[row+1];++k) action-=static_cast<double>(coefficients(k))*static_cast<double>(field(system.columns[k]));
@@ -194,12 +190,12 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
         status.begin_async(); op.add_correction_async(system.view().rhs,boundary,status,VelocityFlux{velocity},reconstruction,time); (void)status.check();
 
         // A correction-only RHS update must reproduce full assembly without changing coefficients.
-        const auto updated=snapshot(system.view().rhs,exec); const auto fixed=snapshot(system.view().values,exec);
+        const auto updated=host_snapshot(exec, system.view().rhs); const auto fixed=host_snapshot(exec, system.view().values);
         for(std::size_t i=0;i<system.owned;++i) test::near(static_cast<double>(updated(i)),static_cast<double>(rhs(i)),tolerance,"frozen matrix RHS update");
         for(std::size_t k=0;k<system.columns.size();++k) test::near(static_cast<double>(fixed(k)),static_cast<double>(coefficients(k)),0.,"reconstruction changed matrix");
 
         // Unselected matrix components and the extra RHS row must retain their sentinels.
-        const auto blocks=snapshot(system.blocks,exec); const auto right=snapshot(system.right,exec);
+        const auto blocks=host_snapshot(exec, system.blocks); const auto right=host_snapshot(exec, system.right);
         for(std::size_t k=0;k<system.columns.size();++k) for(int i=0;i<2;++i) for(int j=0;j<2;++j)
             if(i!=1||j!=1) test::near(static_cast<double>(blocks(k,i,j)),7.,0.,"unselected block changed");
         for(std::size_t i=0;i<=system.owned;++i) for(int c=0;c<3;++c)
@@ -210,7 +206,7 @@ void equation(const Exec& exec, bool duplicate=false, bool empty_last=false, boo
             const auto law=transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
             status.begin_async(); diffusion.add_system_async(system.view(),boundary,status,law,time); (void)status.check();
             status.begin_async(); diffusion.add_residual_async(phi,residual,boundary,status,law,time); (void)status.check();
-            const auto combined=snapshot(residual,exec); const auto av=snapshot(system.view().values,exec); const auto bv=snapshot(system.view().rhs,exec);
+            const auto combined=host_snapshot(exec, residual); const auto av=host_snapshot(exec, system.view().values); const auto bv=host_snapshot(exec, system.view().rhs);
             for(std::size_t row=0;row<system.owned;++row){
                 double action=static_cast<double>(bv(row));
                 for(auto k=system.offsets[row];k<system.offsets[row+1];++k) action-=static_cast<double>(av(k))*static_cast<double>(field(system.columns[k]));
@@ -279,16 +275,16 @@ void patch_values(const Exec&exec){
     boundary.finalize(); cv::ConvectionPlan<Exec> plan(a.mesh.view(),a.connectivity.view(),comm,exec); cv::ConvectionOperator op(plan);
     NativeSystem<double> system(f,exec); ts::AssemblyStatus<Exec> status(exec);
     status.begin_async(); op.add_system_async(system.view(),boundary,status,InwardFlux{}); (void)status.check();
-    const auto rhs=snapshot(system.view().rhs,exec);
+    const auto rhs=host_snapshot(exec, system.view().rhs);
     for(std::size_t i=0;i<system.owned;++i){const double expected=(comm.rank()==0&&i==0?5.:0.)+(comm.rank()+1==comm.size()&&i==2?50.:0.);test::near(rhs(i),expected,1e-12,"strided patch profile");}
 
     // Updating the borrowed profile needs no new registration.
     Kokkos::deep_copy(exec,Kokkos::subview(backing[0],Kokkos::ALL(),1),6.f); system.reset(exec);
     status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
-    const auto updated=snapshot(system.view().rhs,exec);if(comm.rank()==0)test::near(updated(0),12.,1e-12,"borrowed profile refresh");
+    const auto updated=host_snapshot(exec, system.view().rhs);if(comm.rank()==0)test::near(updated(0),12.,1e-12,"borrowed profile refresh");
     boundary.set(0,bc::NormalGradient<Real>{0});boundary.set(1,bc::FixedFlux<Real>{0});boundary.finalize();system.reset(exec);
     status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{},cv::NoReconstruction{},CustomInflow{},Real{2});(void)status.check();
-    const auto custom=snapshot(system.view().rhs,exec);
+    const auto custom=host_snapshot(exec, system.view().rhs);
     for(std::size_t i=0;i<system.owned;++i){const double expected=((comm.rank()==0&&i==0)||(comm.rank()+1==comm.size()&&i==2))?12.:0.;test::near(custom(i),expected,1e-12,"custom inflow callback");}
 }
 
@@ -305,7 +301,7 @@ void unlabelled(const Exec&exec){
     boundary.set_unlabelled(bc::fixed_value<Real>(boundary::profile::patch_values(range,profile)));boundary.finalize();
     cv::ConvectionPlan<Exec>plan(a.mesh.view(),a.connectivity.view(),comm,exec);cv::ConvectionOperator op(plan);NativeSystem<double>system(f,exec);ts::AssemblyStatus<Exec>status(exec);
     status.begin_async();op.add_system_async(system.view(),boundary,status,InwardFlux{});(void)status.check();
-    const auto rhs=snapshot(system.view().rhs,exec);
+    const auto rhs=host_snapshot(exec, system.view().rhs);
     for(std::size_t i=0;i<system.owned;++i){const double expected=(comm.rank()==0&&i==0?4.:0.)+(comm.rank()+1==comm.size()&&i==2?18.:0.);test::near(rhs(i),expected,1e-12,"unlabelled boundary provider");}
 }
 
@@ -325,7 +321,7 @@ void unused_inputs(const Exec&exec){
     status.begin_async();op.add_system_async(system.view(),boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     op.add_residual_async(phi,residual,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});
     op.add_correction_async(residual,boundary,status,cv::UniformMassFlux<>{0},InvalidReconstruction{});(void)status.check();
-    const auto untouched=snapshot(residual,exec);for(std::size_t i=0;i<system.owned;++i)test::near(untouched(i),7.,0.,"zero flux evaluated unused inputs");
+    const auto untouched=host_snapshot(exec, residual);for(std::size_t i=0;i<system.owned;++i)test::near(untouched(i),7.,0.,"zero flux evaluated unused inputs");
 
     // For a positive velocity the right boundary is outflow: its NaN profile must stay unread.
     boundary.set(0,Profile{AffineValue{false}});boundary.finalize();
@@ -418,8 +414,8 @@ void split_ranges(const Exec& exec)
 
         const double tolerance = std::max(2.e-11, 400. * static_cast<double>(Kokkos::epsilon_v<Real>));
         const auto compare = [&](auto actual, auto expected, std::string_view label) {
-            const auto actual_host = snapshot(actual, exec);
-            const auto expected_host = snapshot(expected, exec);
+            const auto actual_host = host_snapshot(exec, actual);
+            const auto expected_host = host_snapshot(exec, expected);
             for (std::size_t i = 0; i < actual_host.extent(0); ++i)
                 test::near(actual_host(i), expected_host(i), tolerance, label);
         };

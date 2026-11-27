@@ -1,4 +1,5 @@
 #include "common/test_support.hpp"
+#include "common/view_snapshot.hpp"
 #include <krona/boundary/physical/manager.hpp>
 #include <krona/fields/field_storage.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
@@ -28,22 +29,17 @@ void close(A actual,B expected,const char* message,Real factor=1)
 { near(static_cast<Real>(actual),static_cast<Real>(expected),factor*tolerance*
     std::max(Real{1},Kokkos::abs(static_cast<Real>(expected))),message); }
 
-/// @brief Returns completed host values from the selected execution instance.
-template<class View>
-auto snapshot(const Exec& exec,View v)
-{
-    auto h=Kokkos::create_mirror(Kokkos::WithoutInitializing,v);
-    Kokkos::deep_copy(exec,h,v);exec.fence();return h;
-}
-
-/// @brief Initializes a primitive component while retaining its host staging allocation.
+/// @brief Initializes the selected primitive component, including its sentinel values.
 template<class V>
 void initialize_component(const Exec& exec,V v,Real value)
 {
-    auto h=Kokkos::create_mirror(Kokkos::WithoutInitializing,v);
-    Kokkos::deep_copy(h,Real{-777});
-    if (v.extent(0)>=3) { h(0)=value;h(1)=value;h(2)=999; }
-    Kokkos::deep_copy(exec,v,h);exec.fence();
+    Array packed(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "test/primitive_component"), v.extent(0));
+    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, packed);
+    Kokkos::deep_copy(host, Real{-777});
+    if (host.extent(0) >= 3) { host(0) = value; host(1) = value; host(2) = 999; }
+    Kokkos::deep_copy(exec, packed, host);
+    Kokkos::deep_copy(exec, v, packed);
+    exec.fence();
 }
 
 /// @brief Initializes valid owned states, a distinct ghost and untouched boundary/tail sentinels.
@@ -115,7 +111,7 @@ void thermodynamics_case(const Exec& exec)
         const auto restored=model.primitive(model.conservative(primitive));
         result(0,10)=restored.pressure;result(0,11)=restored.temperature;
     });
-    const auto h=snapshot(exec,result);
+    const auto h=host_snapshot(exec,result);
     close(h(0,0),Real{100000},"rho,e -> pressure");close(h(0,1),Real{300},"rho,e -> temperature");
     close(h(0,2),Real{300},"p,s inversion");close(h(0,3),Real{100000},"h,s inversion");
     close(h(0,4),h(0,5),"h=e+p/rho");close(h(0,6),h(0,7),"EOS pressure derivative",Real{32});
@@ -141,8 +137,8 @@ void wall_layout(const Exec& exec)
         krona::numerics::gradient::GradientCorrection{krona::numerics::gradient::cell_gradients(gx,gy,gz)}};
     manager.finalize();
     manager.apply_async(fields,status,law,correction);
-    const auto hp=snapshot(exec,fields.pressure),ht=snapshot(exec,fields.temperature);
-    const auto hu=snapshot(exec,velocity.view().kokkos_view());
+    const auto hp=host_snapshot(exec,fields.pressure),ht=host_snapshot(exec,fields.temperature);
+    const auto hu=host_snapshot(exec,velocity.view().kokkos_view());
     for (std::size_t i=0;i<3;++i) {
         equal(hp(i),i==2?Real{999}:Real{100000},"Owned and MPI ghost pressure preserved");
         equal(ht(i),i==2?Real{999}:Real{300},"Owned and MPI ghost temperature preserved");
@@ -192,8 +188,8 @@ void evaluate_case(const Exec& exec)
     const auto law=krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<Real>{2}};
     manager.finalize();
     manager.evaluate_async(Capture{result},ph::OwnerReader{fields},status,law);
-    const auto h=snapshot(exec,result);
-    const auto ht=snapshot(exec,fields.temperature);
+    const auto h=host_snapshot(exec,result);
+    const auto ht=host_snapshot(exec,fields.temperature);
     close(h(0,1),Real{350},"Physical wall trace is isothermal");close(h(0,6),Real{300},"Inviscid exterior keeps interior thermal state");
     close(h(0,7),Real{-100},"Inviscid wall mirror normal velocity");
     close(h(0,8),Real{20},"Inviscid wall keeps tangential velocity");
@@ -219,8 +215,8 @@ void incompressible_case(const Exec& exec)
     krona::fields::FieldStorage<Real,1,Exec> p("p",9,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec,Kokkos::LayoutRight> u("u",9,krona::fields::FieldLocation::CellExtnd,exec);
     const auto fields=ph::primitive_views(p.view(),u.view());initialize(exec,fields);manager.finalize();manager.apply_async(fields,status);
-    const auto hp=snapshot(exec,fields.pressure);
-    const auto hu=snapshot(exec,fields.u);
+    const auto hp=host_snapshot(exec,fields.pressure);
+    const auto hu=host_snapshot(exec,fields.u);
     close(hp(6),Real{-5},"Incompressible pressure may be gauge pressure");close(hu(7),Real{-3},"Incompressible velocity inlet");
     status.check();
 }
@@ -242,7 +238,7 @@ void thermal_liquid_case(const Exec& exec)
     const auto fields=ph::primitive_views(p.view(),u.view(),T.view());initialize(exec,fields);
     manager.finalize();
     manager.apply_async(fields,status,krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<Real>{2}});
-    const auto ht=snapshot(exec,fields.temperature);
+    const auto ht=host_snapshot(exec,fields.temperature);
     close(ht(3),Real{350},"Thermal incompressible isothermal wall");
     close(ht(4),Real{300},"Thermal incompressible adiabatic wall");
     close(ht(7),Real{280},"Thermal incompressible inlet temperature");
@@ -300,10 +296,10 @@ void extension_case(const Exec& exec)
     krona::fields::FieldStorage<Real,1,Exec> p("p",9,krona::fields::FieldLocation::CellExtnd,exec),T("T",9,krona::fields::FieldLocation::CellExtnd,exec);
     krona::fields::FieldStorage<Real,3,Exec> u("u",9,krona::fields::FieldLocation::CellExtnd,exec);
     const auto fields=ph::primitive_views(p.view(),u.view(),T.view());initialize(exec,fields);manager.finalize();manager.apply_async(fields,status);
-    const auto hu=snapshot(exec,fields.u);
+    const auto hu=host_snapshot(exec,fields.u);
     close(hu(3),-Real{2}*std::sqrt(static_cast<Real>(1.4)*Real{250}*Real{300}),"Per-owner EOS and Mach conversion");
     close(hu(4),Real{2}*hu(3),"Material provider selects the owner cell without a face array");
-    const auto hp=snapshot(exec,fields.pressure);close(hp(6),Real{90000},"Custom characteristic policy with opaque EOS");
+    const auto hp=host_snapshot(exec,fields.pressure);close(hp(6),Real{90000},"Custom characteristic policy with opaque EOS");
     status.check();
 }
 
@@ -363,7 +359,7 @@ void characteristic_case(const Exec& exec)
         const auto imposed=ph::evaluate(mach,c,input,model).face;
         result(0,21)=imposed.velocity.x/model.thermodynamic(imposed).sound_speed;
     });
-    const auto h=snapshot(exec,result);
+    const auto h=host_snapshot(exec,result);
     close(h(0,0),Real{90000},"Subsonic pressure condition");close(h(0,1),Real{0},"Outgoing entropy",Real{64});
     close(h(0,2),h(0,3),"Outgoing acoustic invariant");close(h(0,4),Real{20},"Outgoing tangent velocity");
     close(h(0,5),Real{1},"Outlet sonic limit");check(h(0,6)>Real{1000},"Choked outlet does not impose unreachable back pressure");
@@ -397,7 +393,7 @@ void relations_case(const Exec& exec)
             krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<Real>{2}});
         result(0,7)=flux.face_value(300);result(0,8)=flux.normal_gradient(300);
     });
-    const auto h=snapshot(exec,result);
+    const auto h=host_snapshot(exec,result);
     close(h(0,0),h(0,1),"Slip prescribed normal velocity");
     for (int j=2;j<=5;++j) close(h(0,j),Real{0},"Coupled velocity value/gradient relation");
     close(h(0,6),Real{24},"Temperature Dirichlet normal derivative");close(h(0,7),Real{292},"Heat-flux relation face value");
@@ -421,7 +417,7 @@ void visitation_case(const Exec& exec)
     int calls=0;manager.finalize();manager.for_each_patch([&](krona::boundary::PatchRange,const auto&){++calls;});
     equal(calls,6,"Skip locally empty patch and include unlabelled interval");
     Array result("raw",6);manager.finalize();manager.for_each_face_async(RawVisitor{result},Real{3});
-    const auto h=snapshot(exec,result);
+    const auto h=host_snapshot(exec,result);
     for (std::size_t i=0;i<6;++i) close(h(i),static_cast<Real>(i+5)+(i==5?Real{10}:Real{0}),"Raw visitation needs no state or flux law");
 }
 
@@ -447,8 +443,8 @@ void configuration_case(const Exec& exec)
     const auto fields=ph::primitive_views(p.view(),u.view(),T.view());initialize(exec,fields);
     manager.finalize();
     manager.apply_async(fields,status,krona::transport::IsotropicDiffusion{krona::transport::UniformCoefficient<Real>{2}});
-    const auto ht=snapshot(exec,fields.temperature);
-    const auto hp=snapshot(exec,fields.pressure);
+    const auto ht=host_snapshot(exec,fields.temperature);
+    const auto hp=host_snapshot(exec,fields.pressure);
     close(ht(3),Real{350},"Real file drives wall fill");close(hp(6),Real{90000},"Real file drives outlet fill");
     close(ht(8),Real{295},"Real file drives unlabelled flux fill");
     const auto alias=ph::parse_config("[[boundary_condition]]\npatch_id=0\nname='a'\ntype='INLET_TOTAL_TP'\np0=120000\nT0=350\ndirection=[-1,0,0]\n");
@@ -494,9 +490,9 @@ void custom_case(const Exec& exec)
     manager.finalize();
     manager.apply_async(fields,status,law,ph::Corrections<>{},Real{4});
     manager.set(0,ph::AdiabaticWall<Real>{{8,0,0}});
-    const auto before=snapshot(exec,fields.u);close(before(3),Real{4},"Custom condition sees face time and copied binding");
+    const auto before=host_snapshot(exec,fields.u);close(before(3),Real{4},"Custom condition sees face time and copied binding");
     manager.finalize();
-    manager.apply_async(fields,status,law);const auto after=snapshot(exec,fields.u);close(after(3),Real{8},"Updated binding used by later submissions");
+    manager.apply_async(fields,status,law);const auto after=host_snapshot(exec,fields.u);close(after(3),Real{8},"Updated binding used by later submissions");
     status.check();
 }
 

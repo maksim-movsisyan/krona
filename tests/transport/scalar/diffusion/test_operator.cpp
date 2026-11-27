@@ -1,5 +1,6 @@
 #include <krona/transport/face_range.hpp>
 #include <common/test_support.hpp>
+#include <common/view_snapshot.hpp>
 #include <krona/transport/scalar/diffusion/operator.hpp>
 #include <krona/mesh/device/mesh_storage.hpp>
 #include <krona/mesh/device/aux_storage.hpp>
@@ -23,18 +24,9 @@ using Exec = execution::ExecutionSpace;
 using Space = typename Exec::memory_space;
 using Real = ComputeReal;
 using test::check;
+using test::host_snapshot;
 
 #include "fixture.hpp" 
-
-/// @brief Returns a completed host snapshot of native test storage.
-template<class View>
-auto snapshot(View view, const Exec& exec)
-{
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
-    Kokkos::deep_copy(exec, host, view);
-    exec.fence("Diffusion core test snapshot");
-    return host;
-}
 
 /// @brief Owns mesh/auxiliary storage and the diffusion plan borrowing those allocations.
 struct Attached {
@@ -199,14 +191,14 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
     NativeSystem<Storage> system(f, exec);
     ts::AssemblyStatus<Exec> status(exec);
     status.begin_async(); op.add_system_async(system.view(), boundary, status, law, correction, time); (void)status.check();
-    const auto coefficients = snapshot(system.view().values, exec), rhs = snapshot(system.view().rhs, exec);
+    const auto coefficients = host_snapshot(exec, system.view().values), rhs = host_snapshot(exec, system.view().rhs);
     Kokkos::View<Storage*, Space> residual("residual", m.sizes.n_own);
     Kokkos::deep_copy(exec, residual, Storage{0});
     status.begin_async(); op.add_residual_async(phi, residual, boundary, status, law, correction, time); (void)status.check();
 
     // Compare the direct residual with an independent b-A*phi row evaluation.
-    const auto result = snapshot(residual, exec);
-    const auto field = snapshot(phi, exec);
+    const auto result = host_snapshot(exec, residual);
+    const auto field = host_snapshot(exec, phi);
     const double tolerance = std::is_same_v<Storage, float> ? 2e-4 : 2e-11;
     for (std::size_t row = 0; row < system.owned; ++row) {
         double action = static_cast<double>(rhs(row));
@@ -219,17 +211,17 @@ void run_case(const Exec& exec, bool skew, bool mixed = false, bool empty = fals
     // The correction-only update must reproduce the complete RHS without changing the matrix.
     system.reset(exec);
     status.begin_async(); op.add_system_async(system.view(), boundary, status, law, time); (void)status.check();
-    const auto base_coefficients = snapshot(system.view().values, exec);
+    const auto base_coefficients = host_snapshot(exec, system.view().values);
     status.begin_async(); op.add_correction_async(system.view().rhs, boundary, status, law, correction, time); (void)status.check();
-    const auto corrected_rhs = snapshot(system.view().rhs, exec);
+    const auto corrected_rhs = host_snapshot(exec, system.view().rhs);
     for (std::size_t k = 0; k < system.columns.size(); ++k)
         test::near(static_cast<double>(base_coefficients(k)), static_cast<double>(coefficients(k)), 0., "correction changed matrix coefficients");
     for (std::size_t row = 0; row < system.owned; ++row)
         test::near(static_cast<double>(corrected_rhs(row)), static_cast<double>(rhs(row)), tolerance, "correction-only RHS differs from full assembly");
 
     // Sentinels expose writes to unselected block components or extra RHS entries.
-    const auto blocks = snapshot(system.blocks, exec);
-    const auto right = snapshot(system.right, exec);
+    const auto blocks = host_snapshot(exec, system.blocks);
+    const auto right = host_snapshot(exec, system.right);
     for (std::size_t k = 0; k < system.columns.size(); ++k)
         for (int i = 0; i < 2; ++i) for (int j = 0; j < 2; ++j)
             if (i != 1 || j != 1) test::near(static_cast<double>(blocks(k, i, j)), 7., 0., "unselected block coefficient changed");
@@ -291,7 +283,7 @@ void custom_correction(const Exec& exec)
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{2}};
     status.begin_async(); op.add_residual_async(field, first, boundary, status, law); (void)status.check();
     status.begin_async(); op.add_residual_async(field, second, boundary, status, law, TestProjection{static_cast<std::size_t>(f.host.n_cells)}); (void)status.check();
-    const auto x = snapshot(first, exec), y = snapshot(second, exec);
+    const auto x = host_snapshot(exec, first), y = host_snapshot(exec, second);
     for (std::size_t i = 0; i < x.extent(0); ++i) test::near(x(i), y(i), Real{0}, "custom correction without a gradients member");
 
     bc::Manager<Exec, Real, CorrectionDependentSlope> custom_boundary(layout);
@@ -304,8 +296,8 @@ void custom_correction(const Exec& exec)
     op.add_system_async(full.view(), custom_boundary, status, law, projection);
     op.add_system_async(matrix_only.view(), custom_boundary, status, law, projection, Real{0}, /*add_rhs=*/false);
     (void)status.check();
-    const auto expected = snapshot(full.view().values, exec);
-    const auto actual = snapshot(matrix_only.view().values, exec);
+    const auto expected = host_snapshot(exec, full.view().values);
+    const auto actual = host_snapshot(exec, matrix_only.view().values);
     for (std::size_t i = 0; i < expected.extent(0); ++i)
         test::equal(actual(i), expected(i), "matrix-only assembly retains the correction-dependent boundary slope");
 }
@@ -393,8 +385,8 @@ void split_ranges(const Exec& exec)
 
     const double tolerance = std::max(2.e-11, 400. * static_cast<double>(Kokkos::epsilon_v<Real>));
     const auto compare = [&](auto actual, auto expected, std::string_view label) {
-        const auto a_host = snapshot(actual, exec);
-        const auto e_host = snapshot(expected, exec);
+        const auto a_host = host_snapshot(exec, actual);
+        const auto e_host = host_snapshot(exec, expected);
         for (std::size_t i = 0; i < a_host.extent(0); ++i)
             test::near(a_host(i), e_host(i), tolerance, label);
     };
@@ -454,7 +446,7 @@ void weights(const Exec& exec)
         status.begin_async();
         op.add_system_async(system.view(), boundary, status, law, correction);
         (void)status.check();
-        return std::pair{snapshot(system.view().values, exec), snapshot(system.view().rhs, exec)};
+        return std::pair{host_snapshot(exec, system.view().values), host_snapshot(exec, system.view().rhs)};
     };
 
     const auto [matrix, rhs] = assemble(a.geometry.view());

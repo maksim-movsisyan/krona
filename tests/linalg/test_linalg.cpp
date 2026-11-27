@@ -718,10 +718,13 @@ void bsr_mapping()
     for (std::size_t row = 0; row < gids.size(); ++row) for (int c = 0; c < width; ++c)
         check(matrix.distribution().global_id(static_cast<LocalOrdinal>(row*width+static_cast<std::size_t>(c))) ==
               gids[row]*width+c, "test: BSR point-map order/GIDs changed");
-    const auto native_graph = matrix.native()->getLocalMatrixDevice().graph;
-    const auto original_graph = graph.native()->getLocalGraphDevice();
-    check(native_graph.entries.data() == original_graph.entries.data() &&
-          native_graph.row_map.data() == original_graph.row_map.data(), "test: BSR duplicated the device graph");
+    {
+        // A later BSR constructor reads the same graph on the host.
+        const auto native_graph = matrix.native()->getLocalMatrixDevice().graph;
+        const auto original_graph = graph.native()->getLocalGraphDevice();
+        check(native_graph.entries.data() == original_graph.entries.data() &&
+              native_graph.row_map.data() == original_graph.row_map.data(), "test: BSR duplicated the device graph");
+    }
     check(matrix.native()->getLocalNumEntries() == graph.local_nonzeros() &&
           matrix.local_values() == graph.local_nonzeros()*width*width, "test: BSR graph was expanded to scalar CSR");
     check(matrix.native()->getDomainMap()->isSameAs(*matrix.distribution().native()) &&
@@ -786,9 +789,11 @@ void bsr_mapping()
 
     // Copy native block storage; only writes, not reads, advance the matrix revision.
     const auto after_write = matrix.revision();
-    const auto read = matrix.read_blocks(exec);
-    const auto target = copied.overwrite_blocks(exec);
-    Kokkos::deep_copy(exec, target, read);
+    {
+        const auto read = matrix.read_blocks(exec);
+        const auto target = copied.overwrite_blocks(exec);
+        Kokkos::deep_copy(exec, target, read);
+    }
     copied.commit(); matrix.commit();
     check(matrix.revision() == after_write, "test: reading BSR coefficients changed revision");
     copied.apply(x, y); matrix.apply(x, reference);

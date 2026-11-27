@@ -326,6 +326,15 @@ void coupling(const Exec& exec)
     test::near(b(1), 0.75, 0.0, "shared factor broadcast component one");
 }
 
+/// @brief Supplies a valid empty stencil without requiring any input entries.
+struct Empty {
+    KOKKOS_INLINE_FUNCTION std::size_t size() const { return 0; }
+    KOKKOS_INLINE_FUNCTION std::size_t required_input_size() const { return 0; }
+    KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t) const { return 0; }
+    KOKKOS_INLINE_FUNCTION rec::CellSide<double> point(std::size_t, std::size_t) const { return {}; }
+    KOKKOS_INLINE_FUNCTION std::size_t sample(std::size_t, std::size_t) const { return 0; }
+};
+
 /// @brief Checks selected output ranges, untouched strided tails and empty stencils.
 void ranges(const Exec& exec)
 {
@@ -343,15 +352,6 @@ void ranges(const Exec& exec)
     // Zero-size descriptors and a zero-size stencil must accept an empty launch.
     Kokkos::View<double*, Space> none("empty", 0);
     const auto empty = fields::pack(none);
-
-    /// @brief Supplies a valid empty stencil without requiring any input entries.
-    struct Empty {
-        KOKKOS_INLINE_FUNCTION std::size_t size() const { return 0; }
-        KOKKOS_INLINE_FUNCTION std::size_t required_input_size() const { return 0; }
-        KOKKOS_INLINE_FUNCTION std::size_t size(std::size_t) const { return 0; }
-        KOKKOS_INLINE_FUNCTION rec::CellSide<double> point(std::size_t, std::size_t) const { return {}; }
-        KOKKOS_INLINE_FUNCTION std::size_t sample(std::size_t, std::size_t) const { return 0; }
-    };
     rec::compute_limiters_async(exec, Empty{}, empty, rec::FirstOrder{}, fields::pack(none));
     exec.fence("empty/range test complete");
 }

@@ -1,0 +1,37 @@
+[flow.physics]
+gamma = 1.4
+gas_constant = 287.05
+
+[flow.initial]
+pressure = 100000.0
+temperature = 310.0
+velocity = [0.0, 0.0, 0.0]
+
+[flow.numerics]
+flux = "hllc"
+reconstruction = "linear"
+limiter = "barth_jespersen"
+
+[flow.numerics.gradient]
+method = "least_squares_face"
+
+[flow.transport]
+enabled = true
+viscosity = "constant"
+dynamic_viscosity = 0.0026
+conductivity = "constant_prandtl"
+prandtl = 0.72
+
+[flow.pseudo_time]
+cfl = 100.0
+relaxation = 0.8
+maximum_iterations = 100
+relative_tolerance = 1e-6
+absolute_tolerance = 1e-8
+
+[flow.linear_solver]
+method = "GMRES"
+preconditioner = "RELAXATION"
+relative_tolerance = 1e-1
+maximum_iterations = 200
+restart_length = 40

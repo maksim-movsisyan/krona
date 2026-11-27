@@ -1,4 +1,5 @@
 #include "common/test_support.hpp"
+#include "common/view_snapshot.hpp"
 
 #include <krona/boundary/scalar/manager.hpp>
 #include <krona/fields/field_storage.hpp>
@@ -408,26 +409,18 @@ constexpr auto selection = krona::mesh::device::MeshData::FaceCells |
 scalar::Configuration file_configuration()
 { return scalar::read_config(KRONA_BOUNDARY_TEST_DATA, "temperature", krona::mpi::CommView::world()); }
 
-/// @brief Completes an independent host snapshot on the supplied execution instance.
-template<class View>
-auto snapshot(const Exec& exec, View view)
-{
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
-    Kokkos::deep_copy(exec, host, view);
-    exec.fence();
-    return host;
-}
-
-/// @brief Initializes reference cell values while retaining the staging buffer until completion.
+/// @brief Initializes reference cell values in the selected component.
 template<class View>
 void initialize_component(const Exec& exec, View view)
 {
-    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, view);
+    Array packed(Kokkos::view_alloc(exec, Kokkos::WithoutInitializing, "test/scalar_component"), view.extent(0));
+    auto host = Kokkos::create_mirror(Kokkos::WithoutInitializing, packed);
     Kokkos::deep_copy(host, Real{-99});
     if (host.extent(0) >= 3) { host(0) = 7; host(1) = 11; host(2) = 42; }
-    Kokkos::deep_copy(exec, view, host);
+    Kokkos::deep_copy(exec, packed, host);
+    Kokkos::deep_copy(exec, view, packed);
 
-    // The host staging allocation is local to this helper.
+    // Both staging buffers must outlive the queued copies.
     exec.fence();
 }
 
@@ -484,14 +477,14 @@ void file_fill_case(const Exec& exec)
     const auto law = transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}};
     manager.finalize();
     manager.apply_async(field.view(), status, law);
-    auto host = snapshot(exec, field.view().component(0));
+    auto host = host_snapshot(exec, field.view().component(0));
     constexpr Real expected[]{7, 11, 42, 5, 5, 5, 7, 7};
     for (std::size_t i = 0; i < 8; ++i)
         near(host(i), expected[i], tolerance, "File -> configuration -> manager -> boundary values");
     manager.set(0, scalar::FixedValue<Real>{8});
     manager.finalize();
     manager.apply_async(field.view(), status, law);
-    host = snapshot(exec, field.view().component(0));
+    host = host_snapshot(exec, field.view().component(0));
     near(host(3), Real{8}, tolerance, "Updated condition overrides the file binding");
     near(host(4), Real{8}, tolerance, "Updated condition covers its entire patch");
 
@@ -503,7 +496,7 @@ void file_fill_case(const Exec& exec)
     initialize_component(exec, tracer.view().component(0));
     tracer_manager.finalize();
     tracer_manager.apply_async(tracer.view(), status);
-    const auto ht = snapshot(exec, tracer.view().component(0));
+    const auto ht = host_snapshot(exec, tracer.view().component(0));
     constexpr Real expected_tracer[]{7, 11, 42, Real{0.25}, Real{0.25}, 7, 11, 7};
     for (std::size_t i = 0; i < 8; ++i)
         near(ht(i), expected_tracer[i], tolerance, "Other scalar conditions are applied independently");
@@ -526,7 +519,7 @@ void layout_case(const Exec& exec)
     manager.finalize();
     manager.apply_component_async(field.view().component(1), status,
         transport::IsotropicDiffusion{transport::UniformCoefficient<Real>{3}});
-    const auto host = snapshot(exec, field.view().kokkos_view());
+    const auto host = host_snapshot(exec, field.view().kokkos_view());
     constexpr Real expected[]{7, 11, 42, 5, 5, 5, 7, -99, -99};
     for (std::size_t i = 0; i < 9; ++i) {
         near(host(i, 1), expected[i], tolerance, "Selected component, cell prefix and trailing storage");
@@ -587,8 +580,8 @@ void affine_case(const Exec& exec)
     manager.finalize();
     manager.apply_async(values, status, law, correction, Real{1});
     manager.evaluate_async(CapturePhysicalFlux{values.component(0), fluxes, law}, status, law, correction, Real{1});
-    const auto host = snapshot(exec, values.component(0));
-    const auto hf = snapshot(exec, fluxes);
+    const auto host = host_snapshot(exec, values.component(0));
+    const auto hf = host_snapshot(exec, fluxes);
     for (krona::LocalIndex f = m.n_inner_faces; f < m.n_faces; ++f) {
         const auto face = static_cast<std::size_t>(f);
         const auto b = static_cast<std::size_t>(f - m.n_inner_faces);
@@ -643,7 +636,7 @@ void assembly_case(const Exec& exec)
     };
     Kokkos::deep_copy(exec, coefficient, Real{3});
     assemble();
-    auto d = snapshot(exec, diagonal), b = snapshot(exec, rhs);
+    auto d = host_snapshot(exec, diagonal), b = host_snapshot(exec, rhs);
     near(d(0), Real{6}, tolerance, "Dirichlet diagonal includes area exactly once");
     near(d(1), Real{3}, tolerance, "Second owner diagonal");
     near(b(0), Real{24}, tolerance, "RHS includes the outward normal-gradient flux with its sign");
@@ -652,7 +645,7 @@ void assembly_case(const Exec& exec)
     hc(0) = 13; hc(1) = 2; hc(2) = 4; hc(3) = 5; hc(4) = 6;
     Kokkos::deep_copy(exec, coefficient, hc);
     assemble();
-    d = snapshot(exec, diagonal); b = snapshot(exec, rhs);
+    d = host_snapshot(exec, diagonal); b = host_snapshot(exec, rhs);
     near(d(0), Real{4}, tolerance, "Variable face coefficient in the first diagonal");
     near(d(1), Real{4}, tolerance, "Variable face coefficient in the second diagonal");
     near(b(0), Real{10}, tolerance, "Variable coefficient converts prescribed normal gradient to flux");
@@ -661,7 +654,7 @@ void assembly_case(const Exec& exec)
         "phi", manager.required_field_size(), krona::fields::FieldLocation::CellExtnd, exec);
     initialize_component(exec, field.view().component(0));
     manager.apply_async(field.view(), status, law);
-    const auto host = snapshot(exec, field.view().component(0));
+    const auto host = host_snapshot(exec, field.view().component(0));
     near(host(6), Real{9}, tolerance, "Flux-to-gradient conversion uses the face-indexed provider");
     status.check();
 }

@@ -1,0 +1,17 @@
+[[boundary_condition]]
+patch_id = 0
+name = "cold_wall"
+type = "ISOTHERMAL_WALL"
+temperature = 300.0
+
+[[boundary_condition]]
+patch_id = 1
+name = "hot_lid"
+type = "ISOTHERMAL_WALL"
+temperature = 320.0
+velocity = [90.0, 0.0, 0.0]
+
+[[boundary_condition]]
+patch_id = 2
+name = "side_walls"
+type = "ADIABATIC_WALL"
